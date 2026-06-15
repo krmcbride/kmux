@@ -1,0 +1,63 @@
+{
+  description = "Lean tmux and git worktree workflow helper";
+
+  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+
+  outputs =
+    { self, nixpkgs }:
+    let
+      systems = [
+        "x86_64-linux"
+        "aarch64-linux"
+        "x86_64-darwin"
+        "aarch64-darwin"
+      ];
+      forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f system nixpkgs.legacyPackages.${system});
+    in
+    {
+      packages = forAllSystems (
+        _: pkgs: {
+          default = pkgs.rustPlatform.buildRustPackage {
+            pname = "kmux";
+            version = self.shortRev or self.dirtyShortRev or "dev";
+            src = ./.;
+            cargoLock.lockFile = ./Cargo.lock;
+            nativeBuildInputs = [ pkgs.installShellFiles ];
+            postInstall = ''
+              export HOME=$TMPDIR
+              installShellCompletion --cmd kmux \
+                --bash <($out/bin/kmux completions bash) \
+                --fish <($out/bin/kmux completions fish) \
+                --zsh <($out/bin/kmux completions zsh)
+            '';
+          };
+        }
+      );
+
+      devShells = forAllSystems (
+        _: pkgs: {
+          default = pkgs.mkShell {
+            packages = with pkgs; [
+              cargo
+              clippy
+              git
+              jq
+              just
+              rust-analyzer
+              rustc
+              rustfmt
+              tmux
+            ];
+          };
+        }
+      );
+
+      checks = forAllSystems (
+        system: _: {
+          kmux = self.packages.${system}.default;
+        }
+      );
+
+      formatter = forAllSystems (_: pkgs: pkgs.nixpkgs-fmt);
+    };
+}
