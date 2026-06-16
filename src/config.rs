@@ -5,7 +5,6 @@ use directories::BaseDirs;
 use serde::Deserialize;
 
 pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
-pub const NERD_FONT_BRANCH_PREFIX: &str = "\u{f418} ";
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -22,7 +21,6 @@ pub struct Config {
     pub status_format: Option<bool>,
     pub status_icons: StatusIcons,
     pub sidebar: SidebarConfig,
-    pub nerdfont: Option<bool>,
 }
 
 impl Config {
@@ -68,15 +66,9 @@ impl Config {
         self.status_format.unwrap_or(true)
     }
 
-    pub fn nerdfont_enabled(&self) -> bool {
-        self.nerdfont.unwrap_or(false)
-    }
-
     pub fn window_prefix(&self) -> &str {
         if let Some(prefix) = &self.window_prefix {
             prefix
-        } else if self.nerdfont_enabled() {
-            NERD_FONT_BRANCH_PREFIX
         } else {
             DEFAULT_WINDOW_PREFIX
         }
@@ -232,7 +224,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_config_has_kmux_window_prefix_without_nerdfont() {
+    fn default_config_has_portable_kmux_window_prefix() {
         let config = Config::default();
 
         assert_eq!(config.window_prefix(), DEFAULT_WINDOW_PREFIX);
@@ -241,19 +233,8 @@ mod tests {
     }
 
     #[test]
-    fn nerdfont_config_uses_branch_icon_window_prefix() {
+    fn explicit_window_prefix_wins_over_default() {
         let config = Config {
-            nerdfont: Some(true),
-            ..Config::default()
-        };
-
-        assert_eq!(config.window_name("feature-auth"), "\u{f418} feature-auth");
-    }
-
-    #[test]
-    fn explicit_window_prefix_wins_over_nerdfont() {
-        let config = Config {
-            nerdfont: Some(true),
             window_prefix: Some("km-".to_string()),
             ..Config::default()
         };
@@ -262,10 +243,10 @@ mod tests {
     }
 
     #[test]
-    fn parses_active_global_workmux_config_shape() {
+    fn parses_active_global_kmux_config_shape() {
         let config = Config::from_yaml_str(
             r#"
-nerdfont: true
+window_prefix: "git-"
 panes:
   - command: nvim
     focus: true
@@ -289,6 +270,7 @@ sidebar: {width: 42}
 
         let panes = config.panes.as_ref().expect("panes should be parsed");
 
+        assert_eq!(config.window_prefix(), "git-");
         assert_eq!(panes[0].command.as_deref(), Some("nvim"));
         assert!(panes[0].focus);
         assert!(!config.status_format());
