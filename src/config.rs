@@ -285,13 +285,12 @@ files:
 sidebar: {width: 42}
 "#,
         )
-        .unwrap();
+        .expect("active global config should parse");
 
-        assert_eq!(
-            config.panes.as_ref().unwrap()[0].command.as_deref(),
-            Some("nvim")
-        );
-        assert!(config.panes.as_ref().unwrap()[0].focus);
+        let panes = config.panes.as_ref().expect("panes should be parsed");
+
+        assert_eq!(panes[0].command.as_deref(), Some("nvim"));
+        assert!(panes[0].focus);
         assert!(!config.status_format());
         assert_eq!(config.status_icons.working(), "spin");
         assert_eq!(config.post_create, ["direnv allow"]);
@@ -302,7 +301,8 @@ sidebar: {width: 42}
 
     #[test]
     fn rejects_unsupported_config_fields() {
-        let error = Config::from_yaml_str("sandbox: {}\n").unwrap_err();
+        let error = Config::from_yaml_str("sandbox: {}\n")
+            .expect_err("unsupported config field should fail");
 
         assert!(error.to_string().contains("unknown field"));
     }
@@ -315,21 +315,27 @@ panes:
   - split: horizontal
 "#,
         )
-        .unwrap_err();
+        .expect_err("unsupported multi-pane field should fail");
 
         assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
     fn parses_sidebar_percentage_size() {
-        let config = Config::from_yaml_str("sidebar: {width: '15%'}\n").unwrap();
+        let config = Config::from_yaml_str("sidebar: {width: '15%'}\n")
+            .expect("sidebar config should parse");
+        let width = config
+            .sidebar
+            .width
+            .expect("sidebar width should be parsed");
 
-        assert_eq!(config.sidebar.width.unwrap().resolve(200), 30);
+        assert_eq!(width.resolve(200), 30);
     }
 
     #[test]
     fn rejects_deferred_sidebar_position_field() {
-        let error = Config::from_yaml_str("sidebar: {position: top}\n").unwrap_err();
+        let error = Config::from_yaml_str("sidebar: {position: top}\n")
+            .expect_err("unsupported sidebar position should fail");
 
         assert!(error.to_string().contains("unknown field"));
     }

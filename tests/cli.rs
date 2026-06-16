@@ -4,7 +4,7 @@ use predicates::prelude::*;
 #[test]
 fn help_shows_core_commands() {
     Command::cargo_bin("kmux")
-        .unwrap()
+        .expect("kmux binary should be available")
         .arg("--help")
         .assert()
         .success()
@@ -17,7 +17,7 @@ fn help_shows_core_commands() {
 #[test]
 fn completions_command_emits_shell_completion() {
     Command::cargo_bin("kmux")
-        .unwrap()
+        .expect("kmux binary should be available")
         .args(["completions", "bash"])
         .assert()
         .success()
@@ -27,7 +27,7 @@ fn completions_command_emits_shell_completion() {
 #[test]
 fn unimplemented_commands_fail_clearly() {
     Command::cargo_bin("kmux")
-        .unwrap()
+        .expect("kmux binary should be available")
         .args(["status"])
         .assert()
         .failure()
