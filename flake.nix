@@ -23,6 +23,7 @@
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
             nativeBuildInputs = [ pkgs.installShellFiles ];
+            nativeCheckInputs = [ pkgs.git ];
             postInstall = ''
               export HOME=$TMPDIR
               installShellCompletion --cmd kmux \

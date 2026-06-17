@@ -41,7 +41,7 @@ impl Config {
     }
 
     pub fn from_yaml_str(content: &str) -> Result<Self> {
-        let config: Self = serde_yaml::from_str(content)?;
+        let config: Self = yaml_serde::from_str(content)?;
         config.validate()?;
         Ok(config)
     }
