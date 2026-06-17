@@ -10,14 +10,10 @@ pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub base_branch: Option<String>,
-    pub worktree_dir: Option<String>,
-    pub worktree_prefix: Option<String>,
     pub window_prefix: Option<String>,
-    pub session_name: Option<String>,
     pub panes: Option<Vec<PaneConfig>>,
     pub post_create: Vec<String>,
     pub files: FileConfig,
-    pub status_format: Option<bool>,
     pub status_icons: StatusIcons,
     pub sidebar: SidebarConfig,
 }
@@ -59,10 +55,6 @@ impl Config {
         }
 
         Ok(())
-    }
-
-    pub fn status_format(&self) -> bool {
-        self.status_format.unwrap_or(true)
     }
 
     pub fn window_prefix(&self) -> &str {
@@ -207,7 +199,6 @@ mod tests {
 
         assert_eq!(config.window_prefix(), DEFAULT_WINDOW_PREFIX);
         assert_eq!(config.window_name("feature-auth"), "kmux-feature-auth");
-        assert!(config.status_format());
     }
 
     #[test]
@@ -228,7 +219,6 @@ window_prefix: "git-"
 panes:
   - command: nvim
     focus: true
-status_format: false
 status_icons:
   working: spin
   waiting: wait
@@ -251,7 +241,6 @@ sidebar: {width: 42}
         assert_eq!(config.window_prefix(), "git-");
         assert_eq!(panes[0].command.as_deref(), Some("nvim"));
         assert!(panes[0].focus);
-        assert!(!config.status_format());
         assert_eq!(config.status_icons.working(), "spin");
         assert_eq!(config.post_create, ["direnv allow"]);
         assert_eq!(config.files.copy_entries(), [".envrc", ".opencode"]);
