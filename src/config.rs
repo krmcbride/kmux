@@ -11,7 +11,6 @@ pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
 pub struct Config {
     pub base_branch: Option<String>,
     pub worktree_dir: Option<String>,
-    pub worktree_naming: WorktreeNaming,
     pub worktree_prefix: Option<String>,
     pub window_prefix: Option<String>,
     pub session_name: Option<String>,
@@ -76,27 +75,6 @@ impl Config {
 
     pub fn window_name(&self, handle: &str) -> String {
         format!("{}{}", self.window_prefix(), handle)
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum WorktreeNaming {
-    #[default]
-    Full,
-    Basename,
-}
-
-impl WorktreeNaming {
-    pub fn derive_name<'a>(&self, branch_name: &'a str) -> &'a str {
-        match self {
-            Self::Full => branch_name,
-            Self::Basename => branch_name
-                .trim_matches('/')
-                .rsplit('/')
-                .find(|part| !part.is_empty())
-                .unwrap_or(branch_name),
-        }
     }
 }
 
