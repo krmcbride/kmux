@@ -8,6 +8,8 @@ pub mod git;
 pub mod paths;
 #[doc(hidden)]
 pub mod slug;
+#[doc(hidden)]
+pub mod tmux;
 
 use anyhow::{Result, bail};
 use clap::{CommandFactory, Parser};
