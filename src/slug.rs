@@ -5,10 +5,8 @@ pub fn slugify(input: &str) -> String {
     let mut last_was_separator = false;
 
     for ch in input.chars() {
-        if ch.is_alphanumeric() {
-            for lowered in ch.to_lowercase() {
-                output.push(lowered);
-            }
+        if ch.is_ascii_alphanumeric() {
+            output.push(ch.to_ascii_lowercase());
             last_was_separator = false;
         } else if !output.is_empty() && !last_was_separator {
             output.push('-');
@@ -43,6 +41,12 @@ mod tests {
         assert_eq!(slugify("Feature! @#$%"), "feature");
         assert_eq!(slugify("  My Cool Feature  "), "my-cool-feature");
         assert_eq!(slugify("../feature auth"), "feature-auth");
+    }
+
+    #[test]
+    fn slugifies_to_ascii_only_handles() {
+        assert_eq!(slugify("fèature/åuth"), "f-ature-uth");
+        assert_eq!(slugify("火花"), "");
     }
 
     #[test]

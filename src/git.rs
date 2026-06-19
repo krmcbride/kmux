@@ -286,6 +286,29 @@ impl Git {
         Ok(!output.trim().is_empty())
     }
 
+    pub fn branch_is_safely_deletable(&self, branch: &str) -> Result<bool> {
+        let target = self
+            .branch_upstream(branch)?
+            .unwrap_or_else(|| "HEAD".to_owned());
+        let output = self.output(["merge-base", "--is-ancestor", branch, &target])?;
+        if output.status.success() {
+            Ok(true)
+        } else if output.status.code() == Some(1) {
+            Ok(false)
+        } else {
+            bail_git(output)
+        }
+    }
+
+    fn branch_upstream(&self, branch: &str) -> Result<Option<String>> {
+        let output = self.stdout(vec![
+            OsString::from("for-each-ref"),
+            OsString::from("--format=%(upstream:short)"),
+            OsString::from(format!("refs/heads/{branch}")),
+        ])?;
+        Ok(Some(output).filter(|upstream| !upstream.is_empty()))
+    }
+
     pub fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
         if !force && self.worktree_is_dirty(path)? {
             bail!("worktree {} has uncommitted changes", path.display());
@@ -297,6 +320,17 @@ impl Git {
         }
         args.push(path.as_os_str().to_os_string());
         self.stdout(args)?;
+        Ok(())
+    }
+
+    pub fn move_worktree(&self, old_path: &Path, new_path: &Path) -> Result<()> {
+        self.ensure_available_worktree_path(new_path)?;
+        self.stdout(vec![
+            OsString::from("worktree"),
+            OsString::from("move"),
+            old_path.as_os_str().to_os_string(),
+            new_path.as_os_str().to_os_string(),
+        ])?;
         Ok(())
     }
 

@@ -73,6 +73,14 @@ impl Tmux {
         self
     }
 
+    pub fn instance_id(&self) -> String {
+        self.socket_name
+            .as_ref()
+            .map(|socket_name| socket_name.to_string_lossy().into_owned())
+            .filter(|socket_name| !socket_name.is_empty())
+            .unwrap_or_else(|| "default".to_owned())
+    }
+
     pub fn is_available() -> bool {
         Command::new("tmux")
             .arg("-V")
@@ -209,6 +217,17 @@ impl Tmux {
 
         let target = window_target(session_name, window_name);
         self.stdout(["kill-window", "-t", &target])?;
+        Ok(())
+    }
+
+    pub fn rename_window(
+        &self,
+        session_name: &str,
+        old_window_name: &str,
+        new_window_name: &str,
+    ) -> Result<()> {
+        let target = window_target(session_name, old_window_name);
+        self.stdout(["rename-window", "-t", &target, new_window_name])?;
         Ok(())
     }
 

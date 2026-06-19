@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use assert_cmd::Command;
 use predicates::prelude::*;
 use tempfile::TempDir;
@@ -32,13 +32,13 @@ fn completions_command_emits_shell_completion() {
 }
 
 #[test]
-fn unimplemented_commands_fail_clearly() {
+fn unknown_commands_fail_clearly() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
-        .args(["status"])
+        .arg("not-a-command")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("status is not implemented yet"));
+        .stderr(predicate::str::contains("unrecognized subcommand"));
 }
 
 struct TmuxFixture {
@@ -109,11 +109,28 @@ impl TmuxFixture {
         Ok(output.lines().any(|line| line == window_name))
     }
 
-    fn apply_env(&self, command: &mut Command) {
+    fn pane_for_window(&self, window_name: &str) -> Result<String> {
+        let output = self.tmux_output(&["list-panes", "-a", "-F", "#{window_name}\t#{pane_id}"])?;
+        for line in output.lines() {
+            if let Some((name, pane_id)) = line.split_once('\t')
+                && name == window_name
+            {
+                return Ok(pane_id.to_owned());
+            }
+        }
+        Err(anyhow!("pane for tmux window '{window_name}' not found"))
+    }
+
+    fn window_option(&self, target: &str, option_name: &str) -> Result<Option<String>> {
+        let output = self.tmux_output(&["show-option", "-wqv", "-t", target, option_name])?;
+        Ok(Some(output).filter(|value| !value.is_empty()))
+    }
+
+    fn apply_env_with_pane(&self, command: &mut Command, pane_id: &str) {
         command
             .env("KMUX_TMUX_SOCKET_NAME", &self.socket_name)
             .env("KMUX_TMUX_TMPDIR", self.socket_dir.path())
-            .env("TMUX_PANE", &self.pane_id);
+            .env("TMUX_PANE", pane_id);
     }
 }
 
@@ -195,11 +212,21 @@ fn write_config(root: &Path, content: &str) -> Result<PathBuf> {
 }
 
 fn kmux(repo: &Path, config_home: &Path, tmux: &TmuxFixture) -> Result<Command> {
+    kmux_with_pane(repo, config_home, tmux, &tmux.pane_id)
+}
+
+fn kmux_with_pane(
+    repo: &Path,
+    config_home: &Path,
+    tmux: &TmuxFixture,
+    pane_id: &str,
+) -> Result<Command> {
     let mut command = Command::cargo_bin("kmux")?;
     command
         .current_dir(repo)
-        .env("XDG_CONFIG_HOME", config_home);
-    tmux.apply_env(&mut command);
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"));
+    tmux.apply_env_with_pane(&mut command, pane_id);
     Ok(command)
 }
 
@@ -209,8 +236,18 @@ fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
     };
-    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+status_icons:
+  working: W
+  waiting: "?"
+  done: D
+"#,
+    )?;
     let worktree = temp.path().join("project__worktrees/feature-auth");
+    let renamed_worktree = temp.path().join("project__worktrees/auth-v2");
 
     kmux(&repo, &config_home, &tmux)?
         .args(["add", "feature/auth"])
@@ -239,28 +276,74 @@ fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
         .stdout(predicate::str::contains("\"handle\": \"feature-auth\""))
         .stdout(predicate::str::contains("\"branch\": \"feature/auth\""));
 
+    let worktree_pane = tmux.pane_for_window("kmux-feature-auth")?;
+    kmux_with_pane(&repo, &config_home, &tmux, &worktree_pane)?
+        .args(["set-window-status", "working"])
+        .assert()
+        .success();
+    assert_eq!(
+        tmux.window_option(&worktree_pane, "@kmux_status")?
+            .as_deref(),
+        Some("W")
+    );
     kmux(&repo, &config_home, &tmux)?
-        .args(["close", "feature-auth"])
+        .args(["status", "--json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("closed feature-auth"));
-    assert!(!tmux.window_exists("kmux-feature-auth")?);
-    assert!(worktree.is_dir());
+        .stdout(predicate::str::contains("\"status\": \"working\""))
+        .stdout(predicate::str::contains(
+            "\"worktree_handle\": \"feature-auth\"",
+        ));
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "feature-auth"])
+        .args(["rename", "feature-auth", "auth-v2"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("opened feature-auth"));
-    assert!(tmux.window_exists("kmux-feature-auth")?);
-
-    kmux(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-auth"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("removed feature-auth"));
+        .stdout(predicate::str::contains("renamed feature-auth"));
     assert!(!worktree.exists());
+    assert!(renamed_worktree.is_dir());
     assert!(!tmux.window_exists("kmux-feature-auth")?);
+    assert!(tmux.window_exists("kmux-auth-v2")?);
+    kmux(&repo, &config_home, &tmux)?
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"status\": \"working\""))
+        .stdout(predicate::str::contains("\"worktree_handle\": \"auth-v2\""));
+
+    kmux_with_pane(&repo, &config_home, &tmux, &worktree_pane)?
+        .args(["set-window-status", "clear"])
+        .assert()
+        .success();
+    assert_eq!(tmux.window_option(&worktree_pane, "@kmux_status")?, None);
+    kmux(&repo, &config_home, &tmux)?
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("[]"));
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["close", "auth-v2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("closed auth-v2"));
+    assert!(!tmux.window_exists("kmux-auth-v2")?);
+    assert!(renamed_worktree.is_dir());
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["open", "auth-v2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("opened auth-v2"));
+    assert!(tmux.window_exists("kmux-auth-v2")?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "auth-v2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed auth-v2"));
+    assert!(!renamed_worktree.exists());
+    assert!(!tmux.window_exists("kmux-auth-v2")?);
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/auth"]).is_err());
 
     Ok(())
@@ -315,5 +398,160 @@ files:
             .is_symlink()
     );
 
+    Ok(())
+}
+
+#[test]
+fn commands_reject_external_worktrees_with_matching_branch() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let external = temp.path().join("external-auth");
+    let external_arg = external.display().to_string();
+    git(
+        &repo,
+        &["worktree", "add", "-b", "feature/external", &external_arg],
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/external", "--open-if-exists"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already checked out outside kmux"));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["open", "feature/external"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "worktree 'feature/external' not found",
+        ));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature/external", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "worktree 'feature/external' not found",
+        ));
+
+    assert!(external.is_dir());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/external"]).is_ok());
+
+    let nested_parent = temp.path().join("project__worktrees/archive");
+    fs::create_dir_all(&nested_parent)?;
+    let nested = nested_parent.join("nested-auth");
+    let nested_arg = nested.display().to_string();
+    git(
+        &repo,
+        &["worktree", "add", "-b", "feature/nested", &nested_arg],
+    )?;
+    kmux(&repo, &config_home, &tmux)?
+        .args(["open", "nested-auth"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("worktree 'nested-auth' not found"));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/nested", "--open-if-exists"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("already checked out outside kmux"));
+    assert!(nested.is_dir());
+    Ok(())
+}
+
+#[test]
+fn remove_unmerged_branch_fails_before_deleting_worktree() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-unmerged");
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/unmerged"])
+        .assert()
+        .success();
+    fs::write(worktree.join("change.txt"), "unmerged\n")?;
+    git(&worktree, &["add", "change.txt"])?;
+    git(&worktree, &["commit", "-m", "unmerged change"])?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-unmerged"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not safely merged"));
+
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists("kmux-feature-unmerged")?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/unmerged"]).is_ok());
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-unmerged", "--force"])
+        .assert()
+        .success();
+    assert!(!worktree.exists());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/unmerged"]).is_err());
+    Ok(())
+}
+
+#[test]
+fn remove_branch_not_merged_to_upstream_fails_before_deleting_worktree() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let remote = temp.path().join("remote.git");
+    let remote_arg = remote.display().to_string();
+    run(temp.path(), "git", &["init", "--bare", "remote.git"])?;
+    git(&repo, &["remote", "add", "origin", &remote_arg])?;
+    git(&repo, &["push", "-u", "origin", "main"])?;
+
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-upstream");
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/upstream"])
+        .assert()
+        .success();
+    git(
+        &repo,
+        &[
+            "branch",
+            "--set-upstream-to",
+            "origin/main",
+            "feature/upstream",
+        ],
+    )?;
+    fs::write(worktree.join("upstream.txt"), "upstream gap\n")?;
+    git(&worktree, &["add", "upstream.txt"])?;
+    git(&worktree, &["commit", "-m", "upstream gap"])?;
+    git(
+        &repo,
+        &[
+            "merge",
+            "--no-ff",
+            "feature/upstream",
+            "-m",
+            "merge upstream gap",
+        ],
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-upstream"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("is not safely merged"));
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists("kmux-feature-upstream")?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/upstream"]).is_ok());
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-upstream", "--force"])
+        .assert()
+        .success();
+    assert!(!worktree.exists());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/upstream"]).is_err());
     Ok(())
 }

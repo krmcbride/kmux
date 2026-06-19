@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 use directories::BaseDirs;
@@ -54,6 +54,15 @@ impl Config {
             }
         }
 
+        for entry in self
+            .files
+            .copy_entries()
+            .iter()
+            .chain(self.files.symlink_entries())
+        {
+            validate_file_entry(entry)?;
+        }
+
         Ok(())
     }
 
@@ -68,6 +77,22 @@ impl Config {
     pub fn window_name(&self, handle: &str) -> String {
         format!("{}{}", self.window_prefix(), handle)
     }
+}
+
+fn validate_file_entry(entry: &str) -> Result<()> {
+    let path = Path::new(entry);
+    if entry.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::CurDir | Component::ParentDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("configured file path must be relative and stay inside the repo: {entry}");
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -267,6 +292,16 @@ panes:
         .expect_err("unsupported multi-pane field should fail");
 
         assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn rejects_file_entries_that_target_repo_or_escape() {
+        for entry in ["", ".", "./.envrc", "../secret", "/tmp/secret"] {
+            let yaml = format!("files: {{copy: ['{entry}']}}\n");
+            let error = Config::from_yaml_str(&yaml).expect_err("file entry should fail");
+
+            assert!(error.to_string().contains("configured file path"));
+        }
     }
 
     #[test]

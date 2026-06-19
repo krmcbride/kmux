@@ -9,6 +9,8 @@ pub mod paths;
 #[doc(hidden)]
 pub mod slug;
 #[doc(hidden)]
+pub mod state;
+#[doc(hidden)]
 pub mod tmux;
 #[doc(hidden)]
 pub mod workflows;
