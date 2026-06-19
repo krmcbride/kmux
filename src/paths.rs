@@ -1,7 +1,8 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
+
+use crate::git::Git;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepoPaths {
@@ -14,23 +15,15 @@ pub struct RepoPaths {
 impl RepoPaths {
     pub fn discover(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref();
-        let current_worktree_raw = run_git(cwd, &["rev-parse", "--show-toplevel"])
-            .context("failed to locate git worktree root")?;
-        let current_worktree = resolve_path(cwd, current_worktree_raw.trim())?;
-        let common_dir_raw = run_git(cwd, &["rev-parse", "--git-common-dir"])
-            .context("failed to locate git common dir")?;
-        let git_common_dir = resolve_path(&current_worktree, common_dir_raw.trim())?;
+        let git = Git::new(cwd);
+        let repo_info = git.repo_info()?;
+        let current_worktree = repo_info.current_worktree;
+        let git_common_dir = repo_info.git_common_dir;
 
-        // `git rev-parse --git-common-dir` returns the shared metadata directory
-        // for all worktrees in a repository. In a normal checkout that is
-        // `<repo>/.git`; in a linked worktree it still points back to the main
-        // checkout's `.git`, while the linked worktree has its own per-worktree
-        // git dir under `.git/worktrees/`.
-        //
-        // Resolve the main worktree before choosing the worktree base directory
-        // so running kmux inside an existing linked worktree still creates
-        // siblings under `<repo>__worktrees/` instead of nesting another
-        // worktree base.
+        // Resolve the main worktree before choosing the kmux worktree base, so
+        // running inside a linked worktree still creates siblings under the
+        // primary repo's `<repo>__worktrees/` directory instead of nesting
+        // another worktree base.
         let main_worktree = if git_common_dir
             .file_name()
             .is_some_and(|name| name == ".git")
@@ -43,14 +36,16 @@ impl RepoPaths {
             })?;
             normalize_existing(parent)?
         } else {
-            let worktree_output = run_git(cwd, &["worktree", "list", "--porcelain"])
-                .context("failed to list git worktrees")?;
-            first_worktree_from_porcelain(&worktree_output)?.ok_or_else(|| {
-                anyhow!(
-                    "could not determine main worktree from git common dir {}",
-                    git_common_dir.display()
-                )
-            })?
+            git.main_worktree_from_list()
+                .context("failed to list git worktrees")?
+                .map(|path| normalize_existing(&path))
+                .transpose()?
+                .ok_or_else(|| {
+                    anyhow!(
+                        "could not determine main worktree from git common dir {}",
+                        git_common_dir.display()
+                    )
+                })?
         };
         let worktree_base_dir = default_worktree_base_dir(&main_worktree)?;
 
@@ -88,34 +83,6 @@ pub fn default_worktree_base_dir(main_worktree: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!("{project_name}__worktrees")))
 }
 
-fn first_worktree_from_porcelain(output: &str) -> Result<Option<PathBuf>> {
-    for line in output.lines() {
-        if let Some(path) = line.strip_prefix("worktree ") {
-            return Ok(Some(normalize_existing(Path::new(path))?));
-        }
-    }
-    Ok(None)
-}
-
-fn run_git(cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = Command::new("git")
-        .args(args)
-        .current_dir(cwd)
-        .output()
-        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("git {} failed: {}", args.join(" "), stderr.trim());
-    }
-
-    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
-}
-
-fn resolve_path(base: &Path, path: &str) -> Result<PathBuf> {
-    normalize_existing(&base.join(path))
-}
-
 fn normalize_existing(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("failed to canonicalize {}", path.display()))
@@ -125,6 +92,7 @@ fn normalize_existing(path: &Path) -> Result<PathBuf> {
 mod tests {
     use super::*;
     use std::fs;
+    use std::process::Command;
 
     use tempfile::TempDir;
 

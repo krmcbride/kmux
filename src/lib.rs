@@ -1,6 +1,12 @@
+#[doc(hidden)]
 pub mod cli;
+#[doc(hidden)]
 pub mod config;
+#[doc(hidden)]
+pub mod git;
+#[doc(hidden)]
 pub mod paths;
+#[doc(hidden)]
 pub mod slug;
 
 use anyhow::{Result, bail};
