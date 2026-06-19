@@ -299,6 +299,12 @@ impl Git {
         self.stdout(args)?;
         Ok(())
     }
+
+    pub fn delete_local_branch(&self, branch: &str, force: bool) -> Result<()> {
+        let flag = if force { "-D" } else { "-d" };
+        self.stdout(["branch", flag, branch])?;
+        Ok(())
+    }
 }
 
 pub fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {

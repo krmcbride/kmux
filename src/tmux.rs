@@ -41,6 +41,20 @@ impl Tmux {
         Self::default()
     }
 
+    pub fn from_env() -> Self {
+        let mut tmux = if let Some(socket_name) = std::env::var_os("KMUX_TMUX_SOCKET_NAME") {
+            Self::with_socket_name(socket_name)
+        } else {
+            Self::new()
+        };
+
+        if let Some(tmux_tmpdir) = std::env::var_os("KMUX_TMUX_TMPDIR") {
+            tmux = tmux.with_env("TMUX_TMPDIR", tmux_tmpdir);
+        }
+
+        tmux
+    }
+
     pub fn with_socket_name(socket_name: impl Into<OsString>) -> Self {
         Self {
             socket_name: Some(socket_name.into()),
@@ -143,8 +157,18 @@ impl Tmux {
         window_name: &str,
         cwd: &Path,
     ) -> Result<String> {
+        self.create_window_with_command(session_name, window_name, cwd, None)
+    }
+
+    pub fn create_window_with_command(
+        &self,
+        session_name: &str,
+        window_name: &str,
+        cwd: &Path,
+        command: Option<&str>,
+    ) -> Result<String> {
         let target = format!("{session_name}:");
-        let pane_id = self.stdout(vec![
+        let mut args = vec![
             OsString::from("new-window"),
             OsString::from("-d"),
             OsString::from("-t"),
@@ -156,7 +180,11 @@ impl Tmux {
             OsString::from("-P"),
             OsString::from("-F"),
             OsString::from("#{pane_id}"),
-        ])?;
+        ];
+        if let Some(command) = command {
+            args.push(OsString::from(command));
+        }
+        let pane_id = self.stdout(args)?;
         self.stdout([
             "set-option",
             "-w",

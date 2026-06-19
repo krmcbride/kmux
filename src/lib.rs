@@ -10,8 +10,10 @@ pub mod paths;
 pub mod slug;
 #[doc(hidden)]
 pub mod tmux;
+#[doc(hidden)]
+pub mod workflows;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{CommandFactory, Parser};
 
 pub fn run() -> Result<()> {
@@ -24,6 +26,6 @@ pub fn run() -> Result<()> {
             clap_complete::generate(shell, &mut command, name, &mut std::io::stdout());
             Ok(())
         }
-        command => bail!("{} is not implemented yet", command.display_name()),
+        command => workflows::dispatch(command),
     }
 }
