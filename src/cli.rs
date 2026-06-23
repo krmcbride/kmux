@@ -104,8 +104,8 @@ pub struct JsonArgs {
 
 #[derive(Debug, Args)]
 pub struct RemoveArgs {
-    /// Worktree handle, branch, or window name.
-    pub name: String,
+    /// Worktree handle, branch, or window name. Defaults to the current kmux worktree.
+    pub name: Option<String>,
 
     /// Remove even when safety checks would normally stop the command.
     #[arg(short, long)]

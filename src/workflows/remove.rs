@@ -3,13 +3,13 @@ use anyhow::{Context, Result, bail};
 use crate::cli;
 
 use super::context::{load_repo_context, load_tmux_context};
-use super::resolve::resolve_worktree;
+use super::resolve::{ResolvedWorktree, resolve_worktree, resolved_from_worktree};
 use super::util::same_path;
 
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let tmux = load_tmux_context()?;
-    let resolved = resolve_worktree(&repo, &args.name)?;
+    let resolved = resolve_remove_target(&repo, args.name.as_deref())?;
 
     if same_path(&resolved.path, &repo.paths.main_worktree) {
         bail!(
@@ -54,4 +54,40 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
 
     println!("removed {}", resolved.handle);
     Ok(())
+}
+
+fn resolve_remove_target(
+    repo: &super::context::RepoContext,
+    name: Option<&str>,
+) -> Result<ResolvedWorktree> {
+    if let Some(name) = name {
+        return resolve_worktree(repo, name);
+    }
+
+    if same_path(&repo.paths.current_worktree, &repo.paths.main_worktree) {
+        bail!("remove requires a worktree name when run from the main worktree");
+    }
+
+    let is_current_kmux_worktree = repo
+        .paths
+        .current_worktree
+        .parent()
+        .is_some_and(|parent| same_path(parent, &repo.paths.worktree_base_dir));
+    if !is_current_kmux_worktree {
+        bail!("current worktree is not kmux-managed; pass a worktree name explicitly");
+    }
+
+    let current = repo
+        .git
+        .worktrees()?
+        .into_iter()
+        .find(|worktree| same_path(&worktree.path, &repo.paths.current_worktree))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "current worktree {} is not registered with git",
+                repo.paths.current_worktree.display()
+            )
+        })?;
+
+    resolved_from_worktree(current)
 }

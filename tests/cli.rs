@@ -521,6 +521,44 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
 }
 
 #[test]
+fn remove_without_name_targets_current_kmux_worktree() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-current");
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/current"])
+        .assert()
+        .success();
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists("kmux-feature-current")?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .arg("rm")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires a worktree name when run from the main worktree",
+        ));
+
+    let worktree_pane = tmux.pane_for_window("kmux-feature-current")?;
+    kmux_with_pane(&worktree, &config_home, &tmux, &worktree_pane)?
+        .arg("rm")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed feature-current"));
+
+    assert!(!worktree.exists());
+    assert!(!tmux.window_exists("kmux-feature-current")?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/current"]).is_err());
+
+    Ok(())
+}
+
+#[test]
 fn commands_reject_external_worktrees_with_matching_branch() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
