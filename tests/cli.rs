@@ -264,6 +264,20 @@ status_icons:
         .stdout(predicate::str::contains("opened feature-auth"));
 
     kmux(&repo, &config_home, &tmux)?
+        .arg("ls")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("BRANCH"))
+        .stdout(predicate::str::contains("AGE"))
+        .stdout(predicate::str::contains("AGENT"))
+        .stdout(predicate::str::contains("MUX"))
+        .stdout(predicate::str::contains("UNMERGED"))
+        .stdout(predicate::str::contains("PATH"))
+        .stdout(predicate::str::contains("main"))
+        .stdout(predicate::str::contains("feature/auth"))
+        .stdout(predicate::str::contains("project__worktrees/feature-auth"));
+
+    kmux(&repo, &config_home, &tmux)?
         .args(["path", "feature/auth"])
         .assert()
         .success()

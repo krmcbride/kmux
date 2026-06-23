@@ -1,9 +1,25 @@
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use anyhow::Result;
 
 use crate::cli;
+use crate::state::{AgentState, StateStore};
+use crate::tmux::Tmux;
 
 use super::context::load_repo_context;
-use super::resolve::list_items;
+use super::resolve::{ListItem, list_items};
+use super::util::same_path;
+
+struct DisplayRow {
+    branch: String,
+    age: String,
+    agent: String,
+    mux: String,
+    unmerged: String,
+    path: String,
+}
 
 pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
     let repo = load_repo_context()?;
@@ -11,11 +27,182 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&items)?);
+        return Ok(());
+    }
+
+    let agents = StateStore::new()
+        .ok()
+        .and_then(|store| store.list_agents().ok())
+        .unwrap_or_default();
+    let tmux = Tmux::from_env();
+    let tmux_session = tmux
+        .current_context()
+        .ok()
+        .flatten()
+        .map(|context| context.session_name);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs());
+    let current_dir = std::env::current_dir()?;
+
+    let rows = items
+        .iter()
+        .map(|item| DisplayRow {
+            branch: item.branch.as_deref().unwrap_or("-").to_owned(),
+            age: format_age(item, now),
+            agent: format_agent(item, &agents),
+            mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
+            unmerged: format_unmerged(item, &repo.git),
+            path: format_path(Path::new(&item.path), &current_dir),
+        })
+        .collect::<Vec<_>>();
+
+    print_table(&rows);
+    Ok(())
+}
+
+fn format_age(item: &ListItem, now: u64) -> String {
+    if item.is_main {
+        return "-".to_owned();
+    }
+
+    item.created_at
+        .map(|created_at| compact_age(now.saturating_sub(created_at)))
+        .unwrap_or_else(|| "-".to_owned())
+}
+
+fn compact_age(seconds: u64) -> String {
+    if seconds < 60 {
+        "<1m".to_owned()
+    } else if seconds < 60 * 60 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 60 * 60 * 24 {
+        format!("{}h", seconds / (60 * 60))
+    } else if seconds < 60 * 60 * 24 * 7 {
+        format!("{}d", seconds / (60 * 60 * 24))
     } else {
-        for item in items {
-            let branch = item.branch.as_deref().unwrap_or("-");
-            println!("{}\t{}\t{}", item.handle, branch, item.path);
+        format!("{}w", seconds / (60 * 60 * 24 * 7))
+    }
+}
+
+fn format_agent(item: &ListItem, agents: &[AgentState]) -> String {
+    let matching = agents
+        .iter()
+        .filter(|agent| agent_matches_item(agent, item))
+        .collect::<Vec<_>>();
+    if matching.is_empty() {
+        return "-".to_owned();
+    }
+    if matching.len() == 1 {
+        return matching[0].icon.clone();
+    }
+
+    let mut counts = BTreeMap::new();
+    for agent in matching {
+        *counts.entry(agent.icon.clone()).or_insert(0usize) += 1;
+    }
+
+    counts
+        .into_iter()
+        .map(|(icon, count)| format!("{count}{icon}"))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn agent_matches_item(agent: &AgentState, item: &ListItem) -> bool {
+    agent.worktree_handle.as_deref() == Some(item.handle.as_str())
+        || agent.branch.as_deref() == item.branch.as_deref()
+        || agent.worktree_path.as_deref() == Some(item.path.as_str())
+}
+
+fn format_mux(
+    item: &ListItem,
+    config: &crate::config::Config,
+    tmux: &Tmux,
+    session_name: Option<&str>,
+) -> String {
+    let Some(session_name) = session_name else {
+        return "-".to_owned();
+    };
+    if item.is_main {
+        return "-".to_owned();
+    }
+
+    let window_name = config.window_name(&item.handle);
+    match tmux.window_exists_by_name(session_name, &window_name) {
+        Ok(true) => "yes".to_owned(),
+        Ok(false) | Err(_) => "-".to_owned(),
+    }
+}
+
+fn format_unmerged(item: &ListItem, git: &crate::git::Git) -> String {
+    if item.is_main {
+        return "-".to_owned();
+    }
+
+    let Some(branch) = item.branch.as_deref() else {
+        return "-".to_owned();
+    };
+
+    match git.branch_is_safely_deletable(branch) {
+        Ok(true) => "-".to_owned(),
+        Ok(false) => "yes".to_owned(),
+        Err(_) => "-".to_owned(),
+    }
+}
+
+fn format_path(path: &Path, current_dir: &Path) -> String {
+    if same_path(path, current_dir) {
+        return "(here)".to_owned();
+    }
+    if let Ok(relative) = path.strip_prefix(current_dir)
+        && !relative.as_os_str().is_empty()
+    {
+        return relative.display().to_string();
+    }
+    if let Some(parent) = current_dir.parent()
+        && let Ok(relative) = path.strip_prefix(parent)
+    {
+        return PathBuf::from("..").join(relative).display().to_string();
+    }
+    path.display().to_string()
+}
+
+fn print_table(rows: &[DisplayRow]) {
+    let headers = ["BRANCH", "AGE", "AGENT", "MUX", "UNMERGED", "PATH"];
+    let mut widths = headers.map(str::len);
+
+    for row in rows {
+        let values = row_values(row);
+        for (index, value) in values.iter().enumerate() {
+            widths[index] = widths[index].max(value.chars().count());
         }
     }
-    Ok(())
+
+    println!("{}", format_row(&headers, &widths));
+    for row in rows {
+        println!("{}", format_row(&row_values(row), &widths));
+    }
+}
+
+fn row_values(row: &DisplayRow) -> [&str; 6] {
+    [
+        &row.branch,
+        &row.age,
+        &row.agent,
+        &row.mux,
+        &row.unmerged,
+        &row.path,
+    ]
+}
+
+fn format_row(values: &[&str; 6], widths: &[usize; 6]) -> String {
+    values
+        .iter()
+        .enumerate()
+        .map(|(index, value)| format!("{value:<width$}", width = widths[index]))
+        .collect::<Vec<_>>()
+        .join("  ")
+        .trim_end()
+        .to_owned()
 }

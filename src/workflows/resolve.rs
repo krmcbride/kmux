@@ -20,6 +20,8 @@ pub(super) struct ListItem {
     pub(super) handle: String,
     pub(super) branch: Option<String>,
     pub(super) path: String,
+    pub(super) is_main: bool,
+    pub(super) created_at: Option<u64>,
 }
 
 pub(super) fn resolve_worktree(repo: &RepoContext, name: &str) -> Result<ResolvedWorktree> {
@@ -53,22 +55,47 @@ pub(super) fn resolved_from_worktree(worktree: WorktreeInfo) -> Result<ResolvedW
 }
 
 pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<ListItem>> {
-    let mut items = repo
-        .git
-        .worktrees()?
-        .into_iter()
-        .filter(|worktree| is_kmux_worktree(repo, &worktree.path))
-        .map(resolved_from_worktree)
-        .collect::<Result<Vec<_>>>()?
-        .into_iter()
-        .map(|worktree| ListItem {
-            handle: worktree.handle,
-            branch: worktree.branch,
-            path: worktree.path.display().to_string(),
-        })
-        .collect::<Vec<_>>();
-    items.sort_by(|left, right| left.handle.cmp(&right.handle));
+    let mut worktrees = repo.git.worktrees()?;
+    let mut items = Vec::new();
+
+    if let Some(main) = worktrees
+        .iter()
+        .find(|worktree| worktree.path == repo.paths.main_worktree)
+    {
+        items.push(list_item_from_worktree(main.clone(), true)?);
+    }
+
+    items.extend(
+        worktrees
+            .drain(..)
+            .filter(|worktree| is_kmux_worktree(repo, &worktree.path))
+            .map(|worktree| list_item_from_worktree(worktree, false))
+            .collect::<Result<Vec<_>>>()?,
+    );
+
+    items.sort_by(|left, right| match (left.is_main, right.is_main) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => left.handle.cmp(&right.handle),
+    });
     Ok(items)
+}
+
+fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<ListItem> {
+    let resolved = resolved_from_worktree(worktree)?;
+    let created_at = std::fs::metadata(&resolved.path)
+        .ok()
+        .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+
+    Ok(ListItem {
+        handle: resolved.handle,
+        branch: resolved.branch,
+        path: resolved.path.display().to_string(),
+        is_main,
+        created_at,
+    })
 }
 
 pub(super) fn find_kmux_worktree_by_name(
