@@ -17,10 +17,12 @@ pub enum Command {
     /// Close a worktree's tmux window without removing the worktree.
     Close(NameArgs),
     /// List known worktrees.
+    #[command(visible_alias = "ls")]
     List(JsonArgs),
     /// Print the filesystem path for a worktree.
     Path(NameArgs),
     /// Remove a worktree and its tmux window.
+    #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
     /// Rename a worktree handle and tmux window.
     Rename(RenameArgs),

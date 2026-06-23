@@ -338,7 +338,7 @@ status_icons:
     assert!(tmux.window_exists("kmux-auth-v2")?);
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["remove", "auth-v2"])
+        .args(["rm", "auth-v2"])
         .assert()
         .success()
         .stdout(predicate::str::contains("removed auth-v2"));
