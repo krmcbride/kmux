@@ -143,7 +143,7 @@ impl Tmux {
         command: Option<&str>,
     ) -> Result<String> {
         let target = format!("{session_name}:");
-        let mut args = vec![
+        let args = vec![
             OsString::from("new-window"),
             OsString::from("-d"),
             OsString::from("-t"),
@@ -156,9 +156,6 @@ impl Tmux {
             OsString::from("-F"),
             OsString::from("#{pane_id}"),
         ];
-        if let Some(command) = command {
-            args.push(OsString::from(command));
-        }
         let pane_id = self.stdout(args)?;
         self.stdout([
             "set-option",
@@ -168,7 +165,16 @@ impl Tmux {
             "automatic-rename",
             "off",
         ])?;
+        if let Some(command) = command.filter(|command| !command.trim().is_empty()) {
+            self.send_keys(&pane_id, command)?;
+        }
         Ok(pane_id)
+    }
+
+    pub fn send_keys(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.stdout(["send-keys", "-t", pane_id, "-l", command])?;
+        self.stdout(["send-keys", "-t", pane_id, "Enter"])?;
+        Ok(())
     }
 
     pub fn select_window(&self, session_name: &str, window_name: &str) -> Result<()> {
@@ -346,7 +352,8 @@ fn bail_tmux<T>(output: TmuxOutput) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::thread;
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
     use tempfile::TempDir;
 
@@ -392,6 +399,17 @@ mod tests {
             cwd.as_os_str().to_os_string(),
         ])?;
         Ok(())
+    }
+
+    fn wait_for_path(path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        false
     }
 
     #[test]
@@ -446,6 +464,28 @@ mod tests {
 
         tmux.kill_window("project", "feature-auth")?;
         assert!(!tmux.window_exists_by_name("project", "feature-auth")?);
+        Ok(())
+    }
+
+    #[test]
+    fn startup_command_runs_inside_shell_and_window_survives_exit() -> Result<()> {
+        let Some(fixture) = TmuxFixture::new()? else {
+            return Ok(());
+        };
+        let temp = TempDir::new()?;
+        let tmux = &fixture.tmux;
+        let marker = temp.path().join("startup-ran");
+
+        create_test_session(tmux, "project", temp.path())?;
+        tmux.create_window_with_command(
+            "project",
+            "feature-auth",
+            temp.path(),
+            Some("touch startup-ran"),
+        )?;
+
+        assert!(wait_for_path(&marker));
+        assert!(tmux.window_exists_by_name("project", "feature-auth")?);
         Ok(())
     }
 
