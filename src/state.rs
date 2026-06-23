@@ -154,6 +154,11 @@ impl StateStore {
         Ok(migrated)
     }
 
+    #[cfg(test)]
+    pub(crate) fn test_with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
+        Self::with_path(base_path)
+    }
+
     fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path = base_path.into();
         fs::create_dir_all(base_path.join("agents"))

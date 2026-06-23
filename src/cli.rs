@@ -159,6 +159,9 @@ pub enum SidebarCommand {
     /// Render sidebar contents once.
     #[command(hide = true)]
     Render,
+    /// Run the interactive sidebar TUI.
+    #[command(hide = true)]
+    Run,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

@@ -171,6 +171,18 @@ impl TmuxFixture {
         Ok(output.lines().filter(|line| *line == "sidebar").count())
     }
 
+    fn sidebar_pane_titles(&self) -> Result<Vec<String>> {
+        let output =
+            self.tmux_output(&["list-panes", "-a", "-F", "#{@kmux_role}\t#{pane_title}"])?;
+        Ok(output
+            .lines()
+            .filter_map(|line| {
+                let (role, title) = line.split_once('\t')?;
+                (role == "sidebar").then(|| title.to_owned())
+            })
+            .collect())
+    }
+
     fn sidebar_panes_by_window(&self) -> Result<BTreeMap<String, usize>> {
         let output = self.tmux_output(&[
             "list-panes",
@@ -207,6 +219,21 @@ impl TmuxFixture {
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             if self.has_one_sidebar_per_window()? {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(false)
+    }
+
+    fn wait_for_sidebar_title(&self, title: &str) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if self
+                .sidebar_pane_titles()?
+                .iter()
+                .any(|pane_title| pane_title == title)
+            {
                 return Ok(true);
             }
             thread::sleep(Duration::from_millis(25));
@@ -590,6 +617,7 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
         Some("30")
     );
     assert_eq!(tmux.sidebar_pane_count()?, 1);
+    assert!(tmux.wait_for_sidebar_title("kmux")?);
     assert!(
         tmux.global_hook("after-new-window[90]")?
             .contains("sidebar refresh")

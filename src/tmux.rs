@@ -222,6 +222,26 @@ impl Tmux {
         Ok(())
     }
 
+    pub fn select_window_id(&self, window_id: &str) -> Result<()> {
+        self.stdout(["select-window", "-t", window_id])?;
+        Ok(())
+    }
+
+    pub fn select_pane(&self, pane_id: &str) -> Result<()> {
+        self.stdout(["select-pane", "-t", pane_id])?;
+        Ok(())
+    }
+
+    pub fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
+        self.stdout(["select-pane", "-t", pane_id, "-T", title])?;
+        Ok(())
+    }
+
+    pub fn switch_client_to_session(&self, session_name: &str) -> Result<()> {
+        self.stdout(["switch-client", "-t", session_name])?;
+        Ok(())
+    }
+
     pub fn kill_window(&self, session_name: &str, window_name: &str) -> Result<()> {
         if !self.window_exists_by_name(session_name, window_name)? {
             bail!("tmux window '{window_name}' does not exist in session '{session_name}'");
@@ -620,6 +640,11 @@ mod tests {
         assert_eq!(context.window_name, "feature-auth");
         assert_eq!(context.pane_id, pane_id);
         assert!(tmux.window_exists_by_name("project", "feature-auth")?);
+
+        tmux.select_window_id(&context.window_id)?;
+        tmux.select_pane(&pane_id)?;
+        tmux.set_pane_title(&pane_id, "kmux")?;
+        assert_eq!(tmux.pane_details(&pane_id)?.title.as_deref(), Some("kmux"));
 
         tmux.select_window("project", "feature-auth")?;
         let selected = tmux
