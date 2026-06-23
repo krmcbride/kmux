@@ -36,8 +36,16 @@ fn completions_command_emits_shell_completion() {
 #[test]
 fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
     let (temp, repo) = init_repo()?;
+    let remote = temp.path().join("remote.git");
+    let remote_arg = remote.display().to_string();
+    run(temp.path(), "git", &["init", "--bare", "remote.git"])?;
+    git(&repo, &["remote", "add", "origin", &remote_arg])?;
+    git(&repo, &["push", "-u", "origin", "main"])?;
     git(&repo, &["branch", "feature/addable"])?;
     git(&repo, &["branch", "feature/base"])?;
+    git(&repo, &["branch", "feature/remote"])?;
+    git(&repo, &["push", "origin", "feature/remote"])?;
+    git(&repo, &["branch", "-D", "feature/remote"])?;
 
     let worktree_base = temp.path().join("project__worktrees");
     let active = worktree_base.join("feature-active");
@@ -55,13 +63,25 @@ fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
     let add_branches = kmux_stdout(&repo, &["_complete-add-branches"])?;
     assert!(add_branches.lines().any(|line| line == "feature/addable"));
     assert!(add_branches.lines().any(|line| line == "feature/base"));
+    assert!(
+        add_branches
+            .lines()
+            .any(|line| line == "origin/feature/remote")
+    );
     assert!(!add_branches.lines().any(|line| line == "main"));
+    assert!(!add_branches.lines().any(|line| line == "origin/main"));
     assert!(!add_branches.lines().any(|line| line == "feature/active"));
 
     let git_branches = kmux_stdout(&repo, &["_complete-git-branches"])?;
     assert!(git_branches.lines().any(|line| line == "main"));
+    assert!(git_branches.lines().any(|line| line == "origin/main"));
     assert!(git_branches.lines().any(|line| line == "feature/active"));
     assert!(git_branches.lines().any(|line| line == "feature/addable"));
+    assert!(
+        git_branches
+            .lines()
+            .any(|line| line == "origin/feature/remote")
+    );
 
     Ok(())
 }
@@ -457,6 +477,45 @@ files:
             .file_type()
             .is_symlink()
     );
+
+    Ok(())
+}
+
+#[test]
+fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let remote = temp.path().join("remote.git");
+    let remote_arg = remote.display().to_string();
+    run(temp.path(), "git", &["init", "--bare", "remote.git"])?;
+    git(&repo, &["remote", "add", "origin", &remote_arg])?;
+    git(&repo, &["push", "-u", "origin", "main"])?;
+    git(&repo, &["branch", "remote-only"])?;
+    git(&repo, &["push", "origin", "remote-only"])?;
+    git(&repo, &["branch", "-D", "remote-only"])?;
+
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/remote-only");
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "origin/remote-only", "--background"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created remote-only"));
+
+    assert!(worktree.is_dir());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "remote-only"]).is_ok());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "origin/remote-only"]).is_err());
+    assert_eq!(
+        git_stdout(
+            &repo,
+            &["rev-parse", "--abbrev-ref", "remote-only@{upstream}"]
+        )?,
+        "origin/remote-only"
+    );
+    assert!(tmux.window_exists("kmux-remote-only")?);
 
     Ok(())
 }

@@ -36,10 +36,10 @@ pub enum Command {
     /// Output kmux worktree handles for shell completion.
     #[command(name = "_complete-handles", hide = true)]
     CompleteHandles,
-    /// Output addable local git branches for shell completion.
+    /// Output checkoutable git branch refs for shell completion.
     #[command(name = "_complete-add-branches", hide = true)]
     CompleteAddBranches,
-    /// Output local git branches for shell completion.
+    /// Output git branch refs for shell completion.
     #[command(name = "_complete-git-branches", hide = true)]
     CompleteGitBranches,
     /// Update the current tmux window status from an external integration.

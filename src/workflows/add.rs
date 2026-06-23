@@ -14,15 +14,15 @@ use super::window::open_resolved;
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let tmux = load_tmux_context()?;
-    let base = args.base.as_deref().or(repo.config.base_branch.as_deref());
-    let handle = derive_handle(&args.branch, args.name.as_deref())?;
+    let target = AddTarget::resolve(&repo, &args)?;
+    let handle = derive_handle(&target.branch, args.name.as_deref())?;
     let worktree_path = repo.paths.handle_path(&handle);
 
-    if let Some(existing) = find_kmux_worktree_by_name(&repo, &args.branch)? {
+    if let Some(existing) = find_kmux_worktree_by_name(&repo, &target.branch)? {
         if !args.open_if_exists {
             bail!(
                 "worktree for '{}' already exists at {}",
-                args.branch,
+                target.branch,
                 existing.path.display()
             );
         }
@@ -46,17 +46,18 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
         return Ok(());
     }
 
-    if let Some(existing) = repo.git.find_worktree_by_branch(&args.branch)? {
+    if let Some(existing) = repo.git.find_worktree_by_branch(&target.branch)? {
         bail!(
             "branch '{}' is already checked out outside kmux at {}",
-            args.branch,
+            target.branch,
             existing.path.display()
         );
     }
 
     repo.git.ensure_available_worktree_path(&worktree_path)?;
-    repo.git.ensure_local_branch(&args.branch, base)?;
-    repo.git.add_worktree(&worktree_path, &args.branch)?;
+    repo.git
+        .ensure_local_branch(&target.branch, target.base.as_deref())?;
+    repo.git.add_worktree(&worktree_path, &target.branch)?;
     apply_file_operations(&repo.config, &repo.paths.main_worktree, &worktree_path)?;
     run_post_create(
         &repo.config,
@@ -68,9 +69,41 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let resolved = ResolvedWorktree {
         handle,
         path: worktree_path,
-        branch: Some(args.branch),
+        branch: Some(target.branch),
     };
     open_resolved(&repo, &tmux, &resolved, !args.background)?;
     println!("created {}\t{}", resolved.handle, resolved.path.display());
     Ok(())
+}
+
+struct AddTarget {
+    branch: String,
+    base: Option<String>,
+}
+
+impl AddTarget {
+    fn resolve(repo: &super::context::RepoContext, args: &cli::AddArgs) -> Result<Self> {
+        if let Some(remote) = repo.git.known_remote_branch(&args.branch)? {
+            if args.base.is_some() {
+                bail!(
+                    "cannot use --base with remote branch '{}'; the remote branch is already the base",
+                    args.branch
+                );
+            }
+
+            return Ok(Self {
+                branch: remote.branch,
+                base: Some(remote.ref_name),
+            });
+        }
+
+        Ok(Self {
+            branch: args.branch.clone(),
+            base: args
+                .base
+                .as_ref()
+                .or(repo.config.base_branch.as_ref())
+                .cloned(),
+        })
+    }
 }

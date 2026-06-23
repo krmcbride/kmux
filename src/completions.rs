@@ -41,7 +41,7 @@ pub(crate) fn complete_handles() -> Result<()> {
 }
 
 pub(crate) fn complete_add_branches() -> Result<()> {
-    for branch in addable_local_branches() {
+    for branch in checkoutable_branch_refs() {
         println!("{branch}");
     }
     Ok(())
@@ -81,15 +81,15 @@ fn kmux_handles() -> Vec<String> {
     handles
 }
 
-fn addable_local_branches() -> Vec<String> {
+fn checkoutable_branch_refs() -> Vec<String> {
     local_repo_git()
-        .and_then(|git| git.addable_local_branches().ok())
+        .and_then(|git| git.checkoutable_branch_refs().ok())
         .unwrap_or_default()
 }
 
 fn local_branches() -> Vec<String> {
     local_repo_git()
-        .and_then(|git| git.local_branches().ok())
+        .and_then(|git| git.branch_refs().ok())
         .unwrap_or_default()
 }
 

@@ -7,7 +7,7 @@ _kmux_handles() {
     (( ${#handles} )) && compadd -a handles
 }
 
-# Local branches that are not already checked out in a worktree.
+# Branch refs that are not already checked out in a worktree.
 _kmux_add_branches() {
     local -a branches
     branches=("${(@f)$(kmux _complete-add-branches 2>/dev/null)}")
@@ -15,7 +15,7 @@ _kmux_add_branches() {
     (( ${#branches} )) && compadd -a branches
 }
 
-# Local branches for ref-valued options such as add --base.
+# Branch refs for ref-valued options such as add --base.
 _kmux_git_branches() {
     local -a branches
     branches=("${(@f)$(kmux _complete-git-branches 2>/dev/null)}")

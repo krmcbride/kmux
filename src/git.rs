@@ -41,6 +41,13 @@ pub struct WorktreeInfo {
     pub prunable: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBranch {
+    pub remote: String,
+    pub branch: String,
+    pub ref_name: String,
+}
+
 #[derive(Debug, Default)]
 struct WorktreeBuilder {
     path: Option<PathBuf>,
@@ -182,9 +189,22 @@ impl Git {
         self.stdout(vec![
             OsString::from("branch"),
             OsString::from(branch),
-            OsString::from(base),
+            OsString::from(&base),
         ])?;
+        if self.remote_tracking_branch_exists(&base)? {
+            self.set_branch_upstream(branch, &base)?;
+        }
         Ok(BranchAction::Created)
+    }
+
+    pub fn set_branch_upstream(&self, branch: &str, upstream: &str) -> Result<()> {
+        self.stdout(vec![
+            OsString::from("branch"),
+            OsString::from("--set-upstream-to"),
+            OsString::from(upstream),
+            OsString::from(branch),
+        ])?;
+        Ok(())
     }
 
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
@@ -192,17 +212,18 @@ impl Git {
         parse_worktree_list(&output)
     }
 
-    pub fn local_branches(&self) -> Result<Vec<String>> {
+    pub fn branch_refs(&self) -> Result<Vec<String>> {
         let output = self.stdout([
             "for-each-ref",
             "--format=%(refname:short)",
             "--sort=refname",
             "refs/heads/",
+            "refs/remotes/",
         ])?;
-        Ok(non_empty_lines(&output))
+        Ok(non_empty_branch_refs(&output))
     }
 
-    pub fn addable_local_branches(&self) -> Result<Vec<String>> {
+    pub fn checkoutable_branch_refs(&self) -> Result<Vec<String>> {
         let checked_out = self
             .worktrees()?
             .into_iter()
@@ -210,10 +231,63 @@ impl Git {
             .collect::<HashSet<_>>();
 
         Ok(self
-            .local_branches()?
+            .branch_refs()?
             .into_iter()
-            .filter(|branch| !checked_out.contains(branch))
+            .filter(|branch| {
+                !checked_out.contains(branch)
+                    && self
+                        .known_remote_branch(branch)
+                        .ok()
+                        .flatten()
+                        .is_none_or(|remote| !checked_out.contains(&remote.branch))
+            })
             .collect())
+    }
+
+    pub fn known_remote_branch(&self, branch: &str) -> Result<Option<RemoteBranch>> {
+        let mut remotes = self.remotes()?;
+        remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
+
+        for remote in remotes {
+            let prefix = format!("{remote}/");
+            let Some(local_branch) = branch.strip_prefix(&prefix) else {
+                continue;
+            };
+            if local_branch.is_empty() {
+                continue;
+            }
+
+            if self.remote_tracking_branch_exists(branch)? {
+                return Ok(Some(RemoteBranch {
+                    remote,
+                    branch: local_branch.to_owned(),
+                    ref_name: branch.to_owned(),
+                }));
+            }
+        }
+
+        Ok(None)
+    }
+
+    pub fn remotes(&self) -> Result<Vec<String>> {
+        let output = self.stdout(["remote"])?;
+        Ok(non_empty_lines(&output))
+    }
+
+    pub fn remote_tracking_branch_exists(&self, branch: &str) -> Result<bool> {
+        let output = self.output(vec![
+            OsString::from("show-ref"),
+            OsString::from("--verify"),
+            OsString::from("--quiet"),
+            OsString::from(format!("refs/remotes/{branch}")),
+        ])?;
+        if output.status.success() {
+            Ok(true)
+        } else if output.status.code() == Some(1) {
+            Ok(false)
+        } else {
+            bail_git(output)
+        }
     }
 
     pub fn main_worktree_from_list(&self) -> Result<Option<PathBuf>> {
@@ -340,6 +414,15 @@ fn non_empty_lines(output: &str) -> Vec<String> {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+fn non_empty_branch_refs(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && *line != "HEAD" && !line.ends_with("/HEAD"))
         .map(ToOwned::to_owned)
         .collect()
 }

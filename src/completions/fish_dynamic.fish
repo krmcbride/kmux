@@ -4,12 +4,12 @@ function __kmux_handles
     kmux _complete-handles 2>/dev/null
 end
 
-# Local branches that are not already checked out in a worktree.
+# Branch refs that are not already checked out in a worktree.
 function __kmux_add_branches
     kmux _complete-add-branches 2>/dev/null
 end
 
-# Local branches for ref-valued options such as add --base.
+# Branch refs for ref-valued options such as add --base.
 function __kmux_git_branches
     kmux _complete-git-branches 2>/dev/null
 end
