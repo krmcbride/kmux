@@ -37,6 +37,20 @@ pub struct TmuxWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmuxPane {
+    pub session_name: String,
+    pub window_id: String,
+    pub pane_id: String,
+    pub kmux_role: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmuxSplitSize {
+    Cells(u16),
+    Percent(u16),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TmuxPaneDetails {
     pub title: Option<String>,
     pub current_command: Option<String>,
@@ -155,6 +169,11 @@ impl Tmux {
         parse_pane_details(&output)
     }
 
+    pub fn pane_width(&self, pane_id: &str) -> Result<Option<u16>> {
+        let output = self.stdout(["display-message", "-p", "-t", pane_id, "#{pane_width}"])?;
+        Ok(output.parse().ok())
+    }
+
     pub fn create_window_with_command(
         &self,
         session_name: &str,
@@ -236,6 +255,12 @@ impl Tmux {
         parse_windows(&output)
     }
 
+    pub fn list_panes(&self) -> Result<Vec<TmuxPane>> {
+        let format = "#{session_name}\t#{window_id}\t#{pane_id}\t#{@kmux_role}";
+        let output = self.stdout(["list-panes", "-a", "-F", format])?;
+        parse_panes(&output)
+    }
+
     pub fn window_exists_by_name(&self, session_name: &str, window_name: &str) -> Result<bool> {
         Ok(self
             .list_windows(Some(session_name))?
@@ -262,6 +287,92 @@ impl Tmux {
     pub fn unset_window_option(&self, target: &str, option_name: &str) -> Result<()> {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-uw", "-t", target, option_name])?;
+        Ok(())
+    }
+
+    pub fn set_pane_option(&self, target: &str, option_name: &str, value: &str) -> Result<()> {
+        validate_user_option(option_name)?;
+        self.stdout(["set-option", "-p", "-t", target, option_name, value])?;
+        Ok(())
+    }
+
+    pub fn set_global_option(&self, option_name: &str, value: &str) -> Result<()> {
+        validate_user_option(option_name)?;
+        self.stdout(["set-option", "-g", option_name, value])?;
+        Ok(())
+    }
+
+    pub fn show_global_option(&self, option_name: &str) -> Result<Option<String>> {
+        validate_user_option(option_name)?;
+        let output = self.output(["show-option", "-gqv", option_name])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        Ok(Some(output.stdout.trim_end().to_owned()).filter(|value| !value.is_empty()))
+    }
+
+    pub fn unset_global_option(&self, option_name: &str) -> Result<()> {
+        validate_user_option(option_name)?;
+        self.stdout(["set-option", "-gu", option_name])?;
+        Ok(())
+    }
+
+    pub fn set_hook(&self, hook: &str, command: &str) -> Result<()> {
+        self.stdout(["set-hook", "-g", hook, command])?;
+        Ok(())
+    }
+
+    pub fn unset_hook(&self, hook: &str) -> Result<()> {
+        self.stdout(["set-hook", "-gu", hook])?;
+        Ok(())
+    }
+
+    pub fn split_window_left(
+        &self,
+        target_window: &str,
+        size: TmuxSplitSize,
+        command: &str,
+    ) -> Result<String> {
+        let mut args = vec![
+            OsString::from("split-window"),
+            OsString::from("-d"),
+            OsString::from("-h"),
+            OsString::from("-b"),
+            OsString::from("-t"),
+            OsString::from(target_window),
+        ];
+        match size {
+            TmuxSplitSize::Cells(cells) => {
+                args.push(OsString::from("-l"));
+                args.push(OsString::from(cells.to_string()));
+            }
+            TmuxSplitSize::Percent(percent) => {
+                args.push(OsString::from("-p"));
+                args.push(OsString::from(percent.to_string()));
+            }
+        }
+        args.extend([
+            OsString::from("-P"),
+            OsString::from("-F"),
+            OsString::from("#{pane_id}"),
+            OsString::from(command),
+        ]);
+        self.stdout(args)
+    }
+
+    pub fn kill_pane(&self, pane_id: &str) -> Result<()> {
+        self.stdout(["kill-pane", "-t", pane_id])?;
+        Ok(())
+    }
+
+    pub fn wait_for_lock(&self, channel: &str) -> Result<()> {
+        self.stdout(["wait-for", "-L", channel])?;
+        Ok(())
+    }
+
+    pub fn wait_for_unlock(&self, channel: &str) -> Result<()> {
+        self.stdout(["wait-for", "-U", channel])?;
         Ok(())
     }
 
@@ -314,6 +425,10 @@ fn parse_windows(output: &str) -> Result<Vec<TmuxWindow>> {
     output.lines().map(parse_window).collect()
 }
 
+fn parse_panes(output: &str) -> Result<Vec<TmuxPane>> {
+    output.lines().map(parse_pane).collect()
+}
+
 fn parse_window(line: &str) -> Result<TmuxWindow> {
     let fields = line.split('\t').collect::<Vec<_>>();
     if fields.len() != 5 {
@@ -326,6 +441,20 @@ fn parse_window(line: &str) -> Result<TmuxWindow> {
         window_index: fields[2].to_owned(),
         window_name: fields[3].to_owned(),
         active: fields[4] == "1",
+    })
+}
+
+fn parse_pane(line: &str) -> Result<TmuxPane> {
+    let fields = line.split('\t').collect::<Vec<_>>();
+    if !(3..=4).contains(&fields.len()) {
+        bail!("unexpected tmux pane format: {line:?}");
+    }
+
+    Ok(TmuxPane {
+        session_name: fields[0].to_owned(),
+        window_id: fields[1].to_owned(),
+        pane_id: fields[2].to_owned(),
+        kmux_role: fields.get(3).and_then(|field| non_empty_string(field)),
     })
 }
 

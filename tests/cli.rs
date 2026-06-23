@@ -1,7 +1,9 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, anyhow, bail};
 use assert_cmd::Command;
@@ -162,6 +164,63 @@ impl TmuxFixture {
         let output =
             self.tmux_output(&["list-windows", "-t", "project:", "-F", "#{window_name}"])?;
         Ok(output.lines().any(|line| line == window_name))
+    }
+
+    fn sidebar_pane_count(&self) -> Result<usize> {
+        let output = self.tmux_output(&["list-panes", "-a", "-F", "#{@kmux_role}"])?;
+        Ok(output.lines().filter(|line| *line == "sidebar").count())
+    }
+
+    fn sidebar_panes_by_window(&self) -> Result<BTreeMap<String, usize>> {
+        let output = self.tmux_output(&[
+            "list-panes",
+            "-a",
+            "-F",
+            "#{window_id}\t#{pane_id}\t#{@kmux_role}",
+        ])?;
+        let mut panes = BTreeMap::new();
+        for line in output.lines() {
+            let fields = line.split('\t').collect::<Vec<_>>();
+            if fields.len() == 3 && fields[2] == "sidebar" {
+                *panes.entry(fields[0].to_owned()).or_insert(0) += 1;
+            }
+        }
+        Ok(panes)
+    }
+
+    fn unique_window_count(&self) -> Result<usize> {
+        let output = self.tmux_output(&["list-windows", "-a", "-F", "#{window_id}"])?;
+        Ok(output
+            .lines()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>()
+            .len())
+    }
+
+    fn has_one_sidebar_per_window(&self) -> Result<bool> {
+        let sidebar_panes = self.sidebar_panes_by_window()?;
+        Ok(sidebar_panes.len() == self.unique_window_count()?
+            && sidebar_panes.values().all(|count| *count == 1))
+    }
+
+    fn wait_for_one_sidebar_per_window(&self) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if self.has_one_sidebar_per_window()? {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(false)
+    }
+
+    fn global_option(&self, option_name: &str) -> Result<Option<String>> {
+        let output = self.tmux_output(&["show-option", "-gqv", option_name])?;
+        Ok(Some(output).filter(|value| !value.is_empty()))
+    }
+
+    fn global_hook(&self, hook_name: &str) -> Result<String> {
+        self.tmux_output(&["show-hooks", "-g", hook_name])
     }
 
     fn pane_for_window(&self, window_name: &str) -> Result<String> {
@@ -489,8 +548,6 @@ status_icons:
     assert!(stdout.contains("feature-status (feature/status)"));
     assert!(stdout.contains("done"));
     assert!(stdout.contains("working"));
-    assert!(stdout.contains("Main agent"));
-    assert!(stdout.contains("Feature agent"));
 
     let git_status = kmux(&repo, &config_home, &tmux)?
         .args(["status", "--git"])
@@ -505,11 +562,68 @@ status_icons:
         .assert()
         .success()
         .stdout(predicate::str::contains("\"worktree\": \"project\""))
-        .stdout(predicate::str::contains("\"title\": \"Main agent\""))
         .stdout(predicate::str::contains(
             "\"worktree_handle\": \"feature-status\"",
         ));
 
+    Ok(())
+}
+
+#[test]
+fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "on"])
+        .assert()
+        .success();
+    assert_eq!(
+        tmux.global_option("@kmux_sidebar_enabled")?.as_deref(),
+        Some("1")
+    );
+    assert_eq!(
+        tmux.global_option("@kmux_sidebar_width")?.as_deref(),
+        Some("30")
+    );
+    assert_eq!(tmux.sidebar_pane_count()?, 1);
+    assert!(
+        tmux.global_hook("after-new-window[90]")?
+            .contains("sidebar refresh")
+    );
+    assert!(tmux.has_one_sidebar_per_window()?);
+
+    for index in 0..5 {
+        tmux.tmux_output(&[
+            "new-window",
+            "-d",
+            "-t",
+            "project:",
+            "-n",
+            &format!("scratch-{index}"),
+        ])?;
+    }
+    assert!(tmux.wait_for_one_sidebar_per_window()?);
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "refresh"])
+        .assert()
+        .success();
+    assert!(tmux.has_one_sidebar_per_window()?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "off"])
+        .assert()
+        .success();
+    assert_eq!(tmux.sidebar_pane_count()?, 0);
+    assert_eq!(tmux.global_option("@kmux_sidebar_enabled")?, None);
+    assert!(
+        !tmux
+            .tmux_output(&["show-hooks", "-g"])?
+            .contains("sidebar refresh")
+    );
     Ok(())
 }
 

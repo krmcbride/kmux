@@ -27,6 +27,7 @@ pub fn dispatch(command: cli::Command) -> Result<()> {
         cli::Command::Remove(args) => remove::run(args),
         cli::Command::Rename(args) => rename::run(args),
         cli::Command::Status(args) => status::run(args),
+        cli::Command::Sidebar(args) => crate::sidebar::run(args),
         cli::Command::CompleteHandles => crate::completions::complete_handles(),
         cli::Command::CompleteAddBranches => crate::completions::complete_add_branches(),
         cli::Command::CompleteGitBranches => crate::completions::complete_git_branches(),

@@ -28,6 +28,8 @@ pub enum Command {
     Rename(RenameArgs),
     /// Show tracked external tool status.
     Status(StatusArgs),
+    /// Toggle the tmux sidebar.
+    Sidebar(SidebarArgs),
     /// Generate shell completions.
     Completions {
         #[arg(value_enum)]
@@ -58,6 +60,7 @@ impl Command {
             Self::Remove(_) => "remove",
             Self::Rename(_) => "rename",
             Self::Status(_) => "status",
+            Self::Sidebar(_) => "sidebar",
             Self::Completions { .. } => "completions",
             Self::CompleteHandles => "_complete-handles",
             Self::CompleteAddBranches => "_complete-add-branches",
@@ -137,6 +140,25 @@ pub struct StatusArgs {
     /// Include staged, unstaged, and unmerged git info.
     #[arg(long)]
     pub git: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SidebarArgs {
+    #[command(subcommand)]
+    pub command: Option<SidebarCommand>,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum SidebarCommand {
+    /// Enable sidebar panes in all tmux windows.
+    On,
+    /// Disable sidebar panes and remove hooks.
+    Off,
+    /// Reconcile sidebar panes after tmux window/session changes.
+    Refresh,
+    /// Render sidebar contents once.
+    #[command(hide = true)]
+    Render,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
