@@ -155,15 +155,6 @@ pub enum SidebarSize {
     Percent(u16),
 }
 
-impl SidebarSize {
-    pub fn resolve(self, total: u16) -> u16 {
-        match self {
-            Self::Absolute(value) => value,
-            Self::Percent(percent) => total * percent / 100,
-        }
-    }
-}
-
 impl<'de> Deserialize<'de> for SidebarSize {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         use serde::de;
@@ -313,7 +304,7 @@ panes:
             .width
             .expect("sidebar width should be parsed");
 
-        assert_eq!(width.resolve(200), 30);
+        assert_eq!(width, SidebarSize::Percent(15));
     }
 
     #[test]

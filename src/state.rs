@@ -79,13 +79,6 @@ impl StateStore {
         Self::with_path(state_root.join("kmux"))
     }
 
-    pub fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
-        let base_path = base_path.into();
-        fs::create_dir_all(base_path.join("agents"))
-            .with_context(|| format!("failed to create state directory {}", base_path.display()))?;
-        Ok(Self { base_path })
-    }
-
     pub fn upsert_agent(&self, state: &AgentState) -> Result<()> {
         let path = self.agent_path(&state.pane_key);
         let content = serde_json::to_vec_pretty(state)?;
@@ -155,6 +148,13 @@ impl StateStore {
             }
         }
         Ok(migrated)
+    }
+
+    fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
+        let base_path = base_path.into();
+        fs::create_dir_all(base_path.join("agents"))
+            .with_context(|| format!("failed to create state directory {}", base_path.display()))?;
+        Ok(Self { base_path })
     }
 
     fn agents_dir(&self) -> PathBuf {

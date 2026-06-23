@@ -63,11 +63,6 @@ impl Tmux {
         }
     }
 
-    pub fn inherit_client_env(mut self) -> Self {
-        self.clear_client_env = false;
-        self
-    }
-
     pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.env.push((key.into(), value.into()));
         self
@@ -79,13 +74,6 @@ impl Tmux {
             .map(|socket_name| socket_name.to_string_lossy().into_owned())
             .filter(|socket_name| !socket_name.is_empty())
             .unwrap_or_else(|| "default".to_owned())
-    }
-
-    pub fn is_available() -> bool {
-        Command::new("tmux")
-            .arg("-V")
-            .output()
-            .is_ok_and(|output| output.status.success())
     }
 
     pub fn output<I, S>(&self, args: I) -> Result<TmuxOutput>
@@ -130,14 +118,6 @@ impl Tmux {
         Ok(output.stdout.trim_end().to_owned())
     }
 
-    pub fn succeeds<I, S>(&self, args: I) -> Result<bool>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString>,
-    {
-        Ok(self.output(args)?.status.success())
-    }
-
     pub fn current_context(&self) -> Result<Option<TmuxContext>> {
         let pane_id = std::env::var("TMUX_PANE").ok();
         if let Some(pane_id) = pane_id {
@@ -153,19 +133,6 @@ impl Tmux {
 
     pub fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
         self.query_context(Some(pane_id))
-    }
-
-    pub fn session_exists(&self, session_name: &str) -> Result<bool> {
-        self.succeeds(["has-session", "-t", session_name])
-    }
-
-    pub fn create_window(
-        &self,
-        session_name: &str,
-        window_name: &str,
-        cwd: &Path,
-    ) -> Result<String> {
-        self.create_window_with_command(session_name, window_name, cwd, None)
     }
 
     pub fn create_window_with_command(
@@ -248,39 +215,6 @@ impl Tmux {
             .list_windows(Some(session_name))?
             .iter()
             .any(|window| window.window_name == window_name))
-    }
-
-    pub fn find_window_by_name(
-        &self,
-        session_name: &str,
-        window_name: &str,
-    ) -> Result<Option<TmuxWindow>> {
-        Ok(self
-            .list_windows(Some(session_name))?
-            .into_iter()
-            .find(|window| window.window_name == window_name))
-    }
-
-    pub fn find_window_by_metadata(
-        &self,
-        session_name: &str,
-        option_name: &str,
-        expected_value: &str,
-    ) -> Result<Option<TmuxWindow>> {
-        validate_user_option(option_name)?;
-        let target = format!("{session_name}:");
-        let format = format!(
-            "#{{session_name}}\t#{{window_id}}\t#{{window_index}}\t#{{window_name}}\t#{{window_active}}\t#{{{option_name}}}"
-        );
-        let output = self.stdout(["list-windows", "-t", &target, "-F", &format])?;
-        for line in output.lines() {
-            if let Some((window, value)) = parse_window_with_metadata(line)?
-                && value == expected_value
-            {
-                return Ok(Some(window));
-            }
-        }
-        Ok(None)
     }
 
     pub fn set_window_option(&self, target: &str, option_name: &str, value: &str) -> Result<()> {
@@ -369,24 +303,6 @@ fn parse_window(line: &str) -> Result<TmuxWindow> {
     })
 }
 
-fn parse_window_with_metadata(line: &str) -> Result<Option<(TmuxWindow, String)>> {
-    let fields = line.split('\t').collect::<Vec<_>>();
-    if fields.len() != 6 {
-        bail!("unexpected tmux window metadata format: {line:?}");
-    }
-
-    Ok(Some((
-        TmuxWindow {
-            session_name: fields[0].to_owned(),
-            window_id: fields[1].to_owned(),
-            window_index: fields[2].to_owned(),
-            window_name: fields[3].to_owned(),
-            active: fields[4] == "1",
-        },
-        fields[5].to_owned(),
-    )))
-}
-
 fn validate_user_option(option_name: &str) -> Result<()> {
     if !option_name.starts_with("@kmux") {
         bail!("tmux user option must be namespaced under @kmux, got '{option_name}'");
@@ -441,7 +357,11 @@ mod tests {
 
     impl TmuxFixture {
         fn new() -> Result<Option<Self>> {
-            if !Tmux::is_available() {
+            if !Command::new("tmux")
+                .arg("-V")
+                .output()
+                .is_ok_and(|output| output.status.success())
+            {
                 return Ok(None);
             }
 
@@ -501,9 +421,14 @@ mod tests {
         let tmux = &fixture.tmux;
 
         create_test_session(tmux, "project", temp.path())?;
-        assert!(tmux.session_exists("project")?);
+        assert!(
+            tmux.output(["has-session", "-t", "project"])?
+                .status
+                .success()
+        );
 
-        let pane_id = tmux.create_window("project", "feature-auth", temp.path())?;
+        let pane_id =
+            tmux.create_window_with_command("project", "feature-auth", temp.path(), None)?;
         let context = tmux.pane_context(&pane_id)?;
 
         assert_eq!(context.session_name, "project");
@@ -513,7 +438,9 @@ mod tests {
 
         tmux.select_window("project", "feature-auth")?;
         let selected = tmux
-            .find_window_by_name("project", "feature-auth")?
+            .list_windows(Some("project"))?
+            .into_iter()
+            .find(|window| window.window_name == "feature-auth")
             .ok_or_else(|| anyhow::anyhow!("expected feature-auth window"))?;
         assert!(selected.active);
 
@@ -530,7 +457,7 @@ mod tests {
         let temp = TempDir::new()?;
         let tmux = &fixture.tmux;
         create_test_session(tmux, "project", temp.path())?;
-        tmux.create_window("project", "feature-auth", temp.path())?;
+        tmux.create_window_with_command("project", "feature-auth", temp.path(), None)?;
         let target = window_target("project", "feature-auth");
         let option = kmux_worktree_option("feature-auth", "path")?;
 
@@ -539,16 +466,6 @@ mod tests {
         assert_eq!(
             tmux.show_window_option(&target, &option)?.as_deref(),
             Some(temp.path().to_string_lossy().as_ref())
-        );
-        assert_eq!(
-            tmux.find_window_by_metadata(
-                "project",
-                &option,
-                temp.path().to_string_lossy().as_ref()
-            )?
-            .map(|window| window.window_name)
-            .as_deref(),
-            Some("feature-auth")
         );
 
         tmux.unset_window_option(&target, &option)?;

@@ -90,14 +90,6 @@ impl Git {
         Ok(output.stdout.trim_end().to_owned())
     }
 
-    pub fn succeeds<I, S>(&self, args: I) -> Result<bool>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString>,
-    {
-        Ok(self.output(args)?.status.success())
-    }
-
     pub fn repo_info(&self) -> Result<RepoInfo> {
         let current_worktree_raw = self
             .stdout(["rev-parse", "--show-toplevel"])
@@ -212,29 +204,6 @@ impl Git {
             .worktrees()?
             .into_iter()
             .find(|worktree| worktree.branch.as_deref() == Some(branch)))
-    }
-
-    pub fn find_worktree_by_handle(
-        &self,
-        worktree_base_dir: &Path,
-        handle: &str,
-    ) -> Result<Option<WorktreeInfo>> {
-        let expected_path = worktree_base_dir.join(handle);
-        Ok(self.worktrees()?.into_iter().find(|worktree| {
-            worktree.path == expected_path
-                || worktree.path.file_name().is_some_and(|name| name == handle)
-        }))
-    }
-
-    pub fn find_worktree_by_name(
-        &self,
-        worktree_base_dir: &Path,
-        name: &str,
-    ) -> Result<Option<WorktreeInfo>> {
-        if let Some(worktree) = self.find_worktree_by_branch(name)? {
-            return Ok(Some(worktree));
-        }
-        self.find_worktree_by_handle(worktree_base_dir, name)
     }
 
     pub fn ensure_available_worktree_path(&self, path: &Path) -> Result<()> {
@@ -595,7 +564,7 @@ prunable gitdir file points to non-existent location\n";
     }
 
     #[test]
-    fn adds_and_finds_worktree_by_branch_or_handle() -> Result<()> {
+    fn adds_and_finds_worktree_by_branch() -> Result<()> {
         let (temp, repo) = init_repo()?;
         let git_repo = Git::new(&repo);
         let worktree_base = temp.path().join("project__worktrees");
@@ -608,18 +577,6 @@ prunable gitdir file points to non-existent location\n";
         assert_eq!(
             git_repo
                 .find_worktree_by_branch("feature/auth")?
-                .map(|worktree| worktree.path),
-            Some(linked.clone())
-        );
-        assert_eq!(
-            git_repo
-                .find_worktree_by_handle(&worktree_base, "feature-auth")?
-                .map(|worktree| worktree.path),
-            Some(linked.clone())
-        );
-        assert_eq!(
-            git_repo
-                .find_worktree_by_name(&worktree_base, "feature/auth")?
                 .map(|worktree| worktree.path),
             Some(linked)
         );

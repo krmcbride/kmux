@@ -1,19 +1,11 @@
-#[doc(hidden)]
-pub mod cli;
-#[doc(hidden)]
-pub mod config;
-#[doc(hidden)]
-pub mod git;
-#[doc(hidden)]
-pub mod paths;
-#[doc(hidden)]
-pub mod slug;
-#[doc(hidden)]
-pub mod state;
-#[doc(hidden)]
-pub mod tmux;
-#[doc(hidden)]
-pub mod workflows;
+pub(crate) mod cli;
+pub(crate) mod config;
+pub(crate) mod git;
+pub(crate) mod paths;
+pub(crate) mod slug;
+pub(crate) mod state;
+pub(crate) mod tmux;
+pub(crate) mod workflows;
 
 use anyhow::Result;
 use clap::{CommandFactory, Parser};
