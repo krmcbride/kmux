@@ -36,6 +36,14 @@ pub struct TmuxWindow {
     pub active: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmuxPaneDetails {
+    pub title: Option<String>,
+    pub current_command: Option<String>,
+}
+
+const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
+
 impl Tmux {
     pub fn new() -> Self {
         Self::default()
@@ -133,6 +141,18 @@ impl Tmux {
 
     pub fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
         self.query_context(Some(pane_id))
+    }
+
+    pub fn pane_details(&self, pane_id: &str) -> Result<TmuxPaneDetails> {
+        let format = format!("#{{pane_title}}{TMUX_FIELD_SEPARATOR}#{{pane_current_command}}");
+        let output = self.stdout(vec![
+            OsString::from("display-message"),
+            OsString::from("-p"),
+            OsString::from("-t"),
+            OsString::from(pane_id),
+            OsString::from(format),
+        ])?;
+        parse_pane_details(&output)
     }
 
     pub fn create_window_with_command(
@@ -307,6 +327,24 @@ fn parse_window(line: &str) -> Result<TmuxWindow> {
         window_name: fields[3].to_owned(),
         active: fields[4] == "1",
     })
+}
+
+fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
+    let mut fields = output.split(TMUX_FIELD_SEPARATOR);
+    let title = fields.next().unwrap_or_default();
+    let current_command = fields.next().unwrap_or_default();
+    if fields.next().is_some() {
+        bail!("unexpected tmux pane details format: {output:?}");
+    }
+
+    Ok(TmuxPaneDetails {
+        title: non_empty_string(title),
+        current_command: non_empty_string(current_command),
+    })
+}
+
+fn non_empty_string(value: &str) -> Option<String> {
+    Some(value.to_owned()).filter(|value| !value.is_empty())
 }
 
 fn validate_user_option(option_name: &str) -> Result<()> {

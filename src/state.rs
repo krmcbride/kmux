@@ -57,6 +57,10 @@ pub struct AgentState {
     pub status: AgentStatus,
     pub icon: String,
     pub updated_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pane_current_command: Option<String>,
     pub worktree_handle: Option<String>,
     pub worktree_path: Option<String>,
     pub branch: Option<String>,
@@ -239,6 +243,8 @@ mod tests {
             status: AgentStatus::Working,
             icon: "W".to_owned(),
             updated_at: 42,
+            pane_title: Some("Agent title".to_owned()),
+            pane_current_command: Some("nvim".to_owned()),
             worktree_handle: Some("feature-auth".to_owned()),
             worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
             branch: Some("feature/auth".to_owned()),
@@ -276,6 +282,8 @@ mod tests {
             status: AgentStatus::Done,
             icon: "D".to_owned(),
             updated_at: 42,
+            pane_title: None,
+            pane_current_command: None,
             worktree_handle: Some("old".to_owned()),
             worktree_path: Some("/repo__worktrees/old".to_owned()),
             branch: Some("feature/original".to_owned()),

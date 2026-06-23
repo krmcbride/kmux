@@ -127,12 +127,16 @@ pub struct RenameArgs {
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
-    /// Optional worktree, branch, or handle filter.
-    pub filter: Option<String>,
+    /// Optional worktree, branch, or handle filters.
+    pub filters: Vec<String>,
 
     /// Emit JSON instead of human-readable output.
     #[arg(long)]
     pub json: bool,
+
+    /// Include staged, unstaged, and unmerged git info.
+    #[arg(long)]
+    pub git: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

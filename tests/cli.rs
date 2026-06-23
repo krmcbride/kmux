@@ -176,6 +176,11 @@ impl TmuxFixture {
         Err(anyhow!("pane for tmux window '{window_name}' not found"))
     }
 
+    fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
+        self.tmux_output(&["select-pane", "-t", pane_id, "-T", title])?;
+        Ok(())
+    }
+
     fn window_option(&self, target: &str, option_name: &str) -> Result<Option<String>> {
         let output = self.tmux_output(&["show-option", "-wqv", "-t", target, option_name])?;
         Ok(Some(output).filter(|value| !value.is_empty()))
@@ -425,6 +430,85 @@ status_icons:
     assert!(!renamed_worktree.exists());
     assert!(!tmux.window_exists("kmux-auth-v2")?);
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/auth"]).is_err());
+
+    Ok(())
+}
+
+#[test]
+fn status_renders_workmux_style_table_for_current_repo() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+status_icons:
+  working: W
+  waiting: "?"
+  done: D
+"#,
+    )?;
+    let worktree = temp.path().join("project__worktrees/feature-status");
+
+    tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
+    kmux(&repo, &config_home, &tmux)?
+        .args(["set-window-status", "done"])
+        .assert()
+        .success();
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/status"])
+        .assert()
+        .success();
+    let worktree_pane = tmux.pane_for_window("kmux-feature-status")?;
+    tmux.set_pane_title(&worktree_pane, "Feature agent")?;
+    kmux_with_pane(&worktree, &config_home, &tmux, &worktree_pane)?
+        .args(["set-window-status", "working"])
+        .assert()
+        .success();
+
+    fs::write(worktree.join("staged.txt"), "staged\n")?;
+    git(&worktree, &["add", "staged.txt"])?;
+    fs::write(worktree.join("README.md"), "changed\n")?;
+    tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
+    tmux.set_pane_title(&worktree_pane, "Feature agent")?;
+
+    let status = kmux(&repo, &config_home, &tmux)?
+        .arg("status")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&status.get_output().stdout);
+    assert!(stdout.contains("WORKTREE"));
+    assert!(stdout.contains("STATUS"));
+    assert!(stdout.contains("ELAPSED"));
+    assert!(stdout.contains("TITLE"));
+    assert!(!stdout.contains("GIT"));
+    assert!(stdout.contains("project (main)"));
+    assert!(stdout.contains("feature-status (feature/status)"));
+    assert!(stdout.contains("done"));
+    assert!(stdout.contains("working"));
+    assert!(stdout.contains("Main agent"));
+    assert!(stdout.contains("Feature agent"));
+
+    let git_status = kmux(&repo, &config_home, &tmux)?
+        .args(["status", "--git"])
+        .assert()
+        .success();
+    let git_stdout = String::from_utf8_lossy(&git_status.get_output().stdout);
+    assert!(git_stdout.contains("GIT"));
+    assert!(git_stdout.contains("staged,unstaged"));
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["status", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("\"worktree\": \"project\""))
+        .stdout(predicate::str::contains("\"title\": \"Main agent\""))
+        .stdout(predicate::str::contains(
+            "\"worktree_handle\": \"feature-status\"",
+        ));
 
     Ok(())
 }

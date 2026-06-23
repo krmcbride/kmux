@@ -345,6 +345,14 @@ impl Git {
         Ok(!output.trim().is_empty())
     }
 
+    pub fn has_staged_changes(&self) -> Result<bool> {
+        self.diff_has_changes(["--no-optional-locks", "diff", "--cached", "--quiet"])
+    }
+
+    pub fn has_unstaged_changes(&self) -> Result<bool> {
+        self.diff_has_changes(["--no-optional-locks", "diff", "--quiet"])
+    }
+
     pub fn branch_is_safely_deletable(&self, branch: &str) -> Result<bool> {
         let target = self
             .branch_upstream(branch)?
@@ -397,6 +405,17 @@ impl Git {
         let flag = if force { "-D" } else { "-d" };
         self.stdout(["branch", flag, branch])?;
         Ok(())
+    }
+
+    fn diff_has_changes<const N: usize>(&self, args: [&str; N]) -> Result<bool> {
+        let output = self.output(args)?;
+        if output.status.success() {
+            Ok(false)
+        } else if output.status.code() == Some(1) {
+            Ok(true)
+        } else {
+            bail_git(output)
+        }
     }
 }
 
