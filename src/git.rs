@@ -224,46 +224,31 @@ impl Git {
     }
 
     pub fn checkoutable_branch_refs(&self) -> Result<Vec<String>> {
+        // This feeds shell tab completion, so keep it to a fixed number of Git
+        // subprocesses. Per-ref validation belongs in command execution paths
+        // like `known_remote_branch`, where the user has actually selected a ref.
         let checked_out = self
             .worktrees()?
             .into_iter()
             .filter_map(|worktree| worktree.branch)
             .collect::<HashSet<_>>();
+        let remotes = self.sorted_remotes_by_length()?;
 
-        Ok(self
-            .branch_refs()?
-            .into_iter()
-            .filter(|branch| {
-                !checked_out.contains(branch)
-                    && self
-                        .known_remote_branch(branch)
-                        .ok()
-                        .flatten()
-                        .is_none_or(|remote| !checked_out.contains(&remote.branch))
-            })
-            .collect())
+        Ok(checkoutable_branch_refs_from(
+            self.branch_refs()?,
+            &checked_out,
+            &remotes,
+        ))
     }
 
     pub fn known_remote_branch(&self, branch: &str) -> Result<Option<RemoteBranch>> {
-        let mut remotes = self.remotes()?;
-        remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
+        let remotes = self.sorted_remotes_by_length()?;
+        let Some(remote_branch) = remote_branch_from_ref(&remotes, branch) else {
+            return Ok(None);
+        };
 
-        for remote in remotes {
-            let prefix = format!("{remote}/");
-            let Some(local_branch) = branch.strip_prefix(&prefix) else {
-                continue;
-            };
-            if local_branch.is_empty() {
-                continue;
-            }
-
-            if self.remote_tracking_branch_exists(branch)? {
-                return Ok(Some(RemoteBranch {
-                    remote,
-                    branch: local_branch.to_owned(),
-                    ref_name: branch.to_owned(),
-                }));
-            }
+        if self.remote_tracking_branch_exists(branch)? {
+            return Ok(Some(remote_branch));
         }
 
         Ok(None)
@@ -272,6 +257,12 @@ impl Git {
     pub fn remotes(&self) -> Result<Vec<String>> {
         let output = self.stdout(["remote"])?;
         Ok(non_empty_lines(&output))
+    }
+
+    fn sorted_remotes_by_length(&self) -> Result<Vec<String>> {
+        let mut remotes = self.remotes()?;
+        remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
+        Ok(remotes)
     }
 
     pub fn remote_tracking_branch_exists(&self, branch: &str) -> Result<bool> {
@@ -427,6 +418,41 @@ fn non_empty_branch_refs(output: &str) -> Vec<String> {
         .collect()
 }
 
+fn remote_branch_from_ref(remotes: &[String], branch: &str) -> Option<RemoteBranch> {
+    for remote in remotes {
+        let prefix = format!("{remote}/");
+        let Some(local_branch) = branch.strip_prefix(&prefix) else {
+            continue;
+        };
+        if local_branch.is_empty() {
+            continue;
+        }
+
+        return Some(RemoteBranch {
+            remote: remote.clone(),
+            branch: local_branch.to_owned(),
+            ref_name: branch.to_owned(),
+        });
+    }
+
+    None
+}
+
+fn checkoutable_branch_refs_from(
+    branch_refs: Vec<String>,
+    checked_out: &HashSet<String>,
+    remotes: &[String],
+) -> Vec<String> {
+    branch_refs
+        .into_iter()
+        .filter(|branch| {
+            !checked_out.contains(branch)
+                && remote_branch_from_ref(remotes, branch)
+                    .is_none_or(|remote| !checked_out.contains(&remote.branch))
+        })
+        .collect()
+}
+
 pub fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
     let mut worktrees = Vec::new();
     let mut current = WorktreeBuilder::default();
@@ -513,6 +539,7 @@ fn bail_git<T>(output: GitOutput) -> Result<T> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
     use std::process::Command;
 
     use tempfile::TempDir;
@@ -622,6 +649,41 @@ prunable gitdir file points to non-existent location\n";
             Some("gitdir file points to non-existent location")
         );
         Ok(())
+    }
+
+    #[test]
+    fn checkoutable_branch_refs_filter_remotes_in_memory() {
+        let branch_refs = [
+            "main",
+            "origin/main",
+            "feature/new",
+            "origin/feature/new",
+            "feature/active",
+            "origin/feature/active",
+            "upstream/release",
+        ]
+        .into_iter()
+        .map(ToOwned::to_owned)
+        .collect();
+        let checked_out = ["main", "feature/active"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<HashSet<_>>();
+        let remotes = ["origin", "upstream"]
+            .into_iter()
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+
+        let refs = checkoutable_branch_refs_from(branch_refs, &checked_out, &remotes);
+
+        assert_eq!(
+            refs,
+            vec![
+                "feature/new".to_owned(),
+                "origin/feature/new".to_owned(),
+                "upstream/release".to_owned(),
+            ]
+        );
     }
 
     #[test]
