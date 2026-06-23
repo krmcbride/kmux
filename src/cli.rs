@@ -33,6 +33,15 @@ pub enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
+    /// Output kmux worktree handles for shell completion.
+    #[command(name = "_complete-handles", hide = true)]
+    CompleteHandles,
+    /// Output addable local git branches for shell completion.
+    #[command(name = "_complete-add-branches", hide = true)]
+    CompleteAddBranches,
+    /// Output local git branches for shell completion.
+    #[command(name = "_complete-git-branches", hide = true)]
+    CompleteGitBranches,
     /// Update the current tmux window status from an external integration.
     #[command(name = "set-window-status", hide = true)]
     SetWindowStatus { status: AgentStatus },
@@ -50,6 +59,9 @@ impl Command {
             Self::Rename(_) => "rename",
             Self::Status(_) => "status",
             Self::Completions { .. } => "completions",
+            Self::CompleteHandles => "_complete-handles",
+            Self::CompleteAddBranches => "_complete-add-branches",
+            Self::CompleteGitBranches => "_complete-git-branches",
             Self::SetWindowStatus { .. } => "set-window-status",
         }
     }

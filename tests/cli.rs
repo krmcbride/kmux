@@ -28,7 +28,42 @@ fn completions_command_emits_shell_completion() {
         .args(["completions", "bash"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("_kmux"));
+        .stdout(predicate::str::contains("_kmux"))
+        .stdout(predicate::str::contains("_kmux_handles"))
+        .stdout(predicate::str::contains("_complete-add-branches"));
+}
+
+#[test]
+fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    git(&repo, &["branch", "feature/addable"])?;
+    git(&repo, &["branch", "feature/base"])?;
+
+    let worktree_base = temp.path().join("project__worktrees");
+    let active = worktree_base.join("feature-active");
+    fs::create_dir(&worktree_base)?;
+    let active_arg = active.display().to_string();
+    git(
+        &repo,
+        &["worktree", "add", "-b", "feature/active", &active_arg],
+    )?;
+
+    let handles = kmux_stdout(&repo, &["_complete-handles"])?;
+    assert!(handles.lines().any(|line| line == "feature-active"));
+    assert!(!handles.lines().any(|line| line == "project"));
+
+    let add_branches = kmux_stdout(&repo, &["_complete-add-branches"])?;
+    assert!(add_branches.lines().any(|line| line == "feature/addable"));
+    assert!(add_branches.lines().any(|line| line == "feature/base"));
+    assert!(!add_branches.lines().any(|line| line == "main"));
+    assert!(!add_branches.lines().any(|line| line == "feature/active"));
+
+    let git_branches = kmux_stdout(&repo, &["_complete-git-branches"])?;
+    assert!(git_branches.lines().any(|line| line == "main"));
+    assert!(git_branches.lines().any(|line| line == "feature/active"));
+    assert!(git_branches.lines().any(|line| line == "feature/addable"));
+
+    Ok(())
 }
 
 #[test]
@@ -188,6 +223,17 @@ fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
         );
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn kmux_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
+    let assert = Command::cargo_bin("kmux")?
+        .current_dir(cwd)
+        .args(args)
+        .assert()
+        .success();
+    Ok(String::from_utf8_lossy(&assert.get_output().stdout)
+        .trim()
+        .to_owned())
 }
 
 fn init_repo() -> Result<(TempDir, PathBuf)> {

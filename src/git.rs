@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -191,6 +192,30 @@ impl Git {
         parse_worktree_list(&output)
     }
 
+    pub fn local_branches(&self) -> Result<Vec<String>> {
+        let output = self.stdout([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=refname",
+            "refs/heads/",
+        ])?;
+        Ok(non_empty_lines(&output))
+    }
+
+    pub fn addable_local_branches(&self) -> Result<Vec<String>> {
+        let checked_out = self
+            .worktrees()?
+            .into_iter()
+            .filter_map(|worktree| worktree.branch)
+            .collect::<HashSet<_>>();
+
+        Ok(self
+            .local_branches()?
+            .into_iter()
+            .filter(|branch| !checked_out.contains(branch))
+            .collect())
+    }
+
     pub fn main_worktree_from_list(&self) -> Result<Option<PathBuf>> {
         Ok(self
             .worktrees()?
@@ -308,6 +333,15 @@ impl Git {
         self.stdout(["branch", flag, branch])?;
         Ok(())
     }
+}
+
+fn non_empty_lines(output: &str) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 pub fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
