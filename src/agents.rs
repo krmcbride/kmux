@@ -3,7 +3,7 @@ use anyhow::Result;
 use crate::state::{AgentState, StateStore};
 use crate::tmux::Tmux;
 
-pub(crate) fn active_agents(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentState>> {
+pub fn active_agents(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentState>> {
     let instance_id = tmux.instance_id();
     let mut agents = Vec::new();
     for mut agent in store.list_agents()? {

@@ -42,7 +42,7 @@ const WORKING_FG: Color = Color::Rgb(120, 225, 213);
 const WAITING_FG: Color = Color::Rgb(203, 166, 247);
 const DONE_FG: Color = Color::Rgb(166, 218, 149);
 
-pub(crate) fn run(args: SidebarArgs) -> Result<()> {
+pub fn run(args: SidebarArgs) -> Result<()> {
     match args.command {
         Some(SidebarCommand::On) => enable(),
         Some(SidebarCommand::Off) => disable(),
@@ -835,7 +835,7 @@ fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, bg: Option<C
     }
 }
 
-pub(crate) fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
+fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
     let width = width.max(12);
     let mut lines = vec![
         fixed_width("kmux agents", width),

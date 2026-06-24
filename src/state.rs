@@ -155,7 +155,7 @@ impl StateStore {
     }
 
     #[cfg(test)]
-    pub(crate) fn test_with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
+    pub fn test_with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         Self::with_path(base_path)
     }
 

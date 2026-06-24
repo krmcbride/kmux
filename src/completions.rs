@@ -6,7 +6,7 @@ use crate::cli;
 use crate::git::Git;
 use crate::paths::RepoPaths;
 
-pub(crate) fn generate(shell: Shell) -> Result<()> {
+pub fn generate(shell: Shell) -> Result<()> {
     let mut command = cli::Cli::command();
     let name = command.get_name().to_owned();
 
@@ -33,21 +33,21 @@ pub(crate) fn generate(shell: Shell) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn complete_handles() -> Result<()> {
+pub fn complete_handles() -> Result<()> {
     for handle in kmux_handles() {
         println!("{handle}");
     }
     Ok(())
 }
 
-pub(crate) fn complete_add_branches() -> Result<()> {
+pub fn complete_add_branches() -> Result<()> {
     for branch in checkoutable_branch_refs() {
         println!("{branch}");
     }
     Ok(())
 }
 
-pub(crate) fn complete_git_branches() -> Result<()> {
+pub fn complete_git_branches() -> Result<()> {
     for branch in local_branches() {
         println!("{branch}");
     }
