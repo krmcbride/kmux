@@ -112,7 +112,16 @@ fn run_tui() -> Result<()> {
     set_current_sidebar_pane_title(&tmux);
     let config = Config::load()?;
     let store = StateStore::new()?;
-    let mut app = SidebarApp::new(tmux, store, config.status_icons.sleeping().to_owned());
+    let working_frames = config
+        .status_icons
+        .working_frames()
+        .map_or_else(Vec::new, <[String]>::to_vec);
+    let mut app = SidebarApp::new(
+        tmux,
+        store,
+        config.status_icons.sleeping().to_owned(),
+        working_frames,
+    );
     let disable_requested = run_terminal_app(&mut app)?;
     if disable_requested {
         request_disable_async()?;
@@ -367,6 +376,8 @@ struct SidebarApp {
     tmux: Tmux,
     store: StateStore,
     sleeping_icon: String,
+    working_frames: Vec<String>,
+    spinner_frame: usize,
     rows: Vec<SidebarRow>,
     list_state: ListState,
     sidebar_pane_id: Option<String>,
@@ -380,7 +391,12 @@ struct SidebarApp {
 }
 
 impl SidebarApp {
-    fn new(tmux: Tmux, store: StateStore, sleeping_icon: String) -> Self {
+    fn new(
+        tmux: Tmux,
+        store: StateStore,
+        sleeping_icon: String,
+        working_frames: Vec<String>,
+    ) -> Self {
         let context = tmux.current_context().ok().flatten();
         let host_window_id = context.as_ref().map(|context| context.window_id.clone());
         let sidebar_pane_id = context.map(|context| context.pane_id);
@@ -388,6 +404,8 @@ impl SidebarApp {
             tmux,
             store,
             sleeping_icon,
+            working_frames,
+            spinner_frame: 0,
             rows: Vec::new(),
             list_state: ListState::default(),
             sidebar_pane_id,
@@ -407,6 +425,8 @@ impl SidebarApp {
             tmux: Tmux::new(),
             store: test_state_store(),
             sleeping_icon: TEST_SLEEPING_ICON.to_owned(),
+            working_frames: Vec::new(),
+            spinner_frame: 0,
             rows,
             list_state: ListState::default(),
             sidebar_pane_id: None,
@@ -426,7 +446,14 @@ impl SidebarApp {
         let sidebar_has_focus = self.sidebar_has_focus();
         match active_agents(&self.store, &self.tmux) {
             Ok(agents) => {
-                self.rows = build_rows(&agents, unix_now(), &self.sleeping_icon);
+                let working_icon = self.working_icon().map(str::to_owned);
+                self.rows = build_rows_with_working_icon(
+                    &agents,
+                    unix_now(),
+                    &self.sleeping_icon,
+                    working_icon.as_deref(),
+                );
+                self.advance_spinner_frame();
                 self.last_error = None;
                 self.update_selection_mode_for_focus(sidebar_has_focus);
                 self.sync_selection();
@@ -556,6 +583,21 @@ impl SidebarApp {
             self.selection_mode = SelectionMode::FollowHost;
         }
     }
+
+    fn working_icon(&self) -> Option<&str> {
+        if self.working_frames.is_empty() {
+            return None;
+        }
+        self.working_frames
+            .get(self.spinner_frame % self.working_frames.len())
+            .map(String::as_str)
+    }
+
+    fn advance_spinner_frame(&mut self) {
+        if !self.working_frames.is_empty() {
+            self.spinner_frame = self.spinner_frame.wrapping_add(1);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -587,7 +629,17 @@ struct SidebarRow {
 }
 
 impl SidebarRow {
+    #[cfg(test)]
     fn from_agent(agent: &AgentState, now: u64, sleeping_icon: &str) -> Self {
+        Self::from_agent_with_working_icon(agent, now, sleeping_icon, None)
+    }
+
+    fn from_agent_with_working_icon(
+        agent: &AgentState,
+        now: u64,
+        sleeping_icon: &str,
+        working_icon: Option<&str>,
+    ) -> Self {
         let primary = agent
             .worktree_handle
             .as_deref()
@@ -617,14 +669,17 @@ impl SidebarRow {
             .to_owned();
         let age = now.saturating_sub(agent.status_changed_at);
         let is_stale = agent.status == AgentStatus::Done && age >= STALE_AFTER_SECONDS;
+        let icon = if is_stale {
+            sleeping_icon.to_owned()
+        } else if agent.status == AgentStatus::Working {
+            working_icon.unwrap_or(&agent.icon).to_owned()
+        } else {
+            agent.icon.clone()
+        };
 
         Self {
             status: agent.status,
-            icon: if is_stale {
-                sleeping_icon.to_owned()
-            } else {
-                agent.icon.clone()
-            },
+            icon,
             primary,
             secondary,
             secondary_right,
@@ -646,9 +701,20 @@ fn secondary_label(agent: &AgentState, primary: &str) -> String {
 }
 
 fn build_rows(agents: &[AgentState], now: u64, sleeping_icon: &str) -> Vec<SidebarRow> {
+    build_rows_with_working_icon(agents, now, sleeping_icon, None)
+}
+
+fn build_rows_with_working_icon(
+    agents: &[AgentState],
+    now: u64,
+    sleeping_icon: &str,
+    working_icon: Option<&str>,
+) -> Vec<SidebarRow> {
     agents
         .iter()
-        .map(|agent| SidebarRow::from_agent(agent, now, sleeping_icon))
+        .map(|agent| {
+            SidebarRow::from_agent_with_working_icon(agent, now, sleeping_icon, working_icon)
+        })
         .collect()
 }
 
@@ -1070,6 +1136,34 @@ mod tests {
         );
 
         assert_eq!(rows[0].secondary_right, "");
+    }
+
+    #[test]
+    fn row_model_uses_working_frame_only_for_working_rows() {
+        let rows = build_rows_with_working_icon(
+            &[
+                agent_state(AgentStatus::Working, 120, "@1", "%1"),
+                agent_state(AgentStatus::Waiting, 120, "@2", "%2"),
+            ],
+            300,
+            TEST_SLEEPING_ICON,
+            Some("a"),
+        );
+
+        assert_eq!(rows[0].icon, "a");
+        assert_eq!(rows[1].icon, "?");
+    }
+
+    #[test]
+    fn sidebar_app_cycles_working_frames() {
+        let mut app = SidebarApp::test(None, Vec::new());
+        app.working_frames = vec!["a".to_owned(), "b".to_owned()];
+
+        assert_eq!(app.working_icon(), Some("a"));
+        app.advance_spinner_frame();
+        assert_eq!(app.working_icon(), Some("b"));
+        app.advance_spinner_frame();
+        assert_eq!(app.working_icon(), Some("a"));
     }
 
     #[test]

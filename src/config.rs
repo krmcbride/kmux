@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use anyhow::{Context, Result, bail};
 use directories::BaseDirs;
 use serde::Deserialize;
+use unicode_width::UnicodeWidthStr;
 
 pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
 
@@ -47,6 +48,8 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        self.status_icons.validate()?;
+
         if let Some(layout) = &self.sidebar.layout {
             match layout.as_str() {
                 "compact" | "tiles" => {}
@@ -116,6 +119,7 @@ impl FileConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct StatusIcons {
     pub working: Option<String>,
+    pub working_frames: Option<Vec<String>>,
     pub waiting: Option<String>,
     pub done: Option<String>,
     pub sleeping: Option<String>,
@@ -124,6 +128,10 @@ pub struct StatusIcons {
 impl StatusIcons {
     pub fn working(&self) -> &str {
         self.working.as_deref().unwrap_or("🤖")
+    }
+
+    pub fn working_frames(&self) -> Option<&[String]> {
+        self.working_frames.as_deref()
     }
 
     pub fn waiting(&self) -> &str {
@@ -136,6 +144,35 @@ impl StatusIcons {
 
     pub fn sleeping(&self) -> &str {
         self.sleeping.as_deref().unwrap_or("💤")
+    }
+
+    fn validate(&self) -> Result<()> {
+        let Some(frames) = &self.working_frames else {
+            return Ok(());
+        };
+        if frames.is_empty() {
+            bail!("status_icons.working_frames must not be empty");
+        }
+
+        let mut expected_width = None;
+        for frame in frames {
+            let width = UnicodeWidthStr::width(frame.as_str());
+            if frame.trim().is_empty() || width == 0 {
+                bail!("status_icons.working_frames must not contain blank frames");
+            }
+            if width > 2 {
+                bail!("status_icons.working_frames frames must fit in the two-cell icon column");
+            }
+            if let Some(expected_width) = expected_width {
+                if width != expected_width {
+                    bail!("status_icons.working_frames frames must have equal display width");
+                }
+            } else {
+                expected_width = Some(width);
+            }
+        }
+
+        Ok(())
     }
 }
 
@@ -242,6 +279,7 @@ panes:
     focus: true
 status_icons:
   working: spin
+  working_frames: ["⠋", "⠙", "⠹", "⠸"]
   waiting: wait
   done: done
   sleeping: sleep
@@ -264,6 +302,10 @@ sidebar: {width: 42}
         assert_eq!(panes[0].command.as_deref(), Some("nvim"));
         assert!(panes[0].focus);
         assert_eq!(config.status_icons.working(), "spin");
+        assert_eq!(
+            config.status_icons.working_frames().expect("frames"),
+            ["⠋", "⠙", "⠹", "⠸"]
+        );
         assert_eq!(config.status_icons.sleeping(), "sleep");
         assert_eq!(config.post_create, ["direnv allow"]);
         assert_eq!(config.files.copy_entries(), [".envrc", ".opencode"]);
@@ -299,6 +341,19 @@ panes:
             let error = Config::from_yaml_str(&yaml).expect_err("file entry should fail");
 
             assert!(error.to_string().contains("configured file path"));
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_working_spinner_frames() {
+        for yaml in [
+            "status_icons: {working_frames: []}\n",
+            "status_icons: {working_frames: ['']}\n",
+            "status_icons: {working_frames: ['a', '🤖']}\n",
+            "status_icons: {working_frames: ['abc']}\n",
+        ] {
+            let error = Config::from_yaml_str(yaml).expect_err("invalid frames should fail");
+            assert!(error.to_string().contains("status_icons.working_frames"));
         }
     }
 
