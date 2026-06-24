@@ -596,7 +596,7 @@ impl SidebarRow {
             .or(agent.pane_current_command.as_deref())
             .unwrap_or_default()
             .to_owned();
-        let age = now.saturating_sub(agent.updated_at);
+        let age = now.saturating_sub(agent.status_changed_at);
         let is_stale = agent.status == AgentStatus::Done && age >= STALE_AFTER_SECONDS;
 
         Self {
@@ -1241,7 +1241,7 @@ mod tests {
 
     fn agent_state(
         status: AgentStatus,
-        updated_at: u64,
+        status_changed_at: u64,
         window_id: &str,
         pane_id: &str,
     ) -> AgentState {
@@ -1249,7 +1249,8 @@ mod tests {
             pane_key: PaneKey::new_tmux("test", pane_id),
             status,
             icon: "?".to_owned(),
-            updated_at,
+            status_changed_at,
+            observed_at: status_changed_at,
             pane_title: Some("Implement sidebar".to_owned()),
             pane_current_command: Some("nvim".to_owned()),
             worktree_handle: Some("feature-sidebar".to_owned()),

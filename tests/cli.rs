@@ -387,6 +387,35 @@ fn kmux_with_pane(
     Ok(command)
 }
 
+fn agent_state_for_pane(config_home: &Path, pane_id: &str) -> Result<serde_json::Value> {
+    let agents_dir = config_home
+        .with_file_name("state-home")
+        .join("kmux")
+        .join("agents");
+    for entry in fs::read_dir(&agents_dir)
+        .with_context(|| format!("failed to read state directory {}", agents_dir.display()))?
+    {
+        let path = entry?.path();
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        if value
+            .pointer("/pane_key/pane_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(pane_id)
+        {
+            return Ok(value);
+        }
+    }
+    Err(anyhow!("state for pane '{pane_id}' not found"))
+}
+
+fn state_timestamp(state: &serde_json::Value, field: &str) -> Result<u64> {
+    state
+        .get(field)
+        .and_then(serde_json::Value::as_u64)
+        .ok_or_else(|| anyhow!("state timestamp '{field}' is missing or invalid"))
+}
+
 #[test]
 fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
     let (temp, repo) = init_repo()?;
@@ -593,6 +622,56 @@ status_icons:
             "\"worktree_handle\": \"feature-status\"",
         ));
 
+    Ok(())
+}
+
+#[test]
+fn set_window_status_preserves_elapsed_time_for_same_status() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        r#"
+status_icons:
+  working: W
+  waiting: "?"
+  done: D
+"#,
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["set-window-status", "working"])
+        .assert()
+        .success();
+    let first = agent_state_for_pane(&config_home, &tmux.pane_id)?;
+    let first_changed = state_timestamp(&first, "status_changed_at")?;
+    let first_observed = state_timestamp(&first, "observed_at")?;
+
+    thread::sleep(Duration::from_millis(1100));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["set-window-status", "working"])
+        .assert()
+        .success();
+    let second = agent_state_for_pane(&config_home, &tmux.pane_id)?;
+    let second_changed = state_timestamp(&second, "status_changed_at")?;
+    let second_observed = state_timestamp(&second, "observed_at")?;
+
+    assert_eq!(second_changed, first_changed);
+    assert!(second_observed > first_observed);
+
+    thread::sleep(Duration::from_millis(1100));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["set-window-status", "waiting"])
+        .assert()
+        .success();
+    let third = agent_state_for_pane(&config_home, &tmux.pane_id)?;
+    let third_changed = state_timestamp(&third, "status_changed_at")?;
+    let third_observed = state_timestamp(&third, "observed_at")?;
+
+    assert!(third_changed > second_changed);
+    assert_eq!(third_observed, third_changed);
     Ok(())
 }
 

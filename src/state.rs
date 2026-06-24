@@ -56,7 +56,10 @@ pub struct AgentState {
     pub pane_key: PaneKey,
     pub status: AgentStatus,
     pub icon: String,
-    pub updated_at: u64,
+    #[serde(alias = "updated_at")]
+    pub status_changed_at: u64,
+    #[serde(default)]
+    pub observed_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -67,6 +70,15 @@ pub struct AgentState {
     pub session_name: String,
     pub window_name: String,
     pub window_id: String,
+}
+
+impl AgentState {
+    fn normalize_timestamps(mut self) -> Self {
+        if self.observed_at == 0 {
+            self.observed_at = self.status_changed_at;
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -87,6 +99,10 @@ impl StateStore {
         let path = self.agent_path(&state.pane_key);
         let content = serde_json::to_vec_pretty(state)?;
         write_atomic(&path, &content)
+    }
+
+    pub fn get_agent(&self, key: &PaneKey) -> Result<Option<AgentState>> {
+        read_agent_file(&self.agent_path(key))
     }
 
     pub fn list_agents(&self) -> Result<Vec<AgentState>> {
@@ -146,7 +162,7 @@ impl StateStore {
                 agent.worktree_handle = Some(new_handle.to_owned());
                 agent.worktree_path = Some(new_path.display().to_string());
                 agent.window_name = new_window_name.to_owned();
-                agent.updated_at = now_unix_seconds();
+                agent.observed_at = now_unix_seconds();
                 self.upsert_agent(&agent)?;
                 migrated += 1;
             }
@@ -190,7 +206,9 @@ fn read_agent_file(path: &Path) -> Result<Option<AgentState>> {
         }
     };
 
-    Ok(serde_json::from_str(&content).ok())
+    Ok(serde_json::from_str::<AgentState>(&content)
+        .ok()
+        .map(AgentState::normalize_timestamps))
 }
 
 fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
@@ -247,7 +265,8 @@ mod tests {
             pane_key: key.clone(),
             status: AgentStatus::Working,
             icon: "W".to_owned(),
-            updated_at: 42,
+            status_changed_at: 42,
+            observed_at: 43,
             pane_title: Some("Agent title".to_owned()),
             pane_current_command: Some("nvim".to_owned()),
             worktree_handle: Some("feature-auth".to_owned()),
@@ -279,6 +298,40 @@ mod tests {
     }
 
     #[test]
+    fn legacy_updated_at_state_deserializes_to_split_timestamps() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let key = PaneKey::new_tmux("test", "%1");
+        let content = serde_json::json!({
+            "pane_key": {
+                "backend": "tmux",
+                "instance": "test",
+                "pane_id": "%1"
+            },
+            "status": "working",
+            "icon": "W",
+            "updated_at": 42,
+            "worktree_handle": "feature-auth",
+            "worktree_path": "/repo__worktrees/feature-auth",
+            "branch": "feature/auth",
+            "session_name": "project",
+            "window_name": "kmux-feature-auth",
+            "window_id": "@1"
+        });
+        fs::write(store.agent_path(&key), serde_json::to_vec_pretty(&content)?)?;
+
+        let agents = store.list_agents()?;
+
+        assert_eq!(agents[0].status_changed_at, 42);
+        assert_eq!(agents[0].observed_at, 42);
+        let serialized = serde_json::to_string(&agents[0])?;
+        assert!(serialized.contains("status_changed_at"));
+        assert!(serialized.contains("observed_at"));
+        assert!(!serialized.contains("updated_at"));
+        Ok(())
+    }
+
+    #[test]
     fn migrates_matching_worktree_state() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
@@ -286,7 +339,8 @@ mod tests {
             pane_key: PaneKey::new_tmux("test", "%1"),
             status: AgentStatus::Done,
             icon: "D".to_owned(),
-            updated_at: 42,
+            status_changed_at: 42,
+            observed_at: 43,
             pane_title: None,
             pane_current_command: None,
             worktree_handle: Some("old".to_owned()),
@@ -297,6 +351,7 @@ mod tests {
             window_id: "@1".to_owned(),
         };
         store.upsert_agent(&state)?;
+        let before = now_unix_seconds();
 
         assert_eq!(
             store.migrate_worktree(
@@ -318,6 +373,8 @@ mod tests {
         );
         assert_eq!(agents[0].window_name, "kmux-new");
         assert_eq!(agents[0].branch.as_deref(), Some("feature/original"));
+        assert_eq!(agents[0].status_changed_at, 42);
+        assert!(agents[0].observed_at >= before);
         Ok(())
     }
 }

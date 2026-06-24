@@ -79,6 +79,7 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
 
     let config = Config::load()?;
     let tmux = Tmux::from_env();
+    let store = StateStore::new()?;
     let Some(context) = tmux.current_context()? else {
         return Ok(());
     };
@@ -86,7 +87,7 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
 
     if status == cli::AgentStatus::Clear {
         tmux.unset_window_option(&context.pane_id, KMUX_STATUS_OPTION)?;
-        StateStore::new()?.delete_agent(&key)?;
+        store.delete_agent(&key)?;
         return Ok(());
     }
 
@@ -98,13 +99,20 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
     };
     tmux.set_window_option(&context.pane_id, KMUX_STATUS_OPTION, icon)?;
 
+    let now = now_unix_seconds();
+    let previous = store.get_agent(&key)?;
+    let status_changed_at = previous
+        .as_ref()
+        .filter(|agent| agent.status == status && agent.window_id == context.window_id)
+        .map_or(now, |agent| agent.status_changed_at);
     let details = tmux.pane_details(&context.pane_id).ok();
     let worktree = current_window_worktree(&config, &tmux, &context)?;
     let state = AgentState {
         pane_key: key,
         status,
         icon: icon.to_owned(),
-        updated_at: now_unix_seconds(),
+        status_changed_at,
+        observed_at: now,
         pane_title: details.as_ref().and_then(|details| details.title.clone()),
         pane_current_command: details.and_then(|details| details.current_command),
         worktree_handle: worktree.handle,
@@ -114,7 +122,7 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
         window_name: context.window_name,
         window_id: context.window_id,
     };
-    StateStore::new()?.upsert_agent(&state)?;
+    store.upsert_agent(&state)?;
     Ok(())
 }
 
@@ -198,7 +206,7 @@ fn entry_for_agent(
         branch,
         status: agent.status.as_str().to_owned(),
         icon: agent.icon.clone(),
-        elapsed_secs: now.saturating_sub(agent.updated_at),
+        elapsed_secs: now.saturating_sub(agent.status_changed_at),
         title: agent.pane_title.clone(),
         pane_id: agent.pane_key.pane_id.clone(),
         worktree_handle: handle,
