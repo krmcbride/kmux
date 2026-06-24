@@ -118,6 +118,7 @@ pub struct StatusIcons {
     pub working: Option<String>,
     pub waiting: Option<String>,
     pub done: Option<String>,
+    pub sleeping: Option<String>,
 }
 
 impl StatusIcons {
@@ -131,6 +132,10 @@ impl StatusIcons {
 
     pub fn done(&self) -> &str {
         self.done.as_deref().unwrap_or("✅")
+    }
+
+    pub fn sleeping(&self) -> &str {
+        self.sleeping.as_deref().unwrap_or("💤")
     }
 }
 
@@ -239,6 +244,7 @@ status_icons:
   working: spin
   waiting: wait
   done: done
+  sleeping: sleep
 post_create:
   - direnv allow
 files:
@@ -258,6 +264,7 @@ sidebar: {width: 42}
         assert_eq!(panes[0].command.as_deref(), Some("nvim"));
         assert!(panes[0].focus);
         assert_eq!(config.status_icons.working(), "spin");
+        assert_eq!(config.status_icons.sleeping(), "sleep");
         assert_eq!(config.post_create, ["direnv allow"]);
         assert_eq!(config.files.copy_entries(), [".envrc", ".opencode"]);
         assert_eq!(config.files.symlink_entries(), ["codebook.toml"]);

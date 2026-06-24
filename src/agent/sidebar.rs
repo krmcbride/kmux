@@ -110,8 +110,9 @@ fn render() -> Result<()> {
 fn run_tui() -> Result<()> {
     let tmux = Tmux::from_env();
     set_current_sidebar_pane_title(&tmux);
+    let config = Config::load()?;
     let store = StateStore::new()?;
-    let mut app = SidebarApp::new(tmux, store);
+    let mut app = SidebarApp::new(tmux, store, config.status_icons.sleeping().to_owned());
     let disable_requested = run_terminal_app(&mut app)?;
     if disable_requested {
         request_disable_async()?;
@@ -365,6 +366,7 @@ enum SelectionMode {
 struct SidebarApp {
     tmux: Tmux,
     store: StateStore,
+    sleeping_icon: String,
     rows: Vec<SidebarRow>,
     list_state: ListState,
     sidebar_pane_id: Option<String>,
@@ -378,13 +380,14 @@ struct SidebarApp {
 }
 
 impl SidebarApp {
-    fn new(tmux: Tmux, store: StateStore) -> Self {
+    fn new(tmux: Tmux, store: StateStore, sleeping_icon: String) -> Self {
         let context = tmux.current_context().ok().flatten();
         let host_window_id = context.as_ref().map(|context| context.window_id.clone());
         let sidebar_pane_id = context.map(|context| context.pane_id);
         Self {
             tmux,
             store,
+            sleeping_icon,
             rows: Vec::new(),
             list_state: ListState::default(),
             sidebar_pane_id,
@@ -403,6 +406,7 @@ impl SidebarApp {
         let mut app = Self {
             tmux: Tmux::new(),
             store: test_state_store(),
+            sleeping_icon: TEST_SLEEPING_ICON.to_owned(),
             rows,
             list_state: ListState::default(),
             sidebar_pane_id: None,
@@ -422,7 +426,7 @@ impl SidebarApp {
         let sidebar_has_focus = self.sidebar_has_focus();
         match active_agents(&self.store, &self.tmux) {
             Ok(agents) => {
-                self.rows = build_rows(&agents, unix_now());
+                self.rows = build_rows(&agents, unix_now(), &self.sleeping_icon);
                 self.last_error = None;
                 self.update_selection_mode_for_focus(sidebar_has_focus);
                 self.sync_selection();
@@ -550,6 +554,9 @@ impl SidebarApp {
 }
 
 #[cfg(test)]
+const TEST_SLEEPING_ICON: &str = "z";
+
+#[cfg(test)]
 fn test_state_store() -> StateStore {
     StateStore::test_with_path(std::env::temp_dir().join(format!(
         "kmux-sidebar-test-empty-{}-{}",
@@ -574,7 +581,7 @@ struct SidebarRow {
 }
 
 impl SidebarRow {
-    fn from_agent(agent: &AgentState, now: u64) -> Self {
+    fn from_agent(agent: &AgentState, now: u64, sleeping_icon: &str) -> Self {
         let primary = agent
             .worktree_handle
             .as_deref()
@@ -590,15 +597,20 @@ impl SidebarRow {
             .unwrap_or_default()
             .to_owned();
         let age = now.saturating_sub(agent.updated_at);
+        let is_stale = agent.status == AgentStatus::Done && age >= STALE_AFTER_SECONDS;
 
         Self {
             status: agent.status,
-            icon: agent.icon.clone(),
+            icon: if is_stale {
+                sleeping_icon.to_owned()
+            } else {
+                agent.icon.clone()
+            },
             primary,
             secondary,
             title,
             elapsed: compact_elapsed(age),
-            is_stale: age >= STALE_AFTER_SECONDS,
+            is_stale,
             session_name: agent.session_name.clone(),
             window_id: agent.window_id.clone(),
             pane_id: agent.pane_key.pane_id.clone(),
@@ -613,10 +625,10 @@ fn secondary_label(agent: &AgentState, primary: &str) -> String {
     }
 }
 
-fn build_rows(agents: &[AgentState], now: u64) -> Vec<SidebarRow> {
+fn build_rows(agents: &[AgentState], now: u64, sleeping_icon: &str) -> Vec<SidebarRow> {
     agents
         .iter()
-        .map(|agent| SidebarRow::from_agent(agent, now))
+        .map(|agent| SidebarRow::from_agent(agent, now, sleeping_icon))
         .collect()
 }
 
@@ -854,6 +866,7 @@ fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, bg: Option<C
 
 fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
     let width = width.max(12);
+    let config = Config::default();
     let mut lines = vec![
         fixed_width("kmux agents", width),
         fixed_width("-----------", width),
@@ -863,7 +876,10 @@ fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
         return finish_lines(lines);
     }
 
-    for (index, row) in build_rows(agents, now).iter().enumerate() {
+    for (index, row) in build_rows(agents, now, config.status_icons.sleeping())
+        .iter()
+        .enumerate()
+    {
         if index > 0 {
             lines.push(String::new());
         }
@@ -992,22 +1008,40 @@ mod tests {
     }
 
     #[test]
-    fn row_model_prefers_worktree_and_marks_stale() {
-        let agents = vec![agent_state(AgentStatus::Working, 0, "@1", "%1")];
-        let rows = build_rows(&agents, STALE_AFTER_SECONDS + 1);
+    fn row_model_prefers_worktree_and_marks_old_done_stale() {
+        let agents = vec![agent_state(AgentStatus::Done, 0, "@1", "%1")];
+        let rows = build_rows(&agents, STALE_AFTER_SECONDS + 1, TEST_SLEEPING_ICON);
 
         assert_eq!(rows[0].primary, "feature-sidebar");
         assert_eq!(rows[0].secondary, "project / feature/sidebar");
         assert_eq!(rows[0].title, "Implement sidebar");
         assert_eq!(rows[0].elapsed, "1h");
+        assert_eq!(rows[0].icon, TEST_SLEEPING_ICON);
         assert!(rows[0].is_stale);
+    }
+
+    #[test]
+    fn row_model_keeps_old_waiting_agent_active() {
+        let agents = vec![agent_state(AgentStatus::Waiting, 0, "@1", "%1")];
+        let rows = build_rows(&agents, STALE_AFTER_SECONDS + 1, TEST_SLEEPING_ICON);
+
+        assert_eq!(rows[0].icon, "?");
+        assert!(!rows[0].is_stale);
     }
 
     #[test]
     fn selection_follows_host_window_then_manual_navigation_takes_over() {
         let rows = vec![
-            SidebarRow::from_agent(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            SidebarRow::from_agent(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
         ];
         let mut app = SidebarApp::test(Some("@2"), rows);
 
@@ -1022,8 +1056,16 @@ mod tests {
     #[test]
     fn manual_selection_survives_empty_refresh_and_pane_id_change() {
         let rows = vec![
-            SidebarRow::from_agent(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            SidebarRow::from_agent(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -1033,8 +1075,16 @@ mod tests {
         app.rows = Vec::new();
         app.sync_selection();
         app.rows = vec![
-            SidebarRow::from_agent(&agent_state(AgentStatus::Working, 200, "@1", "%10"), 200),
-            SidebarRow::from_agent(&agent_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 200, "@1", "%10"),
+                200,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 200, "@2", "%20"),
+                200,
+                TEST_SLEEPING_ICON,
+            ),
         ];
         app.sync_selection();
 
@@ -1047,8 +1097,16 @@ mod tests {
     #[test]
     fn manual_selection_returns_to_host_when_sidebar_loses_focus() {
         let rows = vec![
-            SidebarRow::from_agent(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            SidebarRow::from_agent(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -1070,6 +1128,7 @@ mod tests {
         let rows = vec![SidebarRow::from_agent(
             &agent_state(AgentStatus::Waiting, 100, "@1", "%1"),
             100,
+            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -1090,6 +1149,7 @@ mod tests {
         let rows = vec![SidebarRow::from_agent(
             &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
             100,
+            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("not-a-window"), rows);
 
@@ -1108,6 +1168,7 @@ mod tests {
         let rows = vec![SidebarRow::from_agent(
             &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
             300,
+            TEST_SLEEPING_ICON,
         )];
         let backend = TestBackend::new(42, 5);
         let mut terminal = Terminal::new(backend)?;
@@ -1130,6 +1191,7 @@ mod tests {
         let rows = vec![SidebarRow::from_agent(
             &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
             300,
+            TEST_SLEEPING_ICON,
         )];
         let backend = TestBackend::new(42, 4);
         let mut terminal = Terminal::new(backend)?;
@@ -1147,7 +1209,7 @@ mod tests {
     fn ratatui_renderer_truncates_narrow_tiles() -> Result<()> {
         let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
         agent.worktree_handle = Some("very-long-sidebar-worktree-name".to_owned());
-        let rows = vec![SidebarRow::from_agent(&agent, 300)];
+        let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
         let backend = TestBackend::new(18, 4);
         let mut terminal = Terminal::new(backend)?;
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -1163,7 +1225,11 @@ mod tests {
 
     #[test]
     fn narrow_tile_lines_do_not_exceed_requested_width() {
-        let row = SidebarRow::from_agent(&agent_state(AgentStatus::Done, 120, "@1", "%1"), 300);
+        let row = SidebarRow::from_agent(
+            &agent_state(AgentStatus::Done, 120, "@1", "%1"),
+            300,
+            TEST_SLEEPING_ICON,
+        );
 
         for width in 0..6 {
             for kind in [LineKind::Primary, LineKind::Secondary, LineKind::Title] {
