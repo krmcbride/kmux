@@ -4,17 +4,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::agents::active_agents;
+use crate::agent::active::active_agents;
 use crate::cli;
 use crate::config::Config;
 use crate::git::{Git, WorktreeInfo};
-use crate::paths::RepoPaths;
+use crate::paths::{RepoPaths, same_path};
 use crate::state::{
     AgentState, AgentStatus as StoredAgentStatus, PaneKey, StateStore, now_unix_seconds,
 };
 use crate::tmux::{Tmux, kmux_worktree_option};
-
-use super::util::same_path;
 
 const KMUX_STATUS_OPTION: &str = "@kmux_status";
 
@@ -58,7 +56,7 @@ struct DisplayRow {
     title: String,
 }
 
-pub(super) fn run(args: cli::StatusArgs) -> Result<()> {
+pub fn run(args: cli::StatusArgs) -> Result<()> {
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
     let agents = active_agents(&store, &tmux)?;
@@ -74,7 +72,7 @@ pub(super) fn run(args: cli::StatusArgs) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn set_window_status(status: cli::AgentStatus) -> Result<()> {
+pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
     if std::env::var_os("KMUX_DISABLE_SET_WINDOW_STATUS").is_some() {
         return Ok(());
     }

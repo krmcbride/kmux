@@ -49,27 +49,6 @@ pub enum Command {
     SetWindowStatus { status: AgentStatus },
 }
 
-impl Command {
-    pub fn display_name(&self) -> &'static str {
-        match self {
-            Self::Add(_) => "add",
-            Self::Open(_) => "open",
-            Self::Close(_) => "close",
-            Self::List(_) => "list",
-            Self::Path(_) => "path",
-            Self::Remove(_) => "remove",
-            Self::Rename(_) => "rename",
-            Self::Status(_) => "status",
-            Self::Sidebar(_) => "sidebar",
-            Self::Completions { .. } => "completions",
-            Self::CompleteHandles => "_complete-handles",
-            Self::CompleteAddBranches => "_complete-add-branches",
-            Self::CompleteGitBranches => "_complete-git-branches",
-            Self::SetWindowStatus { .. } => "set-window-status",
-        }
-    }
-}
-
 #[derive(Debug, Args)]
 pub struct AddArgs {
     /// Branch to create or open as a worktree.

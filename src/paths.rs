@@ -83,6 +83,13 @@ pub fn default_worktree_base_dir(main_worktree: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!("{project_name}__worktrees")))
 }
 
+pub fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
 fn normalize_existing(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("failed to canonicalize {}", path.display()))

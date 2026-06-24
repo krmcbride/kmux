@@ -19,7 +19,7 @@ use ratatui::{
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::agents::active_agents;
+use crate::agent::active::active_agents;
 use crate::cli::{SidebarArgs, SidebarCommand};
 use crate::config::{Config, SidebarSize};
 use crate::state::{AgentState, AgentStatus, StateStore};

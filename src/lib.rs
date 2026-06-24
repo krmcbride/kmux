@@ -1,10 +1,10 @@
-pub(crate) mod agents;
+pub(crate) mod agent;
 pub(crate) mod cli;
+pub(crate) mod commands;
 pub(crate) mod completions;
 pub(crate) mod config;
 pub(crate) mod git;
 pub(crate) mod paths;
-pub(crate) mod sidebar;
 pub(crate) mod slug;
 pub(crate) mod state;
 pub(crate) mod tmux;
@@ -16,8 +16,5 @@ use clap::Parser;
 pub fn run() -> Result<()> {
     let args = cli::Cli::parse();
 
-    match args.command {
-        cli::Command::Completions { shell } => completions::generate(shell),
-        command => workflows::dispatch(command),
-    }
+    commands::dispatch(args.command)
 }

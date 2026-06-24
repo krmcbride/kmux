@@ -10,7 +10,7 @@ use crate::tmux::Tmux;
 
 use super::context::load_repo_context;
 use super::resolve::{ListItem, list_items};
-use super::util::same_path;
+use crate::paths::same_path;
 
 struct DisplayRow {
     branch: String,

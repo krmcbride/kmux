@@ -4,7 +4,7 @@ use crate::cli;
 
 use super::context::{load_repo_context, load_tmux_context};
 use super::resolve::{ResolvedWorktree, resolve_worktree, resolved_from_worktree};
-use super::util::same_path;
+use crate::paths::same_path;
 
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let repo = load_repo_context()?;

@@ -7,7 +7,7 @@ use crate::state::StateStore;
 use super::context::{load_repo_context, load_tmux_context};
 use super::metadata::{clear_worktree_metadata, set_worktree_metadata};
 use super::resolve::{ResolvedWorktree, find_kmux_worktree_by_handle, resolve_worktree};
-use super::util::same_path;
+use crate::paths::same_path;
 
 pub(super) fn run(args: cli::RenameArgs) -> Result<()> {
     let repo = load_repo_context()?;

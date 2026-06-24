@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 
 use crate::cli;
 
@@ -13,25 +13,32 @@ mod path;
 mod remove;
 mod rename;
 mod resolve;
-mod status;
-mod util;
 mod window;
 
-pub fn dispatch(command: cli::Command) -> Result<()> {
-    match command {
-        cli::Command::Add(args) => add::run(args),
-        cli::Command::Open(args) => open::run(args),
-        cli::Command::Close(args) => close::run(args),
-        cli::Command::List(args) => list::run(args),
-        cli::Command::Path(args) => path::run(args),
-        cli::Command::Remove(args) => remove::run(args),
-        cli::Command::Rename(args) => rename::run(args),
-        cli::Command::Status(args) => status::run(args),
-        cli::Command::Sidebar(args) => crate::sidebar::run(args),
-        cli::Command::CompleteHandles => crate::completions::complete_handles(),
-        cli::Command::CompleteAddBranches => crate::completions::complete_add_branches(),
-        cli::Command::CompleteGitBranches => crate::completions::complete_git_branches(),
-        cli::Command::SetWindowStatus { status } => status::set_window_status(status),
-        command => bail!("{} is not implemented yet", command.display_name()),
-    }
+pub fn run_add(args: cli::AddArgs) -> Result<()> {
+    add::run(args)
+}
+
+pub fn run_open(args: cli::NameArgs) -> Result<()> {
+    open::run(args)
+}
+
+pub fn run_close(args: cli::NameArgs) -> Result<()> {
+    close::run(args)
+}
+
+pub fn run_list(args: cli::JsonArgs) -> Result<()> {
+    list::run(args)
+}
+
+pub fn run_path(args: cli::NameArgs) -> Result<()> {
+    path::run(args)
+}
+
+pub fn run_remove(args: cli::RemoveArgs) -> Result<()> {
+    remove::run(args)
+}
+
+pub fn run_rename(args: cli::RenameArgs) -> Result<()> {
+    rename::run(args)
 }
