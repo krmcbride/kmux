@@ -572,6 +572,7 @@ struct SidebarRow {
     icon: String,
     primary: String,
     secondary: String,
+    secondary_right: String,
     title: String,
     elapsed: String,
     is_stale: bool,
@@ -590,10 +591,23 @@ impl SidebarRow {
             .to_owned();
         let secondary = secondary_label(agent, &primary);
         let title = agent
-            .pane_title
+            .agent_title
             .as_deref()
             .filter(|title| *title != primary && *title != secondary)
+            .or_else(|| {
+                agent
+                    .pane_title
+                    .as_deref()
+                    .filter(|title| *title != primary && *title != secondary)
+            })
             .or(agent.pane_current_command.as_deref())
+            .unwrap_or_default()
+            .to_owned();
+        let secondary_right = agent
+            .context_usage
+            .as_deref()
+            .map(str::trim)
+            .filter(|context| !context.is_empty())
             .unwrap_or_default()
             .to_owned();
         let age = now.saturating_sub(agent.status_changed_at);
@@ -608,6 +622,7 @@ impl SidebarRow {
             },
             primary,
             secondary,
+            secondary_right,
             title,
             elapsed: compact_elapsed(age),
             is_stale,
@@ -762,10 +777,10 @@ fn tile_line(row: &SidebarRow, kind: LineKind, width: usize, selected: bool) -> 
         ),
         LineKind::Secondary => line_with_right(
             &row.secondary,
-            row.status.as_str(),
+            &row.secondary_right,
             body_width,
             dim_style,
-            status_style,
+            dim_style,
             bg,
         ),
         LineKind::Title => line_with_right(&row.title, "", body_width, dim_style, dim_style, bg),
@@ -785,7 +800,7 @@ fn narrow_tile_line(
     let style = style_with_bg(Style::default().fg(status_color(row)), bg);
     let text = match kind {
         LineKind::Primary => format!("{} {}", row.icon, row.primary),
-        LineKind::Secondary => row.status.as_str().to_owned(),
+        LineKind::Secondary => row.secondary.clone(),
         LineKind::Title => row.title.clone(),
     };
     Line::from(Span::styled(fixed_width(&text, width), style))
@@ -885,7 +900,7 @@ fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
         }
         lines.push(fixed_width(&format!("{} {}", row.icon, row.primary), width));
         lines.push(fixed_width(
-            &format!("  {} {}", row.status.as_str(), row.elapsed),
+            &format!("  {} {}", row.secondary_right, row.elapsed),
             width,
         ));
         lines.push(fixed_width(&format!("  {}", row.secondary), width));
@@ -968,14 +983,15 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     #[test]
-    fn render_agents_includes_status_elapsed_branch_and_title() {
+    fn render_agents_includes_elapsed_branch_and_title() {
         let agents = vec![agent_state(AgentStatus::Waiting, 120, "@1", "%1")];
 
         let output = render_agents(&agents, 28, 300);
 
         assert!(output.contains("kmux agents"));
         assert!(output.contains("? feature-sidebar"));
-        assert!(output.contains("waiting 3m"));
+        assert!(output.contains("3m"));
+        assert!(!output.contains("waiting"));
         assert!(output.contains("project / feature/sidebar"));
         assert!(output.contains("Implement sidebar"));
     }
@@ -1027,6 +1043,28 @@ mod tests {
 
         assert_eq!(rows[0].icon, "?");
         assert!(!rows[0].is_stale);
+    }
+
+    #[test]
+    fn row_model_prefers_agent_title_and_context_usage() {
+        let mut agent = agent_state(AgentStatus::Working, 120, "@1", "%1");
+        agent.agent_title = Some("Implement richer sidebar".to_owned());
+        agent.context_usage = Some("163.2K (41%)".to_owned());
+        let rows = build_rows(&[agent], 300, TEST_SLEEPING_ICON);
+
+        assert_eq!(rows[0].title, "Implement richer sidebar");
+        assert_eq!(rows[0].secondary_right, "163.2K (41%)");
+    }
+
+    #[test]
+    fn row_model_omits_secondary_right_when_context_usage_is_absent() {
+        let rows = build_rows(
+            &[agent_state(AgentStatus::Working, 120, "@1", "%1")],
+            300,
+            TEST_SLEEPING_ICON,
+        );
+
+        assert_eq!(rows[0].secondary_right, "");
     }
 
     #[test]
@@ -1165,11 +1203,10 @@ mod tests {
 
     #[test]
     fn ratatui_renderer_draws_selected_tile_with_expected_text() -> Result<()> {
-        let rows = vec![SidebarRow::from_agent(
-            &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
-            300,
-            TEST_SLEEPING_ICON,
-        )];
+        let mut agent = agent_state(AgentStatus::Waiting, 120, "@1", "%1");
+        agent.agent_title = Some("Implement richer sidebar".to_owned());
+        agent.context_usage = Some("163.2K (41%)".to_owned());
+        let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
         let backend = TestBackend::new(42, 5);
         let mut terminal = Terminal::new(backend)?;
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -1180,8 +1217,8 @@ mod tests {
         let text = buffer_text(buffer, 42, 5);
         assert!(text.contains("feature-sidebar"));
         assert!(text.contains("3m"));
-        assert!(text.contains("waiting"));
-        assert!(text.contains("Implement sidebar"));
+        assert!(text.contains("163.2K (41%)"));
+        assert!(text.contains("Implement richer sidebar"));
         assert_eq!(buffer[(0, 0)].bg, SELECTED_BG);
         Ok(())
     }
@@ -1251,6 +1288,8 @@ mod tests {
             icon: "?".to_owned(),
             status_changed_at,
             observed_at: status_changed_at,
+            agent_title: None,
+            context_usage: None,
             pane_title: Some("Implement sidebar".to_owned()),
             pane_current_command: Some("nvim".to_owned()),
             worktree_handle: Some("feature-sidebar".to_owned()),

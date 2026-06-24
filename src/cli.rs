@@ -46,7 +46,7 @@ pub enum Command {
     CompleteGitBranches,
     /// Update the current tmux window status from an external integration.
     #[command(name = "set-window-status", hide = true)]
-    SetWindowStatus { status: AgentStatus },
+    SetWindowStatus(SetWindowStatusArgs),
 }
 
 #[derive(Debug, Args)]
@@ -119,6 +119,19 @@ pub struct StatusArgs {
     /// Include staged, unstaged, and unmerged git info.
     #[arg(long)]
     pub git: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct SetWindowStatusArgs {
+    pub status: AgentStatus,
+
+    /// Human-readable agent/session title supplied by an external integration.
+    #[arg(long)]
+    pub title: Option<String>,
+
+    /// Compact context/usage label supplied by an external integration.
+    #[arg(long)]
+    pub context: Option<String>,
 }
 
 #[derive(Debug, Args)]

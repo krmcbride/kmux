@@ -17,6 +17,6 @@ pub fn dispatch(command: cli::Command) -> Result<()> {
         cli::Command::CompleteHandles => completions::complete_handles(),
         cli::Command::CompleteAddBranches => completions::complete_add_branches(),
         cli::Command::CompleteGitBranches => completions::complete_git_branches(),
-        cli::Command::SetWindowStatus { status } => agent::status::set_window_status(status),
+        cli::Command::SetWindowStatus(args) => agent::status::set_window_status(args),
     }
 }

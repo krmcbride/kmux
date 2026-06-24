@@ -38,6 +38,8 @@ struct StatusEntry {
     icon: String,
     elapsed_secs: u64,
     title: Option<String>,
+    agent_title: Option<String>,
+    context_usage: Option<String>,
     pane_id: String,
     worktree_handle: Option<String>,
     worktree_path: Option<String>,
@@ -72,7 +74,7 @@ pub fn run(args: cli::StatusArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
+pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
     if std::env::var_os("KMUX_DISABLE_SET_WINDOW_STATUS").is_some() {
         return Ok(());
     }
@@ -85,13 +87,13 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
     };
     let key = PaneKey::new_tmux(tmux.instance_id(), context.pane_id.clone());
 
-    if status == cli::AgentStatus::Clear {
+    if args.status == cli::AgentStatus::Clear {
         tmux.unset_window_option(&context.pane_id, KMUX_STATUS_OPTION)?;
         store.delete_agent(&key)?;
         return Ok(());
     }
 
-    let (status, icon) = match status {
+    let (status, icon) = match args.status {
         cli::AgentStatus::Working => (StoredAgentStatus::Working, config.status_icons.working()),
         cli::AgentStatus::Waiting => (StoredAgentStatus::Waiting, config.status_icons.waiting()),
         cli::AgentStatus::Done => (StoredAgentStatus::Done, config.status_icons.done()),
@@ -113,6 +115,8 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
         icon: icon.to_owned(),
         status_changed_at,
         observed_at: now,
+        agent_title: clean_optional(args.title),
+        context_usage: clean_optional(args.context),
         pane_title: details.as_ref().and_then(|details| details.title.clone()),
         pane_current_command: details.and_then(|details| details.current_command),
         worktree_handle: worktree.handle,
@@ -124,6 +128,13 @@ pub fn set_window_status(status: cli::AgentStatus) -> Result<()> {
     };
     store.upsert_agent(&state)?;
     Ok(())
+}
+
+fn clean_optional(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
 }
 
 fn status_entries(agents: &[AgentState], args: &cli::StatusArgs) -> Result<Vec<StatusEntry>> {
@@ -207,7 +218,12 @@ fn entry_for_agent(
         status: agent.status.as_str().to_owned(),
         icon: agent.icon.clone(),
         elapsed_secs: now.saturating_sub(agent.status_changed_at),
-        title: agent.pane_title.clone(),
+        title: agent
+            .agent_title
+            .clone()
+            .or_else(|| agent.pane_title.clone()),
+        agent_title: agent.agent_title.clone(),
+        context_usage: agent.context_usage.clone(),
         pane_id: agent.pane_key.pane_id.clone(),
         worktree_handle: handle,
         worktree_path,

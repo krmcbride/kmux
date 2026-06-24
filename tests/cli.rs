@@ -642,16 +642,35 @@ status_icons:
     )?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["set-window-status", "working"])
+        .args([
+            "set-window-status",
+            "working",
+            "--title",
+            "Implement richer sidebar",
+            "--context",
+            "163.2K (41%)",
+        ])
         .assert()
         .success();
     let first = agent_state_for_pane(&config_home, &tmux.pane_id)?;
     let first_changed = state_timestamp(&first, "status_changed_at")?;
     let first_observed = state_timestamp(&first, "observed_at")?;
+    assert_eq!(
+        first["agent_title"].as_str(),
+        Some("Implement richer sidebar")
+    );
+    assert_eq!(first["context_usage"].as_str(), Some("163.2K (41%)"));
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?
-        .args(["set-window-status", "working"])
+        .args([
+            "set-window-status",
+            "working",
+            "--title",
+            "Implement richer sidebar",
+            "--context",
+            "170.0K (43%)",
+        ])
         .assert()
         .success();
     let second = agent_state_for_pane(&config_home, &tmux.pane_id)?;
@@ -660,6 +679,11 @@ status_icons:
 
     assert_eq!(second_changed, first_changed);
     assert!(second_observed > first_observed);
+    assert_eq!(
+        second["agent_title"].as_str(),
+        Some("Implement richer sidebar")
+    );
+    assert_eq!(second["context_usage"].as_str(), Some("170.0K (43%)"));
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?

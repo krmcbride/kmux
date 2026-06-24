@@ -61,6 +61,10 @@ pub struct AgentState {
     #[serde(default)]
     pub observed_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_usage: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_current_command: Option<String>,
@@ -267,6 +271,8 @@ mod tests {
             icon: "W".to_owned(),
             status_changed_at: 42,
             observed_at: 43,
+            agent_title: Some("OpenCode session".to_owned()),
+            context_usage: Some("163.2K (41%)".to_owned()),
             pane_title: Some("Agent title".to_owned()),
             pane_current_command: Some("nvim".to_owned()),
             worktree_handle: Some("feature-auth".to_owned()),
@@ -311,6 +317,8 @@ mod tests {
             "status": "working",
             "icon": "W",
             "updated_at": 42,
+            "agent_title": "OpenCode session",
+            "context_usage": "163.2K (41%)",
             "worktree_handle": "feature-auth",
             "worktree_path": "/repo__worktrees/feature-auth",
             "branch": "feature/auth",
@@ -341,6 +349,8 @@ mod tests {
             icon: "D".to_owned(),
             status_changed_at: 42,
             observed_at: 43,
+            agent_title: None,
+            context_usage: None,
             pane_title: None,
             pane_current_command: None,
             worktree_handle: Some("old".to_owned()),
