@@ -447,25 +447,28 @@ impl SidebarApp {
             SelectionMode::FollowHost => self
                 .host_window_id
                 .as_deref()
-                .and_then(|window_id| row_index_by_window(&self.rows, window_id))
-                .unwrap_or(0),
-            SelectionMode::Manual => self
-                .selected_pane_id
-                .as_deref()
-                .and_then(|pane_id| row_index_by_pane(&self.rows, pane_id))
-                .or_else(|| {
-                    self.selected_window_id
-                        .as_deref()
-                        .and_then(|window_id| row_index_by_window(&self.rows, window_id))
-                })
-                .or_else(|| {
-                    self.list_state
-                        .selected()
-                        .filter(|idx| *idx < self.rows.len())
-                })
-                .unwrap_or(0),
+                .and_then(|window_id| row_index_by_window(&self.rows, window_id)),
+            SelectionMode::Manual => Some(
+                self.selected_pane_id
+                    .as_deref()
+                    .and_then(|pane_id| row_index_by_pane(&self.rows, pane_id))
+                    .or_else(|| {
+                        self.selected_window_id
+                            .as_deref()
+                            .and_then(|window_id| row_index_by_window(&self.rows, window_id))
+                    })
+                    .or_else(|| {
+                        self.list_state
+                            .selected()
+                            .filter(|idx| *idx < self.rows.len())
+                    })
+                    .unwrap_or(0),
+            ),
         };
-        self.select_index_internal(selected);
+        match selected {
+            Some(index) => self.select_index_internal(index),
+            None => self.list_state.select(None),
+        }
     }
 
     fn request_disable(&mut self) {
@@ -477,8 +480,10 @@ impl SidebarApp {
         if self.rows.is_empty() {
             return;
         }
-        let selected = self.list_state.selected().unwrap_or(0);
-        let next = (selected + 1).min(self.rows.len() - 1);
+        let next = self
+            .list_state
+            .selected()
+            .map_or(0, |selected| (selected + 1).min(self.rows.len() - 1));
         self.select_index_manual(next);
     }
 
@@ -1086,6 +1091,24 @@ mod tests {
         assert_eq!(app.list_state.selected(), Some(1));
 
         app.previous();
+
+        assert_eq!(app.selection_mode, SelectionMode::Manual);
+        assert_eq!(app.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn selection_clears_when_followed_host_window_has_no_agent_row() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(Some("@missing"), rows);
+
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert_eq!(app.list_state.selected(), None);
+
+        app.next();
 
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(app.list_state.selected(), Some(0));
