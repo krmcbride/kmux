@@ -332,7 +332,7 @@ fn sidebar_off_command() -> Result<String> {
 
 fn sidebar_command<const N: usize>(args: [&str; N]) -> Result<String> {
     let executable = std::env::current_exe().context("failed to determine current executable")?;
-    let mut parts = vec!["env".to_owned()];
+    let mut parts = vec!["exec".to_owned(), "env".to_owned()];
     for key in [
         "XDG_CONFIG_HOME",
         "XDG_STATE_HOME",
@@ -976,6 +976,7 @@ mod tests {
     fn sidebar_pane_command_runs_hidden_tui() -> Result<()> {
         let command = sidebar_tui_command()?;
 
+        assert!(command.starts_with("exec env "));
         assert!(command.contains(" sidebar run"));
         assert!(!command.contains("while :; do"));
         Ok(())
@@ -985,6 +986,7 @@ mod tests {
     fn sidebar_off_command_runs_visible_disable_path() -> Result<()> {
         let command = sidebar_off_command()?;
 
+        assert!(command.starts_with("exec env "));
         assert!(command.contains(" sidebar off"));
         Ok(())
     }
