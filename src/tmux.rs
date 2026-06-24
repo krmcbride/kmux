@@ -237,6 +237,17 @@ impl Tmux {
         Ok(())
     }
 
+    pub fn pane_has_focus(&self, pane_id: &str) -> Result<bool> {
+        let output = self.stdout([
+            "display-message",
+            "-p",
+            "-t",
+            pane_id,
+            "#{pane_active}\t#{window_active}\t#{session_attached}",
+        ])?;
+        parse_pane_focus(&output)
+    }
+
     pub fn switch_client_to_session(&self, session_name: &str) -> Result<()> {
         self.stdout(["switch-client", "-t", session_name])?;
         Ok(())
@@ -492,6 +503,16 @@ fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
     })
 }
 
+fn parse_pane_focus(output: &str) -> Result<bool> {
+    let fields = output.trim_end().split('\t').collect::<Vec<_>>();
+    if fields.len() != 3 {
+        bail!("unexpected tmux pane focus format: {output:?}");
+    }
+
+    let session_attached = fields[2].parse::<u16>().unwrap_or(0) > 0;
+    Ok(fields[0] == "1" && fields[1] == "1" && session_attached)
+}
+
 fn non_empty_string(value: &str) -> Option<String> {
     Some(value.to_owned()).filter(|value| !value.is_empty())
 }
@@ -645,6 +666,7 @@ mod tests {
         tmux.select_pane(&pane_id)?;
         tmux.set_pane_title(&pane_id, "kmux")?;
         assert_eq!(tmux.pane_details(&pane_id)?.title.as_deref(), Some("kmux"));
+        assert!(!tmux.pane_has_focus(&pane_id)?);
 
         tmux.select_window("project", "feature-auth")?;
         let selected = tmux
@@ -703,6 +725,16 @@ mod tests {
         tmux.unset_window_option(&target, &option)?;
 
         assert_eq!(tmux.show_window_option(&target, &option)?, None);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_pane_focus_from_tmux_flags() -> Result<()> {
+        assert!(parse_pane_focus("1\t1\t1")?);
+        assert!(!parse_pane_focus("0\t1\t1")?);
+        assert!(!parse_pane_focus("1\t0\t1")?);
+        assert!(!parse_pane_focus("1\t1\t0")?);
+        assert!(parse_pane_focus("1\t1\t2")?);
         Ok(())
     }
 }

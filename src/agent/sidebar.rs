@@ -367,6 +367,7 @@ struct SidebarApp {
     store: StateStore,
     rows: Vec<SidebarRow>,
     list_state: ListState,
+    sidebar_pane_id: Option<String>,
     host_window_id: Option<String>,
     selection_mode: SelectionMode,
     selected_pane_id: Option<String>,
@@ -378,16 +379,15 @@ struct SidebarApp {
 
 impl SidebarApp {
     fn new(tmux: Tmux, store: StateStore) -> Self {
-        let host_window_id = tmux
-            .current_context()
-            .ok()
-            .flatten()
-            .map(|context| context.window_id);
+        let context = tmux.current_context().ok().flatten();
+        let host_window_id = context.as_ref().map(|context| context.window_id.clone());
+        let sidebar_pane_id = context.map(|context| context.pane_id);
         Self {
             tmux,
             store,
             rows: Vec::new(),
             list_state: ListState::default(),
+            sidebar_pane_id,
             host_window_id,
             selection_mode: SelectionMode::FollowHost,
             selected_pane_id: None,
@@ -405,6 +405,7 @@ impl SidebarApp {
             store: test_state_store(),
             rows,
             list_state: ListState::default(),
+            sidebar_pane_id: None,
             host_window_id: host_window_id.map(str::to_owned),
             selection_mode: SelectionMode::FollowHost,
             selected_pane_id: None,
@@ -418,10 +419,12 @@ impl SidebarApp {
     }
 
     fn refresh_rows(&mut self) {
+        let sidebar_has_focus = self.sidebar_has_focus();
         match active_agents(&self.store, &self.tmux) {
             Ok(agents) => {
                 self.rows = build_rows(&agents, unix_now());
                 self.last_error = None;
+                self.update_selection_mode_for_focus(sidebar_has_focus);
                 self.sync_selection();
             }
             Err(error) => {
@@ -502,6 +505,8 @@ impl SidebarApp {
         if let Err(error) = self.select_row_target(&row) {
             self.refresh_rows();
             self.last_error = Some(format!("jump failed: {error}"));
+        } else {
+            self.selection_mode = SelectionMode::FollowHost;
         }
     }
 
@@ -528,6 +533,18 @@ impl SidebarApp {
         if let Some(row) = self.rows.get(index) {
             self.selected_pane_id = Some(row.pane_id.clone());
             self.selected_window_id = Some(row.window_id.clone());
+        }
+    }
+
+    fn sidebar_has_focus(&self) -> bool {
+        self.sidebar_pane_id
+            .as_deref()
+            .is_some_and(|pane_id| self.tmux.pane_has_focus(pane_id).unwrap_or(false))
+    }
+
+    fn update_selection_mode_for_focus(&mut self, sidebar_has_focus: bool) {
+        if !sidebar_has_focus {
+            self.selection_mode = SelectionMode::FollowHost;
         }
     }
 }
@@ -1023,6 +1040,27 @@ mod tests {
         assert_eq!(app.list_state.selected(), Some(1));
         assert_eq!(app.selected_window_id.as_deref(), Some("@2"));
         assert_eq!(app.selected_pane_id.as_deref(), Some("%20"));
+    }
+
+    #[test]
+    fn manual_selection_returns_to_host_when_sidebar_loses_focus() {
+        let rows = vec![
+            SidebarRow::from_agent(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            SidebarRow::from_agent(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+        ];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        app.next();
+        assert_eq!(app.selection_mode, SelectionMode::Manual);
+        assert_eq!(app.list_state.selected(), Some(1));
+
+        app.update_selection_mode_for_focus(false);
+        app.sync_selection();
+
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert_eq!(app.list_state.selected(), Some(0));
+        assert_eq!(app.selected_window_id.as_deref(), Some("@1"));
+        assert_eq!(app.selected_pane_id.as_deref(), Some("%1"));
     }
 
     #[test]
