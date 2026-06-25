@@ -189,11 +189,6 @@ impl Tmux {
         parse_pane_details(&output)
     }
 
-    pub fn pane_width(&self, pane_id: &str) -> Result<Option<u16>> {
-        let output = self.stdout(["display-message", "-p", "-t", pane_id, "#{pane_width}"])?;
-        Ok(output.parse().ok())
-    }
-
     pub fn create_window_with_command(
         &self,
         session_name: &str,
@@ -260,11 +255,6 @@ impl Tmux {
     pub fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
         self.stdout(["select-pane", "-t", pane_id, "-T", title])?;
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub fn pane_has_focus(&self, pane_id: &str) -> Result<bool> {
-        Ok(self.pane_visibility(pane_id)?.pane_has_focus)
     }
 
     pub fn pane_visibility(&self, pane_id: &str) -> Result<TmuxPaneVisibility> {
@@ -566,11 +556,6 @@ fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
     })
 }
 
-#[cfg(test)]
-fn parse_pane_focus(output: &str) -> Result<bool> {
-    Ok(parse_pane_visibility(output)?.pane_has_focus)
-}
-
 fn parse_pane_visibility(output: &str) -> Result<TmuxPaneVisibility> {
     let fields = output.trim_end().split('\t').collect::<Vec<_>>();
     if fields.len() != 3 {
@@ -784,7 +769,7 @@ mod tests {
         tmux.select_pane(&pane_id)?;
         tmux.set_pane_title(&pane_id, "kmux")?;
         assert_eq!(tmux.pane_details(&pane_id)?.title.as_deref(), Some("kmux"));
-        assert!(!tmux.pane_has_focus(&pane_id)?);
+        assert!(!tmux.pane_visibility(&pane_id)?.pane_has_focus);
 
         tmux.select_window("project", "feature-auth")?;
         let selected = tmux
@@ -843,16 +828,6 @@ mod tests {
         tmux.unset_window_option(&target, &option)?;
 
         assert_eq!(tmux.show_window_option(&target, &option)?, None);
-        Ok(())
-    }
-
-    #[test]
-    fn parses_pane_focus_from_tmux_flags() -> Result<()> {
-        assert!(parse_pane_focus("1\t1\t1")?);
-        assert!(!parse_pane_focus("0\t1\t1")?);
-        assert!(!parse_pane_focus("1\t0\t1")?);
-        assert!(!parse_pane_focus("1\t1\t0")?);
-        assert!(parse_pane_focus("1\t1\t2")?);
         Ok(())
     }
 

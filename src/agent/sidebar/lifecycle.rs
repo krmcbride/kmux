@@ -4,12 +4,10 @@ use std::io::IsTerminal;
 
 use anyhow::{Context, Result};
 
-use crate::agent::active::active_agents;
 use crate::agent::sidebar::app::SidebarApp;
-use crate::agent::sidebar::render::render_agents;
 use crate::agent::sidebar::runtime::run_terminal_app;
 use crate::config::{Config, SidebarSize};
-use crate::state::{StateStore, now_unix_seconds};
+use crate::state::StateStore;
 use crate::tmux::{Tmux, TmuxPane, TmuxSplitSize, TmuxWindow};
 
 const DEFAULT_WIDTH: u16 = 42;
@@ -63,19 +61,6 @@ pub(super) fn refresh() -> Result<()> {
     if sidebar_enabled(&tmux)? {
         reconcile_locked(&tmux, &config)?;
     }
-    Ok(())
-}
-
-pub(super) fn render() -> Result<()> {
-    let config = Config::load()?;
-    let tmux = Tmux::from_env();
-    let store = StateStore::new()?;
-    let agents = active_agents(&store, &tmux)?;
-    let width = render_width(&config, &tmux);
-    print!(
-        "{}",
-        render_agents(&agents, width, now_unix_seconds(), &config)
-    );
     Ok(())
 }
 
@@ -234,43 +219,24 @@ impl Drop for SidebarLock<'_> {
 }
 
 fn split_size(config: &Config) -> TmuxSplitSize {
-    match config
-        .sidebar
-        .width
-        .unwrap_or(SidebarSize::Absolute(DEFAULT_WIDTH))
-    {
+    match configured_width(config) {
         SidebarSize::Absolute(width) => TmuxSplitSize::Cells(width),
         SidebarSize::Percent(percent) => TmuxSplitSize::Percent(percent),
     }
 }
 
-fn render_width(config: &Config, tmux: &Tmux) -> usize {
-    if let Some(width) = std::env::var("TMUX_PANE")
-        .ok()
-        .and_then(|pane_id| tmux.pane_width(&pane_id).ok().flatten())
-    {
-        return usize::from(width);
-    }
-
-    match config
-        .sidebar
-        .width
-        .unwrap_or(SidebarSize::Absolute(DEFAULT_WIDTH))
-    {
-        SidebarSize::Absolute(width) => usize::from(width),
-        SidebarSize::Percent(_) => usize::from(DEFAULT_WIDTH),
-    }
-}
-
 fn configured_width_label(config: &Config) -> String {
-    match config
-        .sidebar
-        .width
-        .unwrap_or(SidebarSize::Absolute(DEFAULT_WIDTH))
-    {
+    match configured_width(config) {
         SidebarSize::Absolute(width) => width.to_string(),
         SidebarSize::Percent(percent) => format!("{percent}%"),
     }
+}
+
+fn configured_width(config: &Config) -> SidebarSize {
+    config
+        .sidebar
+        .width
+        .unwrap_or(SidebarSize::Absolute(DEFAULT_WIDTH))
 }
 
 fn sidebar_tui_command() -> Result<String> {

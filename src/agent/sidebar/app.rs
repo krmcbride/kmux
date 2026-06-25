@@ -191,11 +191,6 @@ impl SidebarApp {
         self.last_error.as_deref()
     }
 
-    #[cfg(test)]
-    pub(super) fn selected_index(&self) -> Option<usize> {
-        self.list_state.selected()
-    }
-
     pub(super) fn active_index(&self) -> Option<usize> {
         self.host_window_id
             .as_deref()
@@ -222,7 +217,7 @@ impl SidebarApp {
             && self
                 .rows
                 .iter()
-                .any(|row| row.status == AgentStatus::Working && !row.is_idle)
+                .any(|row| row.status == AgentStatus::Working)
     }
 
     pub(super) fn tick_spinner(&mut self) {
@@ -235,7 +230,7 @@ impl SidebarApp {
             return;
         };
         for row in &mut self.rows {
-            if row.status == AgentStatus::Working && !row.is_idle {
+            if row.status == AgentStatus::Working {
                 row.icon.clone_from(&icon);
             }
         }
@@ -383,6 +378,10 @@ mod tests {
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
     use crate::state::AgentStatus;
 
+    fn selected_index(app: &SidebarApp) -> Option<usize> {
+        app.list_state.selected()
+    }
+
     #[test]
     fn sidebar_app_cycles_working_frames() {
         let mut app = SidebarApp::test(None, Vec::new());
@@ -480,7 +479,7 @@ mod tests {
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
         assert_eq!(app.selection_mode, SelectionMode::Manual);
-        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(selected_index(&app), Some(1));
 
         let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
             pane_has_focus: false,
@@ -490,7 +489,7 @@ mod tests {
         assert!(!refreshed);
         assert!(!app.window_visible());
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
-        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(selected_index(&app), Some(0));
         assert_eq!(app.rows().len(), 2);
         assert_eq!(app.rows()[0].primary, "feature-sidebar");
     }
@@ -550,14 +549,14 @@ mod tests {
         ];
         let mut app = SidebarApp::test(Some("@2"), rows);
 
-        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(selected_index(&app), Some(1));
         assert_eq!(app.active_index(), Some(1));
         assert_eq!(app.cursor_index(), None);
 
         app.previous();
 
         assert_eq!(app.selection_mode, SelectionMode::Manual);
-        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(selected_index(&app), Some(0));
         assert_eq!(app.active_index(), Some(1));
         assert_eq!(app.cursor_index(), Some(0));
     }
@@ -572,12 +571,12 @@ mod tests {
         let mut app = SidebarApp::test(Some("@missing"), rows);
 
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
-        assert_eq!(app.selected_index(), None);
+        assert_eq!(selected_index(&app), None);
 
         app.next();
 
         assert_eq!(app.selection_mode, SelectionMode::Manual);
-        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(selected_index(&app), Some(0));
     }
 
     #[test]
@@ -597,7 +596,7 @@ mod tests {
         let mut app = SidebarApp::test(Some("@1"), rows);
 
         app.next();
-        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(selected_index(&app), Some(1));
 
         app.rows = Vec::new();
         app.sync_selection();
@@ -616,7 +615,7 @@ mod tests {
         app.sync_selection();
 
         assert_eq!(app.selection_mode, SelectionMode::Manual);
-        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(selected_index(&app), Some(1));
         assert_eq!(app.selected_window_id.as_deref(), Some("@2"));
         assert_eq!(app.selected_pane_id.as_deref(), Some("%20"));
     }
@@ -639,13 +638,13 @@ mod tests {
 
         app.next();
         assert_eq!(app.selection_mode, SelectionMode::Manual);
-        assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(selected_index(&app), Some(1));
 
         app.update_selection_mode_for_focus(false);
         app.sync_selection();
 
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
-        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(selected_index(&app), Some(0));
         assert_eq!(app.active_index(), Some(0));
         assert_eq!(app.cursor_index(), None);
         assert_eq!(app.selected_window_id.as_deref(), Some("@1"));

@@ -52,13 +52,6 @@ impl Config {
         self.status_icons.validate()?;
         self.sidebar.validate()?;
 
-        if let Some(layout) = &self.sidebar.layout {
-            match layout.as_str() {
-                "compact" | "tiles" => {}
-                _ => bail!("sidebar.layout must be 'compact' or 'tiles', got '{layout}'"),
-            }
-        }
-
         for entry in self
             .files
             .copy_entries()
@@ -189,8 +182,6 @@ pub struct PaneConfig {
 #[serde(default, deny_unknown_fields)]
 pub struct SidebarConfig {
     pub width: Option<SidebarSize>,
-    pub height: Option<SidebarSize>,
-    pub layout: Option<String>,
     pub idle_after_seconds: Option<u64>,
 }
 
@@ -400,10 +391,16 @@ panes:
     }
 
     #[test]
-    fn rejects_deferred_sidebar_position_field() {
-        let error = Config::from_yaml_str("sidebar: {position: top}\n")
-            .expect_err("unsupported sidebar position should fail");
+    fn rejects_deferred_sidebar_fields() {
+        for yaml in [
+            "sidebar: {position: top}\n",
+            "sidebar: {height: 10}\n",
+            "sidebar: {layout: compact}\n",
+        ] {
+            let error =
+                Config::from_yaml_str(yaml).expect_err("unsupported sidebar field should fail");
 
-        assert!(error.to_string().contains("unknown field"));
+            assert!(error.to_string().contains("unknown field"));
+        }
     }
 }

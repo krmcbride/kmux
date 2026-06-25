@@ -148,9 +148,6 @@ pub enum SidebarCommand {
     Off,
     /// Reconcile sidebar panes after tmux window/session changes.
     Refresh,
-    /// Render sidebar contents once.
-    #[command(hide = true)]
-    Render,
     /// Run the interactive sidebar TUI.
     #[command(hide = true)]
     Run,

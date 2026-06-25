@@ -8,9 +8,8 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agent::sidebar::app::SidebarApp;
-use crate::agent::sidebar::model::{SidebarRow, build_rows};
-use crate::config::Config;
-use crate::state::{AgentState, AgentStatus};
+use crate::agent::sidebar::model::SidebarRow;
+use crate::state::AgentStatus;
 
 const ACTIVE_BG: Color = Color::Rgb(34, 41, 54);
 const CURSOR_BG: Color = Color::Rgb(40, 48, 62);
@@ -280,54 +279,6 @@ fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, bg: Option<C
     }
 }
 
-pub(super) fn render_agents(
-    agents: &[AgentState],
-    width: usize,
-    now: u64,
-    config: &Config,
-) -> String {
-    let width = width.max(12);
-    let mut lines = vec![
-        fixed_width("kmux agents", width),
-        fixed_width("-----------", width),
-    ];
-    if agents.is_empty() {
-        lines.push(fixed_width("No active agents", width));
-        return finish_lines(lines);
-    }
-
-    for (index, row) in build_rows(
-        agents,
-        now,
-        config.status_icons.sleeping(),
-        config.sidebar.idle_after_seconds(),
-    )
-    .iter()
-    .enumerate()
-    {
-        if index > 0 {
-            lines.push(String::new());
-        }
-        lines.push(fixed_width(&format!("{} {}", row.icon, row.primary), width));
-        lines.push(fixed_width(
-            &format!("  {} {}", row.secondary_right, row.elapsed),
-            width,
-        ));
-        lines.push(fixed_width(&format!("  {}", row.secondary), width));
-        if !row.title.is_empty() {
-            lines.push(fixed_width(&format!("  {}", row.title), width));
-        }
-    }
-
-    finish_lines(lines)
-}
-
-fn finish_lines(lines: Vec<String>) -> String {
-    let mut output = lines.join("\n");
-    output.push('\n');
-    output
-}
-
 fn fixed_width(value: &str, width: usize) -> String {
     let mut value = fit_width(value, width);
     let current = display_width(&value);
@@ -373,46 +324,6 @@ mod tests {
     use crate::agent::sidebar::model::{TEST_SLEEPING_ICON, agent_state};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
-
-    #[test]
-    fn render_agents_includes_elapsed_branch_and_title() {
-        let agents = vec![agent_state(AgentStatus::Waiting, 120, "@1", "%1")];
-
-        let output = render_agents(&agents, 28, 300, &Config::default());
-
-        assert!(output.contains("kmux agents"));
-        assert!(output.contains("? feature-sidebar"));
-        assert!(output.contains("3m"));
-        assert!(!output.contains("waiting"));
-        assert!(output.contains("project / feature/sidebar"));
-        assert!(output.contains("Implement sidebar"));
-    }
-
-    #[test]
-    fn render_agents_uses_configured_idle_threshold_and_sleeping_icon() -> anyhow::Result<()> {
-        let config = Config::from_yaml_str(
-            r#"
-status_icons: {sleeping: idle}
-sidebar: {idle_after_seconds: 10}
-"#,
-        )?;
-        let agents = vec![agent_state(AgentStatus::Done, 0, "@1", "%1")];
-
-        let active_output = render_agents(&agents, 28, 9, &config);
-        let idle_output = render_agents(&agents, 28, 10, &config);
-
-        assert!(active_output.contains("? feature-sidebar"));
-        assert!(idle_output.contains("idle feature-sidebar"));
-        Ok(())
-    }
-
-    #[test]
-    fn render_agents_truncates_to_width() {
-        let output = render_agents(&[], 12, 0, &Config::default());
-
-        assert!(output.lines().all(|line| display_width(line) <= 12));
-        assert!(output.contains("No active a~"));
-    }
 
     #[test]
     fn ratatui_renderer_draws_active_tile_with_expected_text() -> anyhow::Result<()> {

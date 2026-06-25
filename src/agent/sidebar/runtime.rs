@@ -63,11 +63,11 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
 
         if event::poll(timeout)? {
             let outcome = process_tui_event(event::read()?, app);
-            if outcome == EventOutcome::ModelRefreshed {
+            if outcome == EventOutcome::RedrawRequested {
                 terminal.draw(|frame| render_sidebar_tui(frame, app))?;
             }
             let now = Instant::now();
-            if outcome == EventOutcome::ModelRefreshed {
+            if outcome == EventOutcome::RedrawRequested {
                 schedule.reset_model(now);
                 schedule.reset_spinner(now);
             }
@@ -126,7 +126,7 @@ impl Drop for TerminalGuard {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EventOutcome {
     None,
-    ModelRefreshed,
+    RedrawRequested,
 }
 
 fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
@@ -143,13 +143,13 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
             KeyCode::Enter => app.jump_to_selected(),
             KeyCode::F(5) => {
                 app.refresh_rows();
-                return EventOutcome::ModelRefreshed;
+                return EventOutcome::RedrawRequested;
             }
             _ => {}
         },
         Event::Resize(_, _) => {
             app.refresh_rows();
-            return EventOutcome::ModelRefreshed;
+            return EventOutcome::RedrawRequested;
         }
         _ => {}
     }
@@ -210,17 +210,17 @@ mod tests {
     }
 
     #[test]
-    fn resize_event_reports_model_refresh_for_deadline_reset() {
+    fn resize_event_reports_redraw_request_for_deadline_reset() {
         let rows = Vec::new();
         let mut app = SidebarApp::test(None, rows);
 
         let outcome = process_tui_event(Event::Resize(42, 10), &mut app);
 
-        assert_eq!(outcome, EventOutcome::ModelRefreshed);
+        assert_eq!(outcome, EventOutcome::RedrawRequested);
     }
 
     #[test]
-    fn f5_event_reports_model_refresh_for_wake_signal() {
+    fn f5_event_reports_redraw_request_for_wake_signal() {
         let rows = vec![SidebarRow::from_agent(
             &agent_state(AgentStatus::Done, 100, "@1", "%1"),
             100,
@@ -236,7 +236,7 @@ mod tests {
             &mut app,
         );
 
-        assert_eq!(outcome, EventOutcome::ModelRefreshed);
+        assert_eq!(outcome, EventOutcome::RedrawRequested);
         assert!(!app.should_quit());
     }
 }

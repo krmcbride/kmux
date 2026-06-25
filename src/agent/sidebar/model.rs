@@ -94,6 +94,7 @@ fn secondary_label(agent: &AgentState, primary: &str) -> String {
     }
 }
 
+#[cfg(test)]
 pub(super) fn build_rows(
     agents: &[AgentState],
     now: u64,
