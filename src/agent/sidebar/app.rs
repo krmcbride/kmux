@@ -5,7 +5,7 @@ use crate::agent::active::active_agents;
 use crate::agent::sidebar::model::{
     SidebarRow, build_rows_with_working_icon, row_index_by_pane, row_index_by_window,
 };
-use crate::state::StateStore;
+use crate::state::{AgentStatus, StateStore};
 use crate::tmux::Tmux;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,7 +95,6 @@ impl SidebarApp {
                     &self.sleeping_icon,
                     working_icon.as_deref(),
                 );
-                self.advance_spinner_frame();
                 self.last_error = None;
                 self.update_selection_mode_for_focus(sidebar_has_focus);
                 self.sync_selection();
@@ -176,6 +175,30 @@ impl SidebarApp {
 
     pub(super) fn list_state_mut(&mut self) -> &mut ListState {
         &mut self.list_state
+    }
+
+    pub(super) fn should_animate_spinner(&self) -> bool {
+        !self.working_frames.is_empty()
+            && self
+                .rows
+                .iter()
+                .any(|row| row.status == AgentStatus::Working && !row.is_stale)
+    }
+
+    pub(super) fn tick_spinner(&mut self) {
+        if !self.should_animate_spinner() {
+            return;
+        }
+
+        self.advance_spinner_frame();
+        let Some(icon) = self.working_icon().map(str::to_owned) else {
+            return;
+        };
+        for row in &mut self.rows {
+            if row.status == AgentStatus::Working && !row.is_stale {
+                row.icon.clone_from(&icon);
+            }
+        }
     }
 
     fn sync_selection(&mut self) {
@@ -296,6 +319,56 @@ mod tests {
         assert_eq!(app.working_icon(), Some("b"));
         app.advance_spinner_frame();
         assert_eq!(app.working_icon(), Some("a"));
+    }
+
+    #[test]
+    fn spinner_tick_updates_only_active_working_rows() {
+        let rows = vec![
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Done, 0, "@3", "%3"),
+                crate::agent::sidebar::model::STALE_AFTER_SECONDS + 1,
+                TEST_SLEEPING_ICON,
+            ),
+        ];
+        let mut app = SidebarApp::test(None, rows);
+        app.working_frames = vec!["a".to_owned(), "b".to_owned()];
+
+        assert!(app.should_animate_spinner());
+
+        app.tick_spinner();
+
+        assert_eq!(app.rows()[0].icon, "b");
+        assert_eq!(app.rows()[1].icon, "?");
+        assert_eq!(app.rows()[2].icon, TEST_SLEEPING_ICON);
+    }
+
+    #[test]
+    fn spinner_tick_is_noop_without_frames_or_working_rows() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Waiting, 100, "@1", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(None, rows);
+
+        assert!(!app.should_animate_spinner());
+        app.tick_spinner();
+        assert_eq!(app.rows()[0].icon, "?");
+
+        app.working_frames = vec!["a".to_owned(), "b".to_owned()];
+        assert!(!app.should_animate_spinner());
+        app.tick_spinner();
+        assert_eq!(app.rows()[0].icon, "?");
     }
 
     #[test]
