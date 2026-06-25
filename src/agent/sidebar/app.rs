@@ -6,7 +6,7 @@ use crate::agent::sidebar::model::{
     SidebarRow, build_rows_with_working_icon, row_index_by_pane, row_index_by_window,
 };
 use crate::state::{AgentStatus, StateStore};
-use crate::tmux::Tmux;
+use crate::tmux::{Tmux, TmuxPaneVisibility};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SelectionMode {
@@ -27,6 +27,7 @@ pub(super) struct SidebarApp {
     selection_mode: SelectionMode,
     selected_pane_id: Option<String>,
     selected_window_id: Option<String>,
+    window_visible: bool,
     last_error: Option<String>,
     should_quit: bool,
     disable_requested: bool,
@@ -55,6 +56,7 @@ impl SidebarApp {
             selection_mode: SelectionMode::FollowHost,
             selected_pane_id: None,
             selected_window_id: None,
+            window_visible: true,
             last_error: None,
             should_quit: false,
             disable_requested: false,
@@ -76,6 +78,7 @@ impl SidebarApp {
             selection_mode: SelectionMode::FollowHost,
             selected_pane_id: None,
             selected_window_id: None,
+            window_visible: true,
             last_error: None,
             should_quit: false,
             disable_requested: false,
@@ -85,7 +88,18 @@ impl SidebarApp {
     }
 
     pub(super) fn refresh_rows(&mut self) {
-        let sidebar_has_focus = self.sidebar_has_focus();
+        let visibility = self.sidebar_visibility();
+        self.refresh_rows_for_visibility(visibility);
+    }
+
+    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) {
+        self.window_visible = visibility.window_visible;
+        self.update_selection_mode_for_focus(visibility.pane_has_focus);
+        if !visibility.window_visible {
+            self.sync_selection();
+            return;
+        }
+
         match active_agents(&self.store, &self.tmux) {
             Ok(agents) => {
                 let working_icon = self.working_icon().map(str::to_owned);
@@ -96,7 +110,6 @@ impl SidebarApp {
                     working_icon.as_deref(),
                 );
                 self.last_error = None;
-                self.update_selection_mode_for_focus(sidebar_has_focus);
                 self.sync_selection();
             }
             Err(error) => {
@@ -177,8 +190,13 @@ impl SidebarApp {
         &mut self.list_state
     }
 
+    pub(super) fn window_visible(&self) -> bool {
+        self.window_visible
+    }
+
     pub(super) fn should_animate_spinner(&self) -> bool {
-        !self.working_frames.is_empty()
+        self.window_visible
+            && !self.working_frames.is_empty()
             && self
                 .rows
                 .iter()
@@ -261,10 +279,19 @@ impl SidebarApp {
         }
     }
 
-    fn sidebar_has_focus(&self) -> bool {
-        self.sidebar_pane_id
-            .as_deref()
-            .is_some_and(|pane_id| self.tmux.pane_has_focus(pane_id).unwrap_or(false))
+    fn sidebar_visibility(&self) -> TmuxPaneVisibility {
+        let Some(pane_id) = self.sidebar_pane_id.as_deref() else {
+            return TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: true,
+            };
+        };
+        self.tmux
+            .pane_visibility(pane_id)
+            .unwrap_or(TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: true,
+            })
     }
 
     fn update_selection_mode_for_focus(&mut self, sidebar_has_focus: bool) {
@@ -369,6 +396,55 @@ mod tests {
         assert!(!app.should_animate_spinner());
         app.tick_spinner();
         assert_eq!(app.rows()[0].icon, "?");
+    }
+
+    #[test]
+    fn spinner_tick_is_noop_when_window_is_hidden() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(None, rows);
+        app.working_frames = vec!["a".to_owned(), "b".to_owned()];
+        app.window_visible = false;
+
+        assert!(!app.should_animate_spinner());
+
+        app.tick_spinner();
+
+        assert_eq!(app.rows()[0].icon, "?");
+    }
+
+    #[test]
+    fn hidden_model_refresh_updates_visibility_without_rebuilding_rows() {
+        let rows = vec![
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+        ];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.next();
+        assert_eq!(app.selection_mode, SelectionMode::Manual);
+        assert_eq!(app.selected_index(), Some(1));
+
+        app.refresh_rows_for_visibility(TmuxPaneVisibility {
+            pane_has_focus: false,
+            window_visible: false,
+        });
+
+        assert!(!app.window_visible());
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.rows().len(), 2);
+        assert_eq!(app.rows()[0].primary, "feature-sidebar");
     }
 
     #[test]

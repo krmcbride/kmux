@@ -48,9 +48,11 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
             schedule.reset_spinner(Instant::now());
         }
 
-        terminal.draw(|frame| render_sidebar_tui(frame, app))?;
-        if app.should_quit() {
-            return Ok(app.disable_requested());
+        if app.window_visible() {
+            terminal.draw(|frame| render_sidebar_tui(frame, app))?;
+            if app.should_quit() {
+                return Ok(app.disable_requested());
+            }
         }
 
         let now = Instant::now();

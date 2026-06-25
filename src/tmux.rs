@@ -70,6 +70,12 @@ pub struct TmuxPaneDetails {
     pub current_command: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TmuxPaneVisibility {
+    pub pane_has_focus: bool,
+    pub window_visible: bool,
+}
+
 const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
 
 impl Tmux {
@@ -251,7 +257,12 @@ impl Tmux {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn pane_has_focus(&self, pane_id: &str) -> Result<bool> {
+        Ok(self.pane_visibility(pane_id)?.pane_has_focus)
+    }
+
+    pub fn pane_visibility(&self, pane_id: &str) -> Result<TmuxPaneVisibility> {
         let output = self.stdout([
             "display-message",
             "-p",
@@ -259,7 +270,7 @@ impl Tmux {
             pane_id,
             "#{pane_active}\t#{window_active}\t#{session_attached}",
         ])?;
-        parse_pane_focus(&output)
+        parse_pane_visibility(&output)
     }
 
     pub fn switch_client_to_session(&self, session_name: &str) -> Result<()> {
@@ -550,14 +561,24 @@ fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
     })
 }
 
+#[cfg(test)]
 fn parse_pane_focus(output: &str) -> Result<bool> {
+    Ok(parse_pane_visibility(output)?.pane_has_focus)
+}
+
+fn parse_pane_visibility(output: &str) -> Result<TmuxPaneVisibility> {
     let fields = output.trim_end().split('\t').collect::<Vec<_>>();
     if fields.len() != 3 {
-        bail!("unexpected tmux pane focus format: {output:?}");
+        bail!("unexpected tmux pane visibility format: {output:?}");
     }
 
-    let session_attached = fields[2].parse::<u16>().unwrap_or(0) > 0;
-    Ok(fields[0] == "1" && fields[1] == "1" && session_attached)
+    let pane_active = tmux_bool(fields[0]);
+    let window_active = tmux_bool(fields[1]);
+    let session_attached = tmux_attached(fields[2]);
+    Ok(TmuxPaneVisibility {
+        pane_has_focus: pane_active && window_active && session_attached,
+        window_visible: window_active && session_attached,
+    })
 }
 
 fn tmux_bool(value: &str) -> bool {
@@ -827,6 +848,39 @@ mod tests {
         assert!(!parse_pane_focus("1\t0\t1")?);
         assert!(!parse_pane_focus("1\t1\t0")?);
         assert!(parse_pane_focus("1\t1\t2")?);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_pane_visibility_from_tmux_flags() -> Result<()> {
+        assert_eq!(
+            parse_pane_visibility("1\t1\t1")?,
+            TmuxPaneVisibility {
+                pane_has_focus: true,
+                window_visible: true,
+            }
+        );
+        assert_eq!(
+            parse_pane_visibility("0\t1\t1")?,
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: true,
+            }
+        );
+        assert_eq!(
+            parse_pane_visibility("1\t0\t1")?,
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            }
+        );
+        assert_eq!(
+            parse_pane_visibility("1\t1\t0")?,
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            }
+        );
         Ok(())
     }
 }
