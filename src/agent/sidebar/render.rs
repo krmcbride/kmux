@@ -199,7 +199,7 @@ fn line_with_right(
 }
 
 fn status_color(row: &SidebarRow) -> Color {
-    if row.is_stale {
+    if row.is_idle {
         return DIM_FG;
     }
     match row.status {
@@ -210,12 +210,12 @@ fn status_color(row: &SidebarRow) -> Color {
 }
 
 fn row_text_style(row: &SidebarRow, selected: bool) -> Style {
-    let fg = if row.is_stale { DIM_FG } else { TEXT_FG };
+    let fg = if row.is_idle { DIM_FG } else { TEXT_FG };
     let mut style = Style::default().fg(fg);
     if selected {
         style = style.bg(SELECTED_BG);
     }
-    if row.is_stale {
+    if row.is_idle {
         style = style.add_modifier(Modifier::DIM);
     }
     style
@@ -242,9 +242,13 @@ fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, bg: Option<C
     }
 }
 
-pub(super) fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
+pub(super) fn render_agents(
+    agents: &[AgentState],
+    width: usize,
+    now: u64,
+    config: &Config,
+) -> String {
     let width = width.max(12);
-    let config = Config::default();
     let mut lines = vec![
         fixed_width("kmux agents", width),
         fixed_width("-----------", width),
@@ -254,9 +258,14 @@ pub(super) fn render_agents(agents: &[AgentState], width: usize, now: u64) -> St
         return finish_lines(lines);
     }
 
-    for (index, row) in build_rows(agents, now, config.status_icons.sleeping())
-        .iter()
-        .enumerate()
+    for (index, row) in build_rows(
+        agents,
+        now,
+        config.status_icons.sleeping(),
+        config.sidebar.idle_after_seconds(),
+    )
+    .iter()
+    .enumerate()
     {
         if index > 0 {
             lines.push(String::new());
@@ -331,7 +340,7 @@ mod tests {
     fn render_agents_includes_elapsed_branch_and_title() {
         let agents = vec![agent_state(AgentStatus::Waiting, 120, "@1", "%1")];
 
-        let output = render_agents(&agents, 28, 300);
+        let output = render_agents(&agents, 28, 300, &Config::default());
 
         assert!(output.contains("kmux agents"));
         assert!(output.contains("? feature-sidebar"));
@@ -342,8 +351,26 @@ mod tests {
     }
 
     #[test]
+    fn render_agents_uses_configured_idle_threshold_and_sleeping_icon() -> anyhow::Result<()> {
+        let config = Config::from_yaml_str(
+            r#"
+status_icons: {sleeping: idle}
+sidebar: {idle_after_seconds: 10}
+"#,
+        )?;
+        let agents = vec![agent_state(AgentStatus::Done, 0, "@1", "%1")];
+
+        let active_output = render_agents(&agents, 28, 9, &config);
+        let idle_output = render_agents(&agents, 28, 10, &config);
+
+        assert!(active_output.contains("? feature-sidebar"));
+        assert!(idle_output.contains("idle feature-sidebar"));
+        Ok(())
+    }
+
+    #[test]
     fn render_agents_truncates_to_width() {
-        let output = render_agents(&[], 12, 0);
+        let output = render_agents(&[], 12, 0, &Config::default());
 
         assert!(output.lines().all(|line| display_width(line) <= 12));
         assert!(output.contains("No active a~"));

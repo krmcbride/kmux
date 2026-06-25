@@ -72,7 +72,10 @@ pub(super) fn render() -> Result<()> {
     let store = StateStore::new()?;
     let agents = active_agents(&store, &tmux)?;
     let width = render_width(&config, &tmux);
-    print!("{}", render_agents(&agents, width, now_unix_seconds()));
+    print!(
+        "{}",
+        render_agents(&agents, width, now_unix_seconds(), &config)
+    );
     Ok(())
 }
 
@@ -99,6 +102,7 @@ pub(super) fn run_tui() -> Result<()> {
         store,
         config.status_icons.sleeping().to_owned(),
         working_frames,
+        config.sidebar.idle_after_seconds(),
     );
     let disable_requested = run_terminal_app(&mut app)?;
     if disable_requested {

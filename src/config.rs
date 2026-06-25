@@ -6,6 +6,7 @@ use serde::Deserialize;
 use unicode_width::UnicodeWidthStr;
 
 pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
+pub const DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS: u64 = 30 * 60;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -49,6 +50,7 @@ impl Config {
 
     pub fn validate(&self) -> Result<()> {
         self.status_icons.validate()?;
+        self.sidebar.validate()?;
 
         if let Some(layout) = &self.sidebar.layout {
             match layout.as_str() {
@@ -189,6 +191,21 @@ pub struct SidebarConfig {
     pub width: Option<SidebarSize>,
     pub height: Option<SidebarSize>,
     pub layout: Option<String>,
+    pub idle_after_seconds: Option<u64>,
+}
+
+impl SidebarConfig {
+    pub fn idle_after_seconds(&self) -> u64 {
+        self.idle_after_seconds
+            .unwrap_or(DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if self.idle_after_seconds == Some(0) {
+            bail!("sidebar.idle_after_seconds must be greater than zero");
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -257,6 +274,10 @@ mod tests {
 
         assert_eq!(config.window_prefix(), DEFAULT_WINDOW_PREFIX);
         assert_eq!(config.window_name("feature-auth"), "kmux-feature-auth");
+        assert_eq!(
+            config.sidebar.idle_after_seconds(),
+            DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS
+        );
     }
 
     #[test]
@@ -291,7 +312,7 @@ files:
     - .opencode
   symlink:
     - codebook.toml
-sidebar: {width: 42}
+sidebar: {width: 42, idle_after_seconds: 900}
 "#,
         )
         .expect("active global config should parse");
@@ -311,6 +332,7 @@ sidebar: {width: 42}
         assert_eq!(config.files.copy_entries(), [".envrc", ".opencode"]);
         assert_eq!(config.files.symlink_entries(), ["codebook.toml"]);
         assert_eq!(config.sidebar.width, Some(SidebarSize::Absolute(42)));
+        assert_eq!(config.sidebar.idle_after_seconds(), 900);
     }
 
     #[test]
@@ -355,6 +377,14 @@ panes:
             let error = Config::from_yaml_str(yaml).expect_err("invalid frames should fail");
             assert!(error.to_string().contains("status_icons.working_frames"));
         }
+    }
+
+    #[test]
+    fn rejects_invalid_sidebar_idle_threshold() {
+        let error = Config::from_yaml_str("sidebar: {idle_after_seconds: 0}\n")
+            .expect_err("zero idle threshold should fail");
+
+        assert!(error.to_string().contains("sidebar.idle_after_seconds"));
     }
 
     #[test]

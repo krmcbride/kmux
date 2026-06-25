@@ -19,6 +19,7 @@ pub(super) struct SidebarApp {
     store: StateStore,
     sleeping_icon: String,
     working_frames: Vec<String>,
+    idle_after_seconds: u64,
     spinner_frame: usize,
     rows: Vec<SidebarRow>,
     list_state: ListState,
@@ -39,6 +40,7 @@ impl SidebarApp {
         store: StateStore,
         sleeping_icon: String,
         working_frames: Vec<String>,
+        idle_after_seconds: u64,
     ) -> Self {
         let context = tmux.current_context().ok().flatten();
         let host_window_id = context.as_ref().map(|context| context.window_id.clone());
@@ -48,6 +50,7 @@ impl SidebarApp {
             store,
             sleeping_icon,
             working_frames,
+            idle_after_seconds,
             spinner_frame: 0,
             rows: Vec::new(),
             list_state: ListState::default(),
@@ -70,6 +73,7 @@ impl SidebarApp {
             store: test_state_store(),
             sleeping_icon: crate::agent::sidebar::model::TEST_SLEEPING_ICON.to_owned(),
             working_frames: Vec::new(),
+            idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
             spinner_frame: 0,
             rows,
             list_state: ListState::default(),
@@ -95,7 +99,7 @@ impl SidebarApp {
     fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) {
         self.window_visible = visibility.window_visible;
         self.update_selection_mode_for_focus(visibility.pane_has_focus);
-        if !visibility.window_visible {
+        if !self.should_refresh_model(visibility) {
             self.sync_selection();
             return;
         }
@@ -108,6 +112,7 @@ impl SidebarApp {
                     crate::state::now_unix_seconds(),
                     &self.sleeping_icon,
                     working_icon.as_deref(),
+                    self.idle_after_seconds,
                 );
                 self.last_error = None;
                 self.sync_selection();
@@ -200,7 +205,7 @@ impl SidebarApp {
             && self
                 .rows
                 .iter()
-                .any(|row| row.status == AgentStatus::Working && !row.is_stale)
+                .any(|row| row.status == AgentStatus::Working && !row.is_idle)
     }
 
     pub(super) fn tick_spinner(&mut self) {
@@ -213,10 +218,19 @@ impl SidebarApp {
             return;
         };
         for row in &mut self.rows {
-            if row.status == AgentStatus::Working && !row.is_stale {
+            if row.status == AgentStatus::Working && !row.is_idle {
                 row.icon.clone_from(&icon);
             }
         }
+    }
+
+    fn should_refresh_model(&self, visibility: TmuxPaneVisibility) -> bool {
+        visibility.window_visible || self.host_row().is_some_and(|row| !row.is_idle)
+    }
+
+    fn host_row(&self) -> Option<&SidebarRow> {
+        let host_window_id = self.host_window_id.as_deref()?;
+        self.rows.iter().find(|row| row.window_id == host_window_id)
     }
 
     fn sync_selection(&mut self) {
@@ -334,6 +348,7 @@ fn test_state_store() -> StateStore {
 mod tests {
     use super::*;
     use crate::agent::sidebar::model::{TEST_SLEEPING_ICON, agent_state};
+    use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
     use crate::state::AgentStatus;
 
     #[test]
@@ -363,7 +378,7 @@ mod tests {
             ),
             SidebarRow::from_agent(
                 &agent_state(AgentStatus::Done, 0, "@3", "%3"),
-                crate::agent::sidebar::model::STALE_AFTER_SECONDS + 1,
+                DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
                 TEST_SLEEPING_ICON,
             ),
         ];
@@ -417,11 +432,11 @@ mod tests {
     }
 
     #[test]
-    fn hidden_model_refresh_updates_visibility_without_rebuilding_rows() {
+    fn hidden_idle_refresh_skips_model_rebuild() {
         let rows = vec![
             SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
-                100,
+                &agent_state(AgentStatus::Done, 0, "@1", "%1"),
+                DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
                 TEST_SLEEPING_ICON,
             ),
             SidebarRow::from_agent(
@@ -445,6 +460,43 @@ mod tests {
         assert_eq!(app.selected_index(), Some(0));
         assert_eq!(app.rows().len(), 2);
         assert_eq!(app.rows()[0].primary, "feature-sidebar");
+    }
+
+    #[test]
+    fn hidden_missing_host_refresh_skips_model_rebuild() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Working, 100, "@other", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(Some("@missing"), rows);
+
+        app.refresh_rows_for_visibility(TmuxPaneVisibility {
+            pane_has_focus: false,
+            window_visible: false,
+        });
+
+        assert!(!app.window_visible());
+        assert_eq!(app.rows().len(), 1);
+        assert_eq!(app.rows()[0].window_id, "@other");
+    }
+
+    #[test]
+    fn hidden_non_idle_model_refresh_rebuilds_rows() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        app.refresh_rows_for_visibility(TmuxPaneVisibility {
+            pane_has_focus: false,
+            window_visible: false,
+        });
+
+        assert!(!app.window_visible());
+        assert!(app.rows().is_empty());
     }
 
     #[test]
