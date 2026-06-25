@@ -236,6 +236,11 @@ impl Tmux {
         Ok(())
     }
 
+    pub fn send_key(&self, pane_id: &str, key: &str) -> Result<()> {
+        self.stdout(["send-keys", "-t", pane_id, key])?;
+        Ok(())
+    }
+
     pub fn select_window(&self, session_name: &str, window_name: &str) -> Result<()> {
         let target = window_target(session_name, window_name);
         self.stdout(["select-window", "-t", &target])?;

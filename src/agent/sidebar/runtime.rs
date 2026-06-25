@@ -134,6 +134,10 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
             KeyCode::Char('g') => app.select_first(),
             KeyCode::Char('G') => app.select_last(),
             KeyCode::Enter => app.jump_to_selected(),
+            KeyCode::F(5) => {
+                app.refresh_rows();
+                return EventOutcome::ModelRefreshed;
+            }
             _ => {}
         },
         Event::Resize(_, _) => {
@@ -206,5 +210,26 @@ mod tests {
         let outcome = process_tui_event(Event::Resize(42, 10), &mut app);
 
         assert_eq!(outcome, EventOutcome::ModelRefreshed);
+    }
+
+    #[test]
+    fn f5_event_reports_model_refresh_for_wake_signal() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Done, 100, "@1", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(None, rows);
+
+        let outcome = process_tui_event(
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::F(5),
+                KeyModifiers::NONE,
+            )),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::ModelRefreshed);
+        assert!(!app.should_quit());
     }
 }

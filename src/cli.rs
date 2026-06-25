@@ -154,6 +154,9 @@ pub enum SidebarCommand {
     /// Run the interactive sidebar TUI.
     #[command(hide = true)]
     Run,
+    /// Wake the sidebar TUI for a visible tmux window.
+    #[command(hide = true)]
+    Wake { window_id: String },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]

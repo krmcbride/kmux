@@ -18,7 +18,9 @@ const SIDEBAR_ROLE: &str = "sidebar";
 const SIDEBAR_ENABLED_OPTION: &str = "@kmux_sidebar_enabled";
 const SIDEBAR_WIDTH_OPTION: &str = "@kmux_sidebar_width";
 const SIDEBAR_LOCK_CHANNEL: &str = "kmux-sidebar-reconcile";
-const SIDEBAR_HOOKS: &[&str] = &["after-new-window[90]", "after-new-session[90]"];
+const SIDEBAR_RECONCILE_HOOKS: &[&str] = &["after-new-window[90]", "after-new-session[90]"];
+const SIDEBAR_WAKE_HOOKS: &[&str] = &["after-select-window[90]", "client-session-changed[90]"];
+const SIDEBAR_WAKE_KEY: &str = "F5";
 
 pub(super) fn toggle() -> Result<()> {
     let tmux = Tmux::from_env();
@@ -71,6 +73,15 @@ pub(super) fn render() -> Result<()> {
     let agents = active_agents(&store, &tmux)?;
     let width = render_width(&config, &tmux);
     print!("{}", render_agents(&agents, width, now_unix_seconds()));
+    Ok(())
+}
+
+pub(super) fn wake(window_id: &str) -> Result<()> {
+    let tmux = Tmux::from_env();
+    let panes = tmux.list_panes()?;
+    if let Some(pane_id) = sidebar_pane_for_window(&panes, window_id) {
+        let _ = tmux.send_key(pane_id, SIDEBAR_WAKE_KEY);
+    }
     Ok(())
 }
 
@@ -157,15 +168,23 @@ fn sidebar_window_ids(panes: &[TmuxPane]) -> HashSet<String> {
 }
 
 fn install_hooks(tmux: &Tmux) -> Result<()> {
-    let command = format!("run-shell -b {}", shell_quote(&sidebar_refresh_command()?));
-    for hook in SIDEBAR_HOOKS {
-        tmux.set_hook(hook, &command)?;
+    let refresh_command = format!("run-shell -b {}", shell_quote(&sidebar_refresh_command()?));
+    for hook in SIDEBAR_RECONCILE_HOOKS {
+        tmux.set_hook(hook, &refresh_command)?;
+    }
+
+    let wake_command = sidebar_wake_hook_command()?;
+    for hook in SIDEBAR_WAKE_HOOKS {
+        tmux.set_hook(hook, &wake_command)?;
     }
     Ok(())
 }
 
 fn remove_hooks(tmux: &Tmux) -> Result<()> {
-    for hook in SIDEBAR_HOOKS {
+    for hook in SIDEBAR_RECONCILE_HOOKS
+        .iter()
+        .chain(SIDEBAR_WAKE_HOOKS.iter())
+    {
         let _ = tmux.unset_hook(hook);
     }
     Ok(())
@@ -185,6 +204,12 @@ fn sidebar_panes(panes: &[TmuxPane]) -> impl Iterator<Item = &TmuxPane> {
     panes
         .iter()
         .filter(|pane| pane.kmux_role.as_deref() == Some(SIDEBAR_ROLE))
+}
+
+fn sidebar_pane_for_window<'a>(panes: &'a [TmuxPane], window_id: &str) -> Option<&'a str> {
+    sidebar_panes(panes)
+        .find(|pane| pane.window_id == window_id)
+        .map(|pane| pane.pane_id.as_str())
 }
 
 struct SidebarLock<'a> {
@@ -256,6 +281,17 @@ fn sidebar_off_command() -> Result<String> {
     sidebar_command(["sidebar", "off"])
 }
 
+fn sidebar_wake_command(window_id: &str) -> Result<String> {
+    sidebar_command(["sidebar", "wake", window_id])
+}
+
+fn sidebar_wake_hook_command() -> Result<String> {
+    Ok(format!(
+        "run-shell -b {}",
+        shell_quote(&sidebar_wake_command("#{window_id}")?)
+    ))
+}
+
 fn sidebar_command<const N: usize>(args: [&str; N]) -> Result<String> {
     let executable = std::env::current_exe().context("failed to determine current executable")?;
     let mut parts = vec!["exec".to_owned(), "env".to_owned()];
@@ -303,5 +339,52 @@ mod tests {
         assert!(command.starts_with("exec env "));
         assert!(command.contains(" sidebar off"));
         Ok(())
+    }
+
+    #[test]
+    fn sidebar_wake_command_targets_window_id() -> Result<()> {
+        let command = sidebar_wake_command("@42")?;
+
+        assert!(command.starts_with("exec env "));
+        assert!(command.contains(" sidebar wake "));
+        assert!(command.ends_with(" sidebar wake @42"));
+        Ok(())
+    }
+
+    #[test]
+    fn sidebar_wake_hook_preserves_tmux_window_format() -> Result<()> {
+        let command = sidebar_wake_hook_command()?;
+
+        assert!(command.starts_with("run-shell -b "));
+        assert!(command.contains("sidebar wake"));
+        assert!(command.contains("#{window_id}"));
+        Ok(())
+    }
+
+    #[test]
+    fn sidebar_pane_for_window_returns_target_window_sidebar() {
+        let panes = vec![
+            TmuxPane {
+                session_name: "project".to_owned(),
+                window_id: "@1".to_owned(),
+                pane_id: "%1".to_owned(),
+                kmux_role: Some(SIDEBAR_ROLE.to_owned()),
+            },
+            TmuxPane {
+                session_name: "project".to_owned(),
+                window_id: "@2".to_owned(),
+                pane_id: "%2".to_owned(),
+                kmux_role: None,
+            },
+            TmuxPane {
+                session_name: "project".to_owned(),
+                window_id: "@2".to_owned(),
+                pane_id: "%3".to_owned(),
+                kmux_role: Some(SIDEBAR_ROLE.to_owned()),
+            },
+        ];
+
+        assert_eq!(sidebar_pane_for_window(&panes, "@2"), Some("%3"));
+        assert_eq!(sidebar_pane_for_window(&panes, "@missing"), None);
     }
 }

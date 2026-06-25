@@ -368,6 +368,40 @@ fn write_config(root: &Path, content: &str) -> Result<PathBuf> {
     Ok(config_home)
 }
 
+fn raw_key_capture_command(capture_path: &Path, ready_path: &Path) -> String {
+    format!(
+        "stty raw -echo; : > {}; dd bs=1 count=16 of={} 2>/dev/null; sleep 5",
+        shell_quote(&ready_path.display().to_string()),
+        shell_quote(&capture_path.display().to_string())
+    )
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn wait_for_path(path: &Path) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if path.exists() {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(false)
+}
+
+fn wait_for_file_bytes(path: &Path) -> Result<bool> {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        if fs::read(path).is_ok_and(|bytes| !bytes.is_empty()) {
+            return Ok(true);
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+    Ok(false)
+}
+
 fn kmux(repo: &Path, config_home: &Path, tmux: &TmuxFixture) -> Result<Command> {
     kmux_with_pane(repo, config_home, tmux, &tmux.pane_id)
 }
@@ -725,6 +759,12 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
         tmux.global_hook("after-new-window[90]")?
             .contains("sidebar refresh")
     );
+    let wake_hook = tmux.global_hook("after-select-window[90]")?;
+    assert!(wake_hook.contains("sidebar wake"));
+    assert!(wake_hook.contains("#{window_id}"));
+    let session_wake_hook = tmux.global_hook("client-session-changed[90]")?;
+    assert!(session_wake_hook.contains("sidebar wake"));
+    assert!(session_wake_hook.contains("#{window_id}"));
     assert!(tmux.has_one_sidebar_per_window()?);
 
     for index in 0..5 {
@@ -755,6 +795,89 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
             .tmux_output(&["show-hooks", "-g"])?
             .contains("sidebar refresh")
     );
+    assert!(
+        !tmux
+            .tmux_output(&["show-hooks", "-g"])?
+            .contains("sidebar wake")
+    );
+    Ok(())
+}
+
+#[test]
+fn sidebar_wake_sends_key_only_to_target_window_sidebar() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "")?;
+
+    let source_window_id = tmux.tmux_output(&["display-message", "-p", "#{window_id}"])?;
+    let source_capture = temp.path().join("source-wake.bin");
+    let source_ready = temp.path().join("source-wake.ready");
+    let source_command = raw_key_capture_command(&source_capture, &source_ready);
+    let source_sidebar = tmux.tmux_output(&[
+        "split-window",
+        "-d",
+        "-t",
+        &source_window_id,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        &source_command,
+    ])?;
+    tmux.tmux_output(&[
+        "set-option",
+        "-p",
+        "-t",
+        &source_sidebar,
+        "@kmux_role",
+        "sidebar",
+    ])?;
+
+    let target_window_id = tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "wake-target",
+        "-P",
+        "-F",
+        "#{window_id}",
+    ])?;
+    let target_capture = temp.path().join("target-wake.bin");
+    let target_ready = temp.path().join("target-wake.ready");
+    let target_command = raw_key_capture_command(&target_capture, &target_ready);
+    let target_sidebar = tmux.tmux_output(&[
+        "split-window",
+        "-d",
+        "-t",
+        &target_window_id,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        &target_command,
+    ])?;
+    tmux.tmux_output(&[
+        "set-option",
+        "-p",
+        "-t",
+        &target_sidebar,
+        "@kmux_role",
+        "sidebar",
+    ])?;
+
+    assert!(wait_for_path(&source_ready)?);
+    assert!(wait_for_path(&target_ready)?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "wake", &target_window_id])
+        .assert()
+        .success();
+
+    assert!(wait_for_file_bytes(&target_capture)?);
+    assert_eq!(fs::read(&source_capture).map_or(0, |bytes| bytes.len()), 0);
+
     Ok(())
 }
 
