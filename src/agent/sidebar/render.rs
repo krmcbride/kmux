@@ -1,0 +1,439 @@
+use ratatui::{
+    Frame,
+    layout::{Alignment, Rect},
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{List, ListItem, Paragraph},
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::agent::sidebar::app::SidebarApp;
+use crate::agent::sidebar::model::{SidebarRow, build_rows};
+use crate::config::Config;
+use crate::state::{AgentState, AgentStatus};
+
+const SELECTED_BG: Color = Color::Rgb(40, 48, 62);
+const TEXT_FG: Color = Color::Rgb(205, 214, 244);
+const DIM_FG: Color = Color::Rgb(108, 112, 134);
+const BORDER_FG: Color = Color::Rgb(58, 74, 94);
+const WORKING_FG: Color = Color::Rgb(120, 225, 213);
+const WAITING_FG: Color = Color::Rgb(203, 166, 247);
+const DONE_FG: Color = Color::Rgb(166, 218, 149);
+
+pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
+    let area = frame.area();
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let mut list_area = area;
+    if let Some(error) = app.last_error() {
+        let warning = fit_width(&format!("error: {error}"), area.width as usize);
+        frame.render_widget(
+            Paragraph::new(warning).style(Style::default().fg(WAITING_FG)),
+            Rect::new(area.x, area.y, area.width, 1),
+        );
+        list_area.y = list_area.y.saturating_add(1);
+        list_area.height = list_area.height.saturating_sub(1);
+    }
+
+    if app.rows().is_empty() {
+        render_no_agents(frame, list_area);
+        return;
+    }
+
+    let selected_index = app.selected_index();
+    let row_count = app.rows().len();
+    let items = app
+        .rows()
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            tile_item(
+                row,
+                index > 0,
+                index + 1 == row_count,
+                list_area.width as usize,
+                selected_index == Some(index),
+            )
+        })
+        .collect::<Vec<_>>();
+    let list = List::new(items);
+    frame.render_stateful_widget(list, list_area, app.list_state_mut());
+}
+
+fn render_no_agents(frame: &mut Frame, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let y = area.y + area.height / 2;
+    frame.render_widget(
+        Paragraph::new("No active agents")
+            .style(Style::default().fg(DIM_FG))
+            .alignment(Alignment::Center),
+        Rect::new(area.x, y, area.width, 1),
+    );
+}
+
+fn tile_item(
+    row: &SidebarRow,
+    include_separator: bool,
+    include_bottom_separator: bool,
+    width: usize,
+    selected: bool,
+) -> ListItem<'static> {
+    let mut lines = Vec::new();
+    if include_separator {
+        lines.push(separator_line(width));
+    }
+
+    lines.push(tile_line(row, LineKind::Primary, width, selected));
+    lines.push(tile_line(row, LineKind::Secondary, width, selected));
+    lines.push(tile_line(row, LineKind::Title, width, selected));
+    if include_bottom_separator {
+        lines.push(separator_line(width));
+    }
+    ListItem::new(lines)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LineKind {
+    Primary,
+    Secondary,
+    Title,
+}
+
+fn separator_line(width: usize) -> Line<'static> {
+    Line::from(Span::styled(
+        "─".repeat(width),
+        Style::default().fg(BORDER_FG),
+    ))
+}
+
+fn tile_line(row: &SidebarRow, kind: LineKind, width: usize, selected: bool) -> Line<'static> {
+    let bg = selected.then_some(SELECTED_BG);
+    if width < 6 {
+        return narrow_tile_line(row, kind, width, bg);
+    }
+
+    let body_width = width - 6;
+    let stripe_style = style_with_bg(Style::default().fg(status_color(row)), bg);
+    let text_style = row_text_style(row, selected);
+    let dim_style = style_with_bg(Style::default().fg(DIM_FG), bg);
+    let status_style = style_with_bg(Style::default().fg(status_color(row)), bg);
+
+    let mut spans = vec![Span::styled("▌ ", stripe_style)];
+    match kind {
+        LineKind::Primary => spans.push(Span::styled(fixed_width(&row.icon, 2), status_style)),
+        LineKind::Secondary | LineKind::Title => spans.push(Span::styled("  ", dim_style)),
+    }
+    spans.push(Span::styled(" ", style_with_bg(Style::default(), bg)));
+
+    let body_spans = match kind {
+        LineKind::Primary => line_with_right(
+            &row.primary,
+            &row.elapsed,
+            body_width,
+            text_style.add_modifier(Modifier::BOLD),
+            dim_style,
+            bg,
+        ),
+        LineKind::Secondary => line_with_right(
+            &row.secondary,
+            &row.secondary_right,
+            body_width,
+            dim_style,
+            dim_style,
+            bg,
+        ),
+        LineKind::Title => line_with_right(&row.title, "", body_width, dim_style, dim_style, bg),
+    };
+    spans.extend(body_spans);
+    spans.push(Span::styled(" ", style_with_bg(Style::default(), bg)));
+    pad_spans_to_width(&mut spans, width, bg);
+    Line::from(spans)
+}
+
+fn narrow_tile_line(
+    row: &SidebarRow,
+    kind: LineKind,
+    width: usize,
+    bg: Option<Color>,
+) -> Line<'static> {
+    let style = style_with_bg(Style::default().fg(status_color(row)), bg);
+    let text = match kind {
+        LineKind::Primary => format!("{} {}", row.icon, row.primary),
+        LineKind::Secondary => row.secondary.clone(),
+        LineKind::Title => row.title.clone(),
+    };
+    Line::from(Span::styled(fixed_width(&text, width), style))
+}
+
+fn line_with_right(
+    left: &str,
+    right: &str,
+    width: usize,
+    left_style: Style,
+    right_style: Style,
+    bg: Option<Color>,
+) -> Vec<Span<'static>> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let right_width = display_width(right);
+    if right.trim().is_empty() || right_width + 1 >= width {
+        return vec![Span::styled(fixed_width(left, width), left_style)];
+    }
+
+    let left_width = width.saturating_sub(right_width + 1);
+    let left_text = fit_width(left, left_width);
+    let spacer_width = width.saturating_sub(display_width(&left_text) + right_width);
+    vec![
+        Span::styled(left_text, left_style),
+        Span::styled(
+            " ".repeat(spacer_width),
+            style_with_bg(Style::default(), bg),
+        ),
+        Span::styled(right.to_owned(), right_style),
+    ]
+}
+
+fn status_color(row: &SidebarRow) -> Color {
+    if row.is_stale {
+        return DIM_FG;
+    }
+    match row.status {
+        AgentStatus::Working => WORKING_FG,
+        AgentStatus::Waiting => WAITING_FG,
+        AgentStatus::Done => DONE_FG,
+    }
+}
+
+fn row_text_style(row: &SidebarRow, selected: bool) -> Style {
+    let fg = if row.is_stale { DIM_FG } else { TEXT_FG };
+    let mut style = Style::default().fg(fg);
+    if selected {
+        style = style.bg(SELECTED_BG);
+    }
+    if row.is_stale {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    style
+}
+
+fn style_with_bg(style: Style, bg: Option<Color>) -> Style {
+    if let Some(color) = bg {
+        style.bg(color)
+    } else {
+        style
+    }
+}
+
+fn pad_spans_to_width(spans: &mut Vec<Span<'static>>, width: usize, bg: Option<Color>) {
+    let current = spans
+        .iter()
+        .map(|span| display_width(span.content.as_ref()))
+        .sum::<usize>();
+    if current < width {
+        spans.push(Span::styled(
+            " ".repeat(width - current),
+            style_with_bg(Style::default(), bg),
+        ));
+    }
+}
+
+pub(super) fn render_agents(agents: &[AgentState], width: usize, now: u64) -> String {
+    let width = width.max(12);
+    let config = Config::default();
+    let mut lines = vec![
+        fixed_width("kmux agents", width),
+        fixed_width("-----------", width),
+    ];
+    if agents.is_empty() {
+        lines.push(fixed_width("No active agents", width));
+        return finish_lines(lines);
+    }
+
+    for (index, row) in build_rows(agents, now, config.status_icons.sleeping())
+        .iter()
+        .enumerate()
+    {
+        if index > 0 {
+            lines.push(String::new());
+        }
+        lines.push(fixed_width(&format!("{} {}", row.icon, row.primary), width));
+        lines.push(fixed_width(
+            &format!("  {} {}", row.secondary_right, row.elapsed),
+            width,
+        ));
+        lines.push(fixed_width(&format!("  {}", row.secondary), width));
+        if !row.title.is_empty() {
+            lines.push(fixed_width(&format!("  {}", row.title), width));
+        }
+    }
+
+    finish_lines(lines)
+}
+
+fn finish_lines(lines: Vec<String>) -> String {
+    let mut output = lines.join("\n");
+    output.push('\n');
+    output
+}
+
+fn fixed_width(value: &str, width: usize) -> String {
+    let mut value = fit_width(value, width);
+    let current = display_width(&value);
+    if current < width {
+        value.push_str(&" ".repeat(width - current));
+    }
+    value
+}
+
+fn fit_width(value: &str, width: usize) -> String {
+    if display_width(value) <= width {
+        return value.to_owned();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    if width == 1 {
+        return "~".to_owned();
+    }
+
+    let target = width - 1;
+    let mut output = String::new();
+    let mut used = 0;
+    for ch in value.chars() {
+        let ch_width = UnicodeWidthChar::width(ch).unwrap_or(1);
+        if used + ch_width > target {
+            break;
+        }
+        output.push(ch);
+        used += ch_width;
+    }
+    output.push('~');
+    output
+}
+
+fn display_width(value: &str) -> usize {
+    UnicodeWidthStr::width(value)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent::sidebar::model::{TEST_SLEEPING_ICON, agent_state};
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn render_agents_includes_elapsed_branch_and_title() {
+        let agents = vec![agent_state(AgentStatus::Waiting, 120, "@1", "%1")];
+
+        let output = render_agents(&agents, 28, 300);
+
+        assert!(output.contains("kmux agents"));
+        assert!(output.contains("? feature-sidebar"));
+        assert!(output.contains("3m"));
+        assert!(!output.contains("waiting"));
+        assert!(output.contains("project / feature/sidebar"));
+        assert!(output.contains("Implement sidebar"));
+    }
+
+    #[test]
+    fn render_agents_truncates_to_width() {
+        let output = render_agents(&[], 12, 0);
+
+        assert!(output.lines().all(|line| display_width(line) <= 12));
+        assert!(output.contains("No active a~"));
+    }
+
+    #[test]
+    fn ratatui_renderer_draws_selected_tile_with_expected_text() -> anyhow::Result<()> {
+        let mut agent = agent_state(AgentStatus::Waiting, 120, "@1", "%1");
+        agent.agent_title = Some("Implement richer sidebar".to_owned());
+        agent.context_usage = Some("163.2K (41%)".to_owned());
+        let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
+        let backend = TestBackend::new(42, 5);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
+
+        let buffer = terminal.backend().buffer();
+        let text = buffer_text(buffer, 42, 5);
+        assert!(text.contains("feature-sidebar"));
+        assert!(text.contains("3m"));
+        assert!(text.contains("163.2K (41%)"));
+        assert!(text.contains("Implement richer sidebar"));
+        assert_eq!(buffer[(0, 0)].bg, SELECTED_BG);
+        Ok(())
+    }
+
+    #[test]
+    fn ratatui_renderer_draws_final_separator() -> anyhow::Result<()> {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
+            300,
+            TEST_SLEEPING_ICON,
+        )];
+        let backend = TestBackend::new(42, 4);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 3)].symbol(), "─");
+        assert_eq!(buffer[(41, 3)].symbol(), "─");
+        Ok(())
+    }
+
+    #[test]
+    fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
+        let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
+        agent.worktree_handle = Some("very-long-sidebar-worktree-name".to_owned());
+        let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
+        let backend = TestBackend::new(18, 4);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
+
+        let buffer = terminal.backend().buffer();
+        let text = buffer_text(buffer, 18, 4);
+        assert!(text.contains("very-lon~"));
+        assert!(!text.contains("very-long-sidebar"));
+        Ok(())
+    }
+
+    #[test]
+    fn narrow_tile_lines_do_not_exceed_requested_width() {
+        let row = SidebarRow::from_agent(
+            &agent_state(AgentStatus::Done, 120, "@1", "%1"),
+            300,
+            TEST_SLEEPING_ICON,
+        );
+
+        for width in 0..6 {
+            for kind in [LineKind::Primary, LineKind::Secondary, LineKind::Title] {
+                let line = tile_line(&row, kind, width, true);
+                assert!(line_width(&line) <= width);
+            }
+        }
+    }
+
+    fn buffer_text(buffer: &ratatui::buffer::Buffer, width: u16, height: u16) -> String {
+        (0..height)
+            .flat_map(|y| (0..width).map(move |x| buffer[(x, y)].symbol()))
+            .collect::<String>()
+    }
+
+    fn line_width(line: &Line<'_>) -> usize {
+        line.spans
+            .iter()
+            .map(|span| display_width(span.content.as_ref()))
+            .sum()
+    }
+}

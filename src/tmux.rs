@@ -44,6 +44,20 @@ pub struct TmuxPane {
     pub kmux_role: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TmuxPaneSnapshot {
+    pub session_name: String,
+    pub window_id: String,
+    pub window_name: String,
+    pub pane_id: String,
+    pub title: Option<String>,
+    pub current_command: Option<String>,
+    pub pane_active: bool,
+    pub window_active: bool,
+    pub session_attached: bool,
+    pub kmux_role: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TmuxSplitSize {
     Cells(u16),
@@ -292,6 +306,15 @@ impl Tmux {
         parse_panes(&output)
     }
 
+    pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let format = format!(
+            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
+        );
+        let output = self.stdout(["list-panes", "-a", "-F", &format])?;
+        parse_pane_snapshots(&output)
+    }
+
     pub fn window_exists_by_name(&self, session_name: &str, window_name: &str) -> Result<bool> {
         Ok(self
             .list_windows(Some(session_name))?
@@ -460,6 +483,10 @@ fn parse_panes(output: &str) -> Result<Vec<TmuxPane>> {
     output.lines().map(parse_pane).collect()
 }
 
+fn parse_pane_snapshots(output: &str) -> Result<Vec<TmuxPaneSnapshot>> {
+    output.lines().map(parse_pane_snapshot).collect()
+}
+
 fn parse_window(line: &str) -> Result<TmuxWindow> {
     let fields = line.split('\t').collect::<Vec<_>>();
     if fields.len() != 5 {
@@ -489,6 +516,26 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
     })
 }
 
+fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
+    let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
+    if fields.len() != 10 {
+        bail!("unexpected tmux pane snapshot format: {line:?}");
+    }
+
+    Ok(TmuxPaneSnapshot {
+        session_name: fields[0].to_owned(),
+        window_id: fields[1].to_owned(),
+        window_name: fields[2].to_owned(),
+        pane_id: fields[3].to_owned(),
+        title: non_empty_string(fields[4]),
+        current_command: non_empty_string(fields[5]),
+        pane_active: tmux_bool(fields[6]),
+        window_active: tmux_bool(fields[7]),
+        session_attached: tmux_attached(fields[8]),
+        kmux_role: non_empty_string(fields[9]),
+    })
+}
+
 fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
     let mut fields = output.split(TMUX_FIELD_SEPARATOR);
     let title = fields.next().unwrap_or_default();
@@ -511,6 +558,14 @@ fn parse_pane_focus(output: &str) -> Result<bool> {
 
     let session_attached = fields[2].parse::<u16>().unwrap_or(0) > 0;
     Ok(fields[0] == "1" && fields[1] == "1" && session_attached)
+}
+
+fn tmux_bool(value: &str) -> bool {
+    value == "1"
+}
+
+fn tmux_attached(value: &str) -> bool {
+    value.parse::<u16>().unwrap_or(0) > 0
 }
 
 fn non_empty_string(value: &str) -> Option<String> {
@@ -639,6 +694,35 @@ mod tests {
     }
 
     #[test]
+    fn parses_pane_snapshots() -> Result<()> {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let output = format!(
+            "project{separator}@1{separator}kmux-feature{separator}%2{separator}kmux{separator}nvim{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}empty{separator}%3{separator}{separator}{separator}0{separator}0{separator}0{separator}"
+        );
+
+        let panes = parse_pane_snapshots(&output)?;
+
+        assert_eq!(panes.len(), 2);
+        assert_eq!(panes[0].session_name, "project");
+        assert_eq!(panes[0].window_id, "@1");
+        assert_eq!(panes[0].window_name, "kmux-feature");
+        assert_eq!(panes[0].pane_id, "%2");
+        assert_eq!(panes[0].title.as_deref(), Some("kmux"));
+        assert_eq!(panes[0].current_command.as_deref(), Some("nvim"));
+        assert!(panes[0].pane_active);
+        assert!(panes[0].window_active);
+        assert!(panes[0].session_attached);
+        assert_eq!(panes[0].kmux_role.as_deref(), Some("sidebar"));
+        assert_eq!(panes[1].title, None);
+        assert_eq!(panes[1].current_command, None);
+        assert!(!panes[1].pane_active);
+        assert!(!panes[1].window_active);
+        assert!(!panes[1].session_attached);
+        assert_eq!(panes[1].kmux_role, None);
+        Ok(())
+    }
+
+    #[test]
     fn creates_selects_lists_and_kills_windows_on_isolated_socket() -> Result<()> {
         let Some(fixture) = TmuxFixture::new()? else {
             return Ok(());
@@ -661,6 +745,14 @@ mod tests {
         assert_eq!(context.window_name, "feature-auth");
         assert_eq!(context.pane_id, pane_id);
         assert!(tmux.window_exists_by_name("project", "feature-auth")?);
+        let snapshot = tmux
+            .list_pane_snapshots()?
+            .into_iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .ok_or_else(|| anyhow::anyhow!("expected created pane in tmux snapshot"))?;
+        assert_eq!(snapshot.session_name, "project");
+        assert_eq!(snapshot.window_id, context.window_id);
+        assert_eq!(snapshot.window_name, "feature-auth");
 
         tmux.select_window_id(&context.window_id)?;
         tmux.select_pane(&pane_id)?;
