@@ -28,6 +28,7 @@ pub(super) struct SidebarApp {
     selection_mode: SelectionMode,
     selected_pane_id: Option<String>,
     selected_window_id: Option<String>,
+    sidebar_has_focus: bool,
     window_visible: bool,
     last_error: Option<String>,
     should_quit: bool,
@@ -59,6 +60,7 @@ impl SidebarApp {
             selection_mode: SelectionMode::FollowHost,
             selected_pane_id: None,
             selected_window_id: None,
+            sidebar_has_focus: false,
             window_visible: true,
             last_error: None,
             should_quit: false,
@@ -82,6 +84,7 @@ impl SidebarApp {
             selection_mode: SelectionMode::FollowHost,
             selected_pane_id: None,
             selected_window_id: None,
+            sidebar_has_focus: false,
             window_visible: true,
             last_error: None,
             should_quit: false,
@@ -91,17 +94,17 @@ impl SidebarApp {
         app
     }
 
-    pub(super) fn refresh_rows(&mut self) {
+    pub(super) fn refresh_rows(&mut self) -> bool {
         let visibility = self.sidebar_visibility();
-        self.refresh_rows_for_visibility(visibility);
+        self.refresh_rows_for_visibility(visibility)
     }
 
-    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) {
+    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
         self.window_visible = visibility.window_visible;
         self.update_selection_mode_for_focus(visibility.pane_has_focus);
         if !self.should_refresh_model(visibility) {
             self.sync_selection();
-            return;
+            return false;
         }
 
         match active_agents(&self.store, &self.tmux) {
@@ -121,6 +124,7 @@ impl SidebarApp {
                 self.last_error = Some(error.to_string());
             }
         }
+        true
     }
 
     pub(super) fn request_disable(&mut self) {
@@ -164,10 +168,10 @@ impl SidebarApp {
             return;
         };
         if let Err(error) = self.select_row_target(&row) {
-            self.refresh_rows();
+            let _ = self.refresh_rows();
             self.last_error = Some(format!("jump failed: {error}"));
         } else {
-            self.selection_mode = SelectionMode::FollowHost;
+            self.reset_after_successful_jump(&row);
         }
     }
 
@@ -187,8 +191,21 @@ impl SidebarApp {
         self.last_error.as_deref()
     }
 
+    #[cfg(test)]
     pub(super) fn selected_index(&self) -> Option<usize> {
         self.list_state.selected()
+    }
+
+    pub(super) fn active_index(&self) -> Option<usize> {
+        self.host_window_id
+            .as_deref()
+            .and_then(|window_id| row_index_by_window(&self.rows, window_id))
+    }
+
+    pub(super) fn cursor_index(&self) -> Option<usize> {
+        self.sidebar_has_focus
+            .then(|| self.list_state.selected())
+            .flatten()
     }
 
     pub(super) fn list_state_mut(&mut self) -> &mut ListState {
@@ -279,8 +296,22 @@ impl SidebarApp {
             .and_then(|index| self.rows.get(index))
     }
 
+    fn reset_after_successful_jump(&mut self, row: &SidebarRow) {
+        self.selection_mode = SelectionMode::FollowHost;
+        self.sidebar_has_focus = false;
+        if self
+            .host_window_id
+            .as_deref()
+            .is_some_and(|host_window_id| host_window_id != row.window_id)
+        {
+            self.window_visible = false;
+        }
+        self.sync_selection();
+    }
+
     fn select_index_manual(&mut self, index: usize) {
         self.selection_mode = SelectionMode::Manual;
+        self.sidebar_has_focus = true;
         self.select_index_internal(index);
     }
 
@@ -309,6 +340,7 @@ impl SidebarApp {
     }
 
     fn update_selection_mode_for_focus(&mut self, sidebar_has_focus: bool) {
+        self.sidebar_has_focus = sidebar_has_focus;
         if !sidebar_has_focus {
             self.selection_mode = SelectionMode::FollowHost;
         }
@@ -450,11 +482,12 @@ mod tests {
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(app.selected_index(), Some(1));
 
-        app.refresh_rows_for_visibility(TmuxPaneVisibility {
+        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
             pane_has_focus: false,
             window_visible: false,
         });
 
+        assert!(!refreshed);
         assert!(!app.window_visible());
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
         assert_eq!(app.selected_index(), Some(0));
@@ -471,11 +504,12 @@ mod tests {
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
 
-        app.refresh_rows_for_visibility(TmuxPaneVisibility {
+        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
             pane_has_focus: false,
             window_visible: false,
         });
 
+        assert!(!refreshed);
         assert!(!app.window_visible());
         assert_eq!(app.rows().len(), 1);
         assert_eq!(app.rows()[0].window_id, "@other");
@@ -490,11 +524,12 @@ mod tests {
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
-        app.refresh_rows_for_visibility(TmuxPaneVisibility {
+        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
             pane_has_focus: false,
             window_visible: false,
         });
 
+        assert!(refreshed);
         assert!(!app.window_visible());
         assert!(app.rows().is_empty());
     }
@@ -516,11 +551,15 @@ mod tests {
         let mut app = SidebarApp::test(Some("@2"), rows);
 
         assert_eq!(app.selected_index(), Some(1));
+        assert_eq!(app.active_index(), Some(1));
+        assert_eq!(app.cursor_index(), None);
 
         app.previous();
 
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.active_index(), Some(1));
+        assert_eq!(app.cursor_index(), Some(0));
     }
 
     #[test]
@@ -607,8 +646,55 @@ mod tests {
 
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
         assert_eq!(app.selected_index(), Some(0));
+        assert_eq!(app.active_index(), Some(0));
+        assert_eq!(app.cursor_index(), None);
         assert_eq!(app.selected_window_id.as_deref(), Some("@1"));
         assert_eq!(app.selected_pane_id.as_deref(), Some("%1"));
+    }
+
+    #[test]
+    fn successful_cross_window_jump_marks_source_sidebar_hidden() {
+        let rows = vec![
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
+                100,
+                TEST_SLEEPING_ICON,
+            ),
+        ];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.next();
+        let target = app.rows()[1].clone();
+
+        app.reset_after_successful_jump(&target);
+
+        assert!(!app.window_visible());
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert_eq!(app.active_index(), Some(0));
+        assert_eq!(app.cursor_index(), None);
+    }
+
+    #[test]
+    fn successful_same_window_jump_keeps_source_sidebar_visible() {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            100,
+            TEST_SLEEPING_ICON,
+        )];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.sidebar_has_focus = true;
+        let target = app.rows()[0].clone();
+
+        app.reset_after_successful_jump(&target);
+
+        assert!(app.window_visible());
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert_eq!(app.active_index(), Some(0));
+        assert_eq!(app.cursor_index(), None);
     }
 
     #[test]

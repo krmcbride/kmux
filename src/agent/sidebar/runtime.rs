@@ -32,9 +32,10 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
         }
 
         let now = Instant::now();
+        let mut model_refreshed = false;
         if schedule.model_due(now) {
             let was_animating = app.should_animate_spinner();
-            app.refresh_rows();
+            model_refreshed = app.refresh_rows();
             let now = Instant::now();
             schedule.reset_model(now);
             if !was_animating || !app.should_animate_spinner() {
@@ -43,12 +44,14 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
         }
 
         let now = Instant::now();
+        let mut spinner_tick = false;
         if app.should_animate_spinner() && schedule.spinner_due(now) {
             app.tick_spinner();
+            spinner_tick = true;
             schedule.reset_spinner(Instant::now());
         }
 
-        if app.window_visible() {
+        if app.window_visible() || model_refreshed || spinner_tick {
             terminal.draw(|frame| render_sidebar_tui(frame, app))?;
             if app.should_quit() {
                 return Ok(app.disable_requested());
@@ -58,12 +61,16 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
         let now = Instant::now();
         let timeout = schedule.next_timeout(now, app.should_animate_spinner());
 
-        if event::poll(timeout)?
-            && process_tui_event(event::read()?, app) == EventOutcome::ModelRefreshed
-        {
+        if event::poll(timeout)? {
+            let outcome = process_tui_event(event::read()?, app);
+            if outcome == EventOutcome::ModelRefreshed {
+                terminal.draw(|frame| render_sidebar_tui(frame, app))?;
+            }
             let now = Instant::now();
-            schedule.reset_model(now);
-            schedule.reset_spinner(now);
+            if outcome == EventOutcome::ModelRefreshed {
+                schedule.reset_model(now);
+                schedule.reset_spinner(now);
+            }
         }
     }
 }

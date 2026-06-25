@@ -12,7 +12,8 @@ use crate::agent::sidebar::model::{SidebarRow, build_rows};
 use crate::config::Config;
 use crate::state::{AgentState, AgentStatus};
 
-const SELECTED_BG: Color = Color::Rgb(40, 48, 62);
+const ACTIVE_BG: Color = Color::Rgb(34, 41, 54);
+const CURSOR_BG: Color = Color::Rgb(40, 48, 62);
 const TEXT_FG: Color = Color::Rgb(205, 214, 244);
 const DIM_FG: Color = Color::Rgb(108, 112, 134);
 const BORDER_FG: Color = Color::Rgb(58, 74, 94);
@@ -42,7 +43,8 @@ pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
         return;
     }
 
-    let selected_index = app.selected_index();
+    let active_index = app.active_index();
+    let cursor_index = app.cursor_index();
     let row_count = app.rows().len();
     let items = app
         .rows()
@@ -54,7 +56,7 @@ pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
                 index > 0,
                 index + 1 == row_count,
                 list_area.width as usize,
-                selected_index == Some(index),
+                row_highlight(index, active_index, cursor_index),
             )
         })
         .collect::<Vec<_>>();
@@ -80,20 +82,51 @@ fn tile_item(
     include_separator: bool,
     include_bottom_separator: bool,
     width: usize,
-    selected: bool,
+    highlight: RowHighlight,
 ) -> ListItem<'static> {
     let mut lines = Vec::new();
     if include_separator {
         lines.push(separator_line(width));
     }
 
-    lines.push(tile_line(row, LineKind::Primary, width, selected));
-    lines.push(tile_line(row, LineKind::Secondary, width, selected));
-    lines.push(tile_line(row, LineKind::Title, width, selected));
+    lines.push(tile_line(row, LineKind::Primary, width, highlight));
+    lines.push(tile_line(row, LineKind::Secondary, width, highlight));
+    lines.push(tile_line(row, LineKind::Title, width, highlight));
     if include_bottom_separator {
         lines.push(separator_line(width));
     }
     ListItem::new(lines)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RowHighlight {
+    None,
+    Active,
+    Cursor,
+}
+
+impl RowHighlight {
+    fn bg(self) -> Option<Color> {
+        match self {
+            Self::None => None,
+            Self::Active => Some(ACTIVE_BG),
+            Self::Cursor => Some(CURSOR_BG),
+        }
+    }
+}
+
+fn row_highlight(
+    index: usize,
+    active_index: Option<usize>,
+    cursor_index: Option<usize>,
+) -> RowHighlight {
+    if cursor_index == Some(index) {
+        RowHighlight::Cursor
+    } else if active_index == Some(index) {
+        RowHighlight::Active
+    } else {
+        RowHighlight::None
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -110,15 +143,20 @@ fn separator_line(width: usize) -> Line<'static> {
     ))
 }
 
-fn tile_line(row: &SidebarRow, kind: LineKind, width: usize, selected: bool) -> Line<'static> {
-    let bg = selected.then_some(SELECTED_BG);
+fn tile_line(
+    row: &SidebarRow,
+    kind: LineKind,
+    width: usize,
+    highlight: RowHighlight,
+) -> Line<'static> {
+    let bg = highlight.bg();
     if width < 6 {
         return narrow_tile_line(row, kind, width, bg);
     }
 
     let body_width = width - 6;
     let stripe_style = style_with_bg(Style::default().fg(status_color(row)), bg);
-    let text_style = row_text_style(row, selected);
+    let text_style = row_text_style(row, bg);
     let dim_style = style_with_bg(Style::default().fg(DIM_FG), bg);
     let status_style = style_with_bg(Style::default().fg(status_color(row)), bg);
 
@@ -209,11 +247,11 @@ fn status_color(row: &SidebarRow) -> Color {
     }
 }
 
-fn row_text_style(row: &SidebarRow, selected: bool) -> Style {
+fn row_text_style(row: &SidebarRow, bg: Option<Color>) -> Style {
     let fg = if row.is_idle { DIM_FG } else { TEXT_FG };
     let mut style = Style::default().fg(fg);
-    if selected {
-        style = style.bg(SELECTED_BG);
+    if let Some(bg) = bg {
+        style = style.bg(bg);
     }
     if row.is_idle {
         style = style.add_modifier(Modifier::DIM);
@@ -377,7 +415,7 @@ sidebar: {idle_after_seconds: 10}
     }
 
     #[test]
-    fn ratatui_renderer_draws_selected_tile_with_expected_text() -> anyhow::Result<()> {
+    fn ratatui_renderer_draws_active_tile_with_expected_text() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Waiting, 120, "@1", "%1");
         agent.agent_title = Some("Implement richer sidebar".to_owned());
         agent.context_usage = Some("163.2K (41%)".to_owned());
@@ -394,7 +432,34 @@ sidebar: {idle_after_seconds: 10}
         assert!(text.contains("3m"));
         assert!(text.contains("163.2K (41%)"));
         assert!(text.contains("Implement richer sidebar"));
-        assert_eq!(buffer[(0, 0)].bg, SELECTED_BG);
+        assert_eq!(buffer[(0, 0)].bg, ACTIVE_BG);
+        Ok(())
+    }
+
+    #[test]
+    fn ratatui_renderer_draws_cursor_over_active_tile() -> anyhow::Result<()> {
+        let rows = vec![
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
+                300,
+                TEST_SLEEPING_ICON,
+            ),
+            SidebarRow::from_agent(
+                &agent_state(AgentStatus::Working, 120, "@2", "%2"),
+                300,
+                TEST_SLEEPING_ICON,
+            ),
+        ];
+        let backend = TestBackend::new(42, 8);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        app.next();
+        terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
+
+        let buffer = terminal.backend().buffer();
+        assert_eq!(buffer[(0, 0)].bg, ACTIVE_BG);
+        assert_eq!(buffer[(0, 4)].bg, CURSOR_BG);
         Ok(())
     }
 
@@ -445,7 +510,7 @@ sidebar: {idle_after_seconds: 10}
 
         for width in 0..6 {
             for kind in [LineKind::Primary, LineKind::Secondary, LineKind::Title] {
-                let line = tile_line(&row, kind, width, true);
+                let line = tile_line(&row, kind, width, RowHighlight::Cursor);
                 assert!(line_width(&line) <= width);
             }
         }
