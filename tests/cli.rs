@@ -762,6 +762,9 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
     let wake_hook = tmux.global_hook("after-select-window[90]")?;
     assert!(wake_hook.contains("sidebar wake"));
     assert!(wake_hook.contains("#{window_id}"));
+    let pane_wake_hook = tmux.global_hook("after-select-pane[90]")?;
+    assert!(pane_wake_hook.contains("sidebar wake"));
+    assert!(pane_wake_hook.contains("#{window_id}"));
     let session_wake_hook = tmux.global_hook("client-session-changed[90]")?;
     assert!(session_wake_hook.contains("sidebar wake"));
     assert!(session_wake_hook.contains("#{window_id}"));
