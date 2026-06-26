@@ -40,20 +40,57 @@ impl SidebarRowIdentity {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum SidebarRowState {
+    Working,
+    Waiting,
+    Done,
+    Idle,
+}
+
+impl SidebarRowState {
+    fn from_status(status: AgentStatus, age_seconds: u64, idle_after_seconds: u64) -> Self {
+        match status {
+            AgentStatus::Working => Self::Working,
+            AgentStatus::Waiting => Self::Waiting,
+            AgentStatus::Done if age_seconds >= idle_after_seconds => Self::Idle,
+            AgentStatus::Done => Self::Done,
+        }
+    }
+
+    pub(super) fn is_working(self) -> bool {
+        self == Self::Working
+    }
+
+    pub(super) fn is_idle(self) -> bool {
+        self == Self::Idle
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
     pub(super) status: AgentStatus,
+    pub(super) state: SidebarRowState,
     pub(super) icon: String,
     pub(super) primary: String,
     pub(super) secondary: String,
     pub(super) secondary_right: String,
     pub(super) title: String,
     pub(super) elapsed: String,
-    pub(super) is_idle: bool,
     pub(super) session_name: String,
     pub(super) window_id: String,
     pub(super) pane_id: Option<String>,
+}
+
+impl SidebarRow {
+    pub(super) fn is_idle(&self) -> bool {
+        self.state.is_idle()
+    }
+
+    pub(super) fn is_working(&self) -> bool {
+        self.state.is_working()
+    }
 }
 
 impl SidebarRow {
@@ -112,8 +149,8 @@ impl SidebarRow {
             .unwrap_or_default()
             .to_owned();
         let age = now.saturating_sub(report.status_changed_at);
-        let is_idle = report.status == AgentStatus::Done && age >= idle_after_seconds;
-        let icon = if is_idle {
+        let state = SidebarRowState::from_status(report.status, age, idle_after_seconds);
+        let icon = if state.is_idle() {
             icons.sleeping.clone()
         } else {
             match report.status {
@@ -126,13 +163,13 @@ impl SidebarRow {
         Self {
             identity: SidebarRowIdentity::from_report(report),
             status: report.status,
+            state,
             icon,
             primary,
             secondary,
             secondary_right,
             title,
             elapsed: compact_elapsed(age),
-            is_idle,
             session_name: target.session_name.clone().unwrap_or_default(),
             window_id: target.window_id.clone().unwrap_or_default(),
             pane_id: target.pane_id.clone(),
@@ -306,7 +343,8 @@ mod tests {
         assert_eq!(rows[0].title, "Implement sidebar");
         assert_eq!(rows[0].elapsed, "30m");
         assert_eq!(rows[0].icon, TEST_SLEEPING_ICON);
-        assert!(rows[0].is_idle);
+        assert_eq!(rows[0].state, SidebarRowState::Idle);
+        assert!(rows[0].is_idle());
     }
 
     #[test]
@@ -319,7 +357,25 @@ mod tests {
         );
 
         assert_eq!(rows[0].icon, "?");
-        assert!(!rows[0].is_idle);
+        assert_eq!(rows[0].state, SidebarRowState::Waiting);
+        assert!(!rows[0].is_idle());
+    }
+
+    #[test]
+    fn row_model_derives_all_display_states() {
+        let reports = [
+            report_state(AgentStatus::Working, 0, "@1", "%1"),
+            report_state(AgentStatus::Waiting, 0, "@2", "%2"),
+            report_state(AgentStatus::Done, 100, "@3", "%3"),
+            report_state(AgentStatus::Done, 0, "@4", "%4"),
+        ];
+
+        let rows = build_rows(&reports, 300, 300);
+
+        assert_eq!(rows[0].state, SidebarRowState::Working);
+        assert_eq!(rows[1].state, SidebarRowState::Waiting);
+        assert_eq!(rows[2].state, SidebarRowState::Done);
+        assert_eq!(rows[3].state, SidebarRowState::Idle);
     }
 
     #[test]
@@ -329,8 +385,10 @@ mod tests {
         let active_rows = build_rows(&reports, 1_799, 1_800);
         let idle_rows = build_rows(&reports, 1_800, 1_800);
 
-        assert!(!active_rows[0].is_idle);
-        assert!(idle_rows[0].is_idle);
+        assert_eq!(active_rows[0].state, SidebarRowState::Done);
+        assert!(!active_rows[0].is_idle());
+        assert_eq!(idle_rows[0].state, SidebarRowState::Idle);
+        assert!(idle_rows[0].is_idle());
     }
 
     #[test]

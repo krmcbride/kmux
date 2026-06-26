@@ -8,8 +8,7 @@ use ratatui::{
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::agent::sidebar::app::SidebarApp;
-use crate::agent::sidebar::model::SidebarRow;
-use crate::state::AgentStatus;
+use crate::agent::sidebar::model::{SidebarRow, SidebarRowState};
 
 const ACTIVE_BG: Color = Color::Rgb(34, 41, 54);
 const CURSOR_BG: Color = Color::Rgb(40, 48, 62);
@@ -172,7 +171,7 @@ fn tile_line(
             &row.elapsed,
             body_width,
             text_style.add_modifier(Modifier::BOLD),
-            dim_style,
+            elapsed_style(row, bg),
             bg,
         ),
         LineKind::Secondary => line_with_right(
@@ -236,23 +235,29 @@ fn line_with_right(
 }
 
 fn status_color(row: &SidebarRow) -> Color {
-    if row.is_idle {
-        return DIM_FG;
-    }
-    match row.status {
-        AgentStatus::Working => WORKING_FG,
-        AgentStatus::Waiting => WAITING_FG,
-        AgentStatus::Done => DONE_FG,
+    match row.state {
+        SidebarRowState::Working => WORKING_FG,
+        SidebarRowState::Waiting => WAITING_FG,
+        SidebarRowState::Done => DONE_FG,
+        SidebarRowState::Idle => DIM_FG,
     }
 }
 
+fn elapsed_style(row: &SidebarRow, bg: Option<Color>) -> Style {
+    let mut style = Style::default().fg(status_color(row));
+    if row.is_idle() {
+        style = style.add_modifier(Modifier::DIM);
+    }
+    style_with_bg(style, bg)
+}
+
 fn row_text_style(row: &SidebarRow, bg: Option<Color>) -> Style {
-    let fg = if row.is_idle { DIM_FG } else { TEXT_FG };
+    let fg = if row.is_idle() { DIM_FG } else { TEXT_FG };
     let mut style = Style::default().fg(fg);
     if let Some(bg) = bg {
         style = style.bg(bg);
     }
-    if row.is_idle {
+    if row.is_idle() {
         style = style.add_modifier(Modifier::DIM);
     }
     style
@@ -322,6 +327,8 @@ fn display_width(value: &str) -> usize {
 mod tests {
     use super::*;
     use crate::agent::sidebar::model::{TEST_SLEEPING_ICON, agent_state};
+    use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
+    use crate::state::AgentStatus;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -427,6 +434,32 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ratatui_renderer_colors_elapsed_by_row_state() -> anyhow::Result<()> {
+        assert_eq!(
+            rendered_elapsed_fg(AgentStatus::Working, 120, 300, "3m")?,
+            WORKING_FG
+        );
+        assert_eq!(
+            rendered_elapsed_fg(AgentStatus::Waiting, 120, 300, "3m")?,
+            WAITING_FG
+        );
+        assert_eq!(
+            rendered_elapsed_fg(AgentStatus::Done, 120, 300, "3m")?,
+            DONE_FG
+        );
+        assert_eq!(
+            rendered_elapsed_fg(
+                AgentStatus::Done,
+                0,
+                DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
+                "30m"
+            )?,
+            DIM_FG
+        );
+        Ok(())
+    }
+
     fn buffer_text(buffer: &ratatui::buffer::Buffer, width: u16, height: u16) -> String {
         (0..height)
             .flat_map(|y| (0..width).map(move |x| buffer[(x, y)].symbol()))
@@ -438,5 +471,52 @@ mod tests {
             .iter()
             .map(|span| display_width(span.content.as_ref()))
             .sum()
+    }
+
+    fn rendered_elapsed_fg(
+        status: AgentStatus,
+        status_changed_at: u64,
+        now: u64,
+        elapsed: &str,
+    ) -> anyhow::Result<Color> {
+        let rows = vec![SidebarRow::from_agent(
+            &agent_state(status, status_changed_at, "@1", "%1"),
+            now,
+            TEST_SLEEPING_ICON,
+        )];
+        let backend = TestBackend::new(42, 4);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
+
+        let buffer = terminal.backend().buffer();
+        elapsed_fg(buffer, 42, 0, elapsed).ok_or_else(|| {
+            anyhow::anyhow!("elapsed label {elapsed:?} was not rendered on primary row")
+        })
+    }
+
+    fn elapsed_fg(
+        buffer: &ratatui::buffer::Buffer,
+        width: u16,
+        y: u16,
+        elapsed: &str,
+    ) -> Option<Color> {
+        let chars = elapsed.chars().map(|ch| ch.to_string()).collect::<Vec<_>>();
+        let len = u16::try_from(chars.len()).ok()?;
+        if len == 0 || len > width {
+            return None;
+        }
+
+        for x in 0..=width - len {
+            if chars
+                .iter()
+                .enumerate()
+                .all(|(offset, ch)| buffer[(x + offset as u16, y)].symbol() == ch)
+            {
+                return Some(buffer[(x, y)].fg);
+            }
+        }
+        None
     }
 }

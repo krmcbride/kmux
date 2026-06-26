@@ -6,7 +6,7 @@ use crate::agent::sidebar::model::{
     SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
     row_index_by_identity, row_index_by_pane, row_index_by_window,
 };
-use crate::state::{AgentStatus, StateStore};
+use crate::state::StateStore;
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -218,10 +218,7 @@ impl SidebarApp {
     pub(super) fn should_animate_spinner(&self) -> bool {
         self.window_visible
             && !self.working_frames.is_empty()
-            && self
-                .rows
-                .iter()
-                .any(|row| row.status == AgentStatus::Working)
+            && self.rows.iter().any(SidebarRow::is_working)
     }
 
     pub(super) fn tick_spinner(&mut self) {
@@ -234,14 +231,14 @@ impl SidebarApp {
             return;
         };
         for row in &mut self.rows {
-            if row.status == AgentStatus::Working {
+            if row.is_working() {
                 row.icon.clone_from(&icon);
             }
         }
     }
 
     fn should_refresh_model(&self, visibility: TmuxPaneVisibility) -> bool {
-        visibility.window_visible || self.host_row().is_some_and(|row| !row.is_idle)
+        visibility.window_visible || self.host_row().is_some_and(|row| !row.is_idle())
     }
 
     fn host_row(&self) -> Option<&SidebarRow> {
