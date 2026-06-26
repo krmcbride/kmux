@@ -546,8 +546,10 @@ mod tests {
         TmuxPaneSnapshot {
             session_name: session_name.to_owned(),
             window_id: window_id.to_owned(),
+            window_index: "1".to_owned(),
             window_name: window_name.to_owned(),
             pane_id: pane_id.to_owned(),
+            pane_index: "1".to_owned(),
             pane_left: 0,
             pane_width: 80,
             window_width: 160,

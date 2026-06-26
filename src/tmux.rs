@@ -51,8 +51,10 @@ pub struct TmuxPane {
 pub struct TmuxPaneSnapshot {
     pub session_name: String,
     pub window_id: String,
+    pub window_index: String,
     pub window_name: String,
     pub pane_id: String,
+    pub pane_index: String,
     pub pane_left: u16,
     pub pane_width: u16,
     pub window_width: u16,
@@ -324,7 +326,7 @@ impl Tmux {
     pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
         let separator = TMUX_FIELD_SEPARATOR;
         let format = format!(
-            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
+            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
         );
         let output = self.stdout(["list-panes", "-a", "-F", &format])?;
         parse_pane_snapshots(&output)
@@ -546,24 +548,26 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
 
 fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
-    if fields.len() != 13 {
+    if fields.len() != 15 {
         bail!("unexpected tmux pane snapshot format: {line:?}");
     }
 
     Ok(TmuxPaneSnapshot {
         session_name: fields[0].to_owned(),
         window_id: fields[1].to_owned(),
-        window_name: fields[2].to_owned(),
-        pane_id: fields[3].to_owned(),
-        pane_left: fields[4].parse().unwrap_or_default(),
-        pane_width: fields[5].parse().unwrap_or_default(),
-        window_width: fields[6].parse().unwrap_or_default(),
-        title: non_empty_string(fields[7]),
-        current_command: non_empty_string(fields[8]),
-        pane_active: tmux_bool(fields[9]),
-        window_active: tmux_bool(fields[10]),
-        session_attached: tmux_attached(fields[11]),
-        kmux_role: non_empty_string(fields[12]),
+        window_index: fields[2].to_owned(),
+        window_name: fields[3].to_owned(),
+        pane_id: fields[4].to_owned(),
+        pane_index: fields[5].to_owned(),
+        pane_left: fields[6].parse().unwrap_or_default(),
+        pane_width: fields[7].parse().unwrap_or_default(),
+        window_width: fields[8].parse().unwrap_or_default(),
+        title: non_empty_string(fields[9]),
+        current_command: non_empty_string(fields[10]),
+        pane_active: tmux_bool(fields[11]),
+        window_active: tmux_bool(fields[12]),
+        session_attached: tmux_attached(fields[13]),
+        kmux_role: non_empty_string(fields[14]),
     })
 }
 
@@ -733,7 +737,7 @@ mod tests {
     fn parses_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}kmux-feature{separator}%2{separator}0{separator}42{separator}120{separator}kmux{separator}nvim{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}empty{separator}%3{separator}0{separator}80{separator}80{separator}{separator}{separator}0{separator}0{separator}0{separator}"
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}kmux{separator}nvim{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}{separator}{separator}0{separator}0{separator}0{separator}"
         );
 
         let panes = parse_pane_snapshots(&output)?;
@@ -741,8 +745,10 @@ mod tests {
         assert_eq!(panes.len(), 2);
         assert_eq!(panes[0].session_name, "project");
         assert_eq!(panes[0].window_id, "@1");
+        assert_eq!(panes[0].window_index, "1");
         assert_eq!(panes[0].window_name, "kmux-feature");
         assert_eq!(panes[0].pane_id, "%2");
+        assert_eq!(panes[0].pane_index, "1");
         assert_eq!(panes[0].pane_left, 0);
         assert_eq!(panes[0].pane_width, 42);
         assert_eq!(panes[0].window_width, 120);
