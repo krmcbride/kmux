@@ -603,6 +603,35 @@ status_icons:
         .success()
         .stdout(predicate::str::contains("opened auth-v2"));
     assert!(tmux.window_exists("kmux-auth-v2")?);
+    for option in [
+        "@kmux_worktree_handle",
+        "@kmux_worktree_path",
+        "@kmux_worktree_branch",
+    ] {
+        tmux.tmux_output(&["set-option", "-uw", "-t", "kmux-auth-v2", option])?;
+    }
+    assert_eq!(
+        tmux.window_option("kmux-auth-v2", "@kmux_worktree_path")?,
+        None
+    );
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["open", "auth-v2"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("opened auth-v2"));
+    assert_eq!(
+        tmux.window_option("kmux-auth-v2", "@kmux_worktree_handle")?,
+        Some("auth-v2".to_owned())
+    );
+    assert_eq!(
+        tmux.window_option("kmux-auth-v2", "@kmux_worktree_path")?,
+        Some(renamed_worktree.display().to_string())
+    );
+    assert_eq!(
+        tmux.window_option("kmux-auth-v2", "@kmux_worktree_branch")?,
+        Some("feature/auth".to_owned())
+    );
 
     kmux(&repo, &config_home, &tmux)?
         .args(["rm", "auth-v2"])

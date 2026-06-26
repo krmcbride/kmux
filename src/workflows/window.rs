@@ -16,6 +16,7 @@ pub(super) fn open_resolved(
         .tmux
         .window_exists_by_name(&tmux.session_name, &window_name)?
     {
+        set_worktree_metadata(&tmux.tmux, &tmux.session_name, &window_name, resolved)?;
         if focus {
             tmux.tmux.select_window(&tmux.session_name, &window_name)?;
         }
