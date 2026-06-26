@@ -241,6 +241,17 @@ impl TmuxFixture {
         Ok(false)
     }
 
+    fn wait_for_pane_command(&self, pane_id: &str, command: &str) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if self.pane_format(pane_id, "#{pane_current_command}")? == command {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(false)
+    }
+
     fn global_option(&self, option_name: &str) -> Result<Option<String>> {
         let output = self.tmux_output(&["show-option", "-gqv", option_name])?;
         Ok(Some(output).filter(|value| !value.is_empty()))
@@ -260,6 +271,15 @@ impl TmuxFixture {
             }
         }
         Err(anyhow!("pane for tmux window '{window_name}' not found"))
+    }
+
+    fn pane_format(&self, pane_id: &str, format: &str) -> Result<String> {
+        self.tmux_output(&["display-message", "-p", "-t", pane_id, format])
+    }
+
+    fn pane_count_for_window(&self, window_id: &str) -> Result<usize> {
+        let output = self.tmux_output(&["list-panes", "-t", window_id, "-F", "#{pane_id}"])?;
+        Ok(output.lines().count())
     }
 
     fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
@@ -1105,6 +1125,54 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
             .tmux_output(&["show-hooks", "-g"])?
             .contains("sidebar wake")
     );
+    Ok(())
+}
+
+#[test]
+fn sidebar_on_reuses_restored_sidebar_pane() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
+    let window_id = tmux.tmux_output(&["display-message", "-p", "#{window_id}"])?;
+    let restored_pane = tmux.tmux_output(&[
+        "split-window",
+        "-d",
+        "-h",
+        "-b",
+        "-t",
+        &window_id,
+        "-l",
+        "10",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        "while :; do sleep 60; done",
+    ])?;
+    tmux.set_pane_title(&restored_pane, "kmux")?;
+
+    assert_eq!(tmux.sidebar_pane_count()?, 0);
+    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "on"])
+        .assert()
+        .success();
+
+    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
+    assert_eq!(tmux.sidebar_pane_count()?, 1);
+    assert_eq!(
+        tmux.pane_format(&restored_pane, "#{@kmux_role}")?.as_str(),
+        "sidebar"
+    );
+    assert_eq!(
+        tmux.pane_format(&restored_pane, "#{pane_width}")?
+            .parse::<u16>()?,
+        30
+    );
+    assert!(tmux.wait_for_pane_command(&restored_pane, "kmux")?);
+
     Ok(())
 }
 
