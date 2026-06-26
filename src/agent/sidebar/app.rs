@@ -3,7 +3,8 @@ use ratatui::widgets::ListState;
 
 use crate::agent::active::active_reports;
 use crate::agent::sidebar::model::{
-    SidebarIcons, SidebarRow, build_rows_with_working_icon, row_index_by_pane, row_index_by_window,
+    SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
+    row_index_by_identity, row_index_by_pane, row_index_by_window,
 };
 use crate::state::{AgentStatus, StateStore};
 use crate::tmux::{Tmux, TmuxPaneVisibility};
@@ -26,6 +27,7 @@ pub(super) struct SidebarApp {
     sidebar_pane_id: Option<String>,
     host_window_id: Option<String>,
     selection_mode: SelectionMode,
+    selected_identity: Option<SidebarRowIdentity>,
     selected_pane_id: Option<String>,
     selected_window_id: Option<String>,
     sidebar_has_focus: bool,
@@ -58,6 +60,7 @@ impl SidebarApp {
             sidebar_pane_id,
             host_window_id,
             selection_mode: SelectionMode::FollowHost,
+            selected_identity: None,
             selected_pane_id: None,
             selected_window_id: None,
             sidebar_has_focus: false,
@@ -82,6 +85,7 @@ impl SidebarApp {
             sidebar_pane_id: None,
             host_window_id: host_window_id.map(str::to_owned),
             selection_mode: SelectionMode::FollowHost,
+            selected_identity: None,
             selected_pane_id: None,
             selected_window_id: None,
             sidebar_has_focus: false,
@@ -256,27 +260,33 @@ impl SidebarApp {
                 .host_window_id
                 .as_deref()
                 .and_then(|window_id| row_index_by_window(&self.rows, window_id)),
-            SelectionMode::Manual => Some(
-                self.selected_pane_id
-                    .as_deref()
-                    .and_then(|pane_id| row_index_by_pane(&self.rows, pane_id))
-                    .or_else(|| {
-                        self.selected_window_id
-                            .as_deref()
-                            .and_then(|window_id| row_index_by_window(&self.rows, window_id))
-                    })
-                    .or_else(|| {
-                        self.list_state
-                            .selected()
-                            .filter(|idx| *idx < self.rows.len())
-                    })
-                    .unwrap_or(0),
-            ),
+            SelectionMode::Manual => Some(self.manual_selection_index().unwrap_or(0)),
         };
         match selected {
             Some(index) => self.select_index_internal(index),
             None => self.list_state.select(None),
         }
+    }
+
+    fn manual_selection_index(&self) -> Option<usize> {
+        self.selected_identity
+            .as_ref()
+            .and_then(|identity| row_index_by_identity(&self.rows, identity))
+            .or_else(|| {
+                self.selected_pane_id
+                    .as_deref()
+                    .and_then(|pane_id| row_index_by_pane(&self.rows, pane_id))
+            })
+            .or_else(|| {
+                self.selected_window_id
+                    .as_deref()
+                    .and_then(|window_id| row_index_by_window(&self.rows, window_id))
+            })
+            .or_else(|| {
+                self.list_state
+                    .selected()
+                    .filter(|idx| *idx < self.rows.len())
+            })
     }
 
     fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
@@ -317,6 +327,7 @@ impl SidebarApp {
         let index = index.min(self.rows.len().saturating_sub(1));
         self.list_state.select(Some(index));
         if let Some(row) = self.rows.get(index) {
+            self.selected_identity = Some(row.identity.clone());
             self.selected_pane_id = row.pane_id.clone();
             self.selected_window_id = Some(row.window_id.clone());
         }
@@ -377,7 +388,7 @@ fn test_state_store() -> StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::model::{TEST_SLEEPING_ICON, agent_state};
+    use crate::agent::sidebar::model::{TEST_SLEEPING_ICON, agent_state, report_state};
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
     use crate::state::AgentStatus;
 
@@ -624,6 +635,28 @@ mod tests {
     }
 
     #[test]
+    fn manual_selection_tracks_exact_non_pane_row_when_windows_match() {
+        let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+
+        assert_eq!(app.active_index(), Some(0));
+        app.next();
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(app.cursor_index(), Some(1));
+
+        app.rows = vec![
+            server_row("ses_a", "First refreshed"),
+            server_row("ses_b", "Second refreshed"),
+        ];
+        app.sync_selection();
+
+        assert_eq!(app.selection_mode, SelectionMode::Manual);
+        assert_eq!(app.active_index(), Some(0));
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(app.rows()[1].title, "Second refreshed");
+    }
+
+    #[test]
     fn manual_selection_returns_to_host_when_sidebar_loses_focus() {
         let rows = vec![
             SidebarRow::from_agent(
@@ -715,5 +748,14 @@ mod tests {
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
         );
+    }
+
+    fn server_row(session_id: &str, title: &str) -> SidebarRow {
+        let mut report = report_state(AgentStatus::Working, 100, "@1", "%server");
+        report.key = crate::state::AgentReportKey::new("opencode-server", "server", session_id);
+        report.session_id = Some(session_id.to_owned());
+        report.title = Some(title.to_owned());
+        report.target.pane_id = None;
+        SidebarRow::from_report(&report, 100)
     }
 }

@@ -90,6 +90,8 @@ pub struct AgentTargetHints {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentReportState {
     pub key: AgentReportKey,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
     pub status: AgentStatus,
     pub status_changed_at: u64,
     pub observed_at: u64,
@@ -285,6 +287,7 @@ mod tests {
         let key = AgentReportKey::tmux_pane("test", "%1");
         let state = AgentReportState {
             key: key.clone(),
+            session_id: Some("ses_123".to_owned()),
             status: AgentStatus::Working,
             status_changed_at: 42,
             observed_at: 43,
@@ -331,6 +334,7 @@ mod tests {
         let store = StateStore::with_path(temp.path().join("state"))?;
         let state = AgentReportState {
             key: AgentReportKey::tmux_pane("test", "%1"),
+            session_id: None,
             status: AgentStatus::Done,
             status_changed_at: 42,
             observed_at: 43,

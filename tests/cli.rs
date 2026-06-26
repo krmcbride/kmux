@@ -712,6 +712,8 @@ status_icons:
         .args([
             "set-window-status",
             "working",
+            "--session-id",
+            "ses_visible_root",
             "--title",
             "Implement richer sidebar",
             "--context",
@@ -722,8 +724,13 @@ status_icons:
     let first = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let first_changed = state_timestamp(&first, "status_changed_at")?;
     let first_observed = state_timestamp(&first, "observed_at")?;
+    assert_eq!(
+        tmux.window_option(&tmux.pane_id, "@kmux_status")?,
+        Some("W".to_owned())
+    );
     assert_eq!(first["title"].as_str(), Some("Implement richer sidebar"));
     assert_eq!(first["context"].as_str(), Some("163.2K (41%)"));
+    assert_eq!(first["session_id"].as_str(), Some("ses_visible_root"));
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?

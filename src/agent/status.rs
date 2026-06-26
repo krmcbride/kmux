@@ -123,6 +123,7 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
         .map_or(now, |report| report.status_changed_at);
     let state = AgentReportState {
         key,
+        session_id: clean_optional(args.session_id),
         status,
         status_changed_at,
         observed_at: now,
@@ -135,7 +136,7 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
 }
 
 fn has_explicit_identity(args: &cli::SetWindowStatusArgs) -> bool {
-    args.source.is_some() || args.source_instance.is_some() || args.session_id.is_some()
+    args.source.is_some() || args.source_instance.is_some()
 }
 
 fn report_key(

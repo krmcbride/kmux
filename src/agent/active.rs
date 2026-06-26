@@ -82,29 +82,38 @@ fn reconcile_active_reports(
             if pane.current_command.is_some() {
                 report.target.pane_current_command = pane.current_command.clone();
             }
-        } else if report.target.window_id.is_none()
-            && let Some(window) = resolve_report_window(&report, windows)
-        {
-            report.target.tmux_instance = Some(instance_id.to_owned());
-            report.target.window_id = Some(window.window_id.clone());
-            report.target.session_name = Some(window.session_name.clone());
-            report.target.window_name = Some(window.window_name.clone());
-            if window.kmux_worktree_handle.is_some() {
-                report.target.worktree_handle = window.kmux_worktree_handle.clone();
-            }
-            if window.kmux_worktree_path.is_some() {
-                report.target.worktree_path = window.kmux_worktree_path.clone();
-            }
-            if window.kmux_worktree_branch.is_some() {
-                report.target.branch = window.kmux_worktree_branch.clone();
-            }
+        } else {
+            let Some(window) = resolve_report_window(&report, windows) else {
+                continue;
+            };
+            enrich_report_from_window(&mut report, window, instance_id);
         }
 
         if report.target.window_id.is_some() {
             active.push(report);
         }
     }
-    Ok(active)
+    Ok(dedupe_equivalent_reports(active))
+}
+
+fn enrich_report_from_window(
+    report: &mut AgentReportState,
+    window: &TmuxWindow,
+    instance_id: &str,
+) {
+    report.target.tmux_instance = Some(instance_id.to_owned());
+    report.target.window_id = Some(window.window_id.clone());
+    report.target.session_name = Some(window.session_name.clone());
+    report.target.window_name = Some(window.window_name.clone());
+    if window.kmux_worktree_handle.is_some() {
+        report.target.worktree_handle = window.kmux_worktree_handle.clone();
+    }
+    if window.kmux_worktree_path.is_some() {
+        report.target.worktree_path = window.kmux_worktree_path.clone();
+    }
+    if window.kmux_worktree_branch.is_some() {
+        report.target.branch = window.kmux_worktree_branch.clone();
+    }
 }
 
 fn resolve_report_window<'a>(
@@ -152,6 +161,88 @@ fn resolve_report_window<'a>(
 fn unique_window<'a>(mut windows: impl Iterator<Item = &'a TmuxWindow>) -> Option<&'a TmuxWindow> {
     let window = windows.next()?;
     windows.next().is_none().then_some(window)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct EquivalentReportKey {
+    session_id: String,
+    window_id: String,
+}
+
+fn dedupe_equivalent_reports(reports: Vec<AgentReportState>) -> Vec<AgentReportState> {
+    let mut deduped = Vec::<AgentReportState>::new();
+    let mut indexes = HashMap::<EquivalentReportKey, usize>::new();
+
+    for report in reports {
+        let Some(key) = equivalent_report_key(&report) else {
+            deduped.push(report);
+            continue;
+        };
+
+        if let Some(index) = indexes.get(&key).copied() {
+            let existing = deduped[index].clone();
+            deduped[index] = merge_equivalent_reports(existing, report);
+        } else {
+            indexes.insert(key, deduped.len());
+            deduped.push(report);
+        }
+    }
+
+    deduped
+}
+
+fn equivalent_report_key(report: &AgentReportState) -> Option<EquivalentReportKey> {
+    let session_id = report
+        .session_id
+        .as_deref()
+        .or_else(|| (report.key.source != TMUX_PANE_SOURCE).then_some(report.key.id.as_str()))?;
+    let window_id = report.target.window_id.as_deref()?;
+    Some(EquivalentReportKey {
+        session_id: session_id.to_owned(),
+        window_id: window_id.to_owned(),
+    })
+}
+
+fn merge_equivalent_reports(
+    existing: AgentReportState,
+    candidate: AgentReportState,
+) -> AgentReportState {
+    let candidate_is_better = report_preference_key(&candidate) > report_preference_key(&existing);
+    let (mut selected, fallback) = if candidate_is_better {
+        (candidate, existing)
+    } else {
+        (existing, candidate)
+    };
+
+    if selected.session_id.is_none() {
+        selected.session_id = fallback.session_id;
+    }
+    if selected.target.pane_id.is_none() {
+        selected.target.pane_id = fallback.target.pane_id;
+    }
+    if selected.target.pane_title.is_none() {
+        selected.target.pane_title = fallback.target.pane_title;
+    }
+    if selected.target.pane_current_command.is_none() {
+        selected.target.pane_current_command = fallback.target.pane_current_command;
+    }
+    selected
+}
+
+fn report_preference_key(report: &AgentReportState) -> (u8, u64, u8) {
+    (
+        status_priority(report.status),
+        report.observed_at,
+        u8::from(report.target.pane_id.is_some()),
+    )
+}
+
+fn status_priority(status: crate::state::AgentStatus) -> u8 {
+    match status {
+        crate::state::AgentStatus::Waiting => 3,
+        crate::state::AgentStatus::Working => 2,
+        crate::state::AgentStatus::Done => 1,
+    }
 }
 
 fn prune_pane_reports(store: &StateStore, reports: &[AgentReportState]) -> Result<()> {
@@ -214,12 +305,35 @@ mod tests {
         let mut report = report_state("%1", Some("@1"));
         report.key = AgentReportKey::new("test-source", "instance", "session-1");
         report.target.pane_id = None;
+        let windows = vec![window_snapshot(
+            "project",
+            "@1",
+            "project-main",
+            Some("project"),
+            Some("/repo/project"),
+            Some("main"),
+        )];
 
-        let active = reconcile_active_reports(&store, vec![report], &HashMap::new(), &[], "test")?;
+        let active =
+            reconcile_active_reports(&store, vec![report], &HashMap::new(), &windows, "test")?;
 
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].target.window_id.as_deref(), Some("@1"));
         assert_eq!(active[0].target.pane_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn omits_non_pane_reports_with_stale_window_ids() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::test_with_path(temp.path())?;
+        let mut report = report_state("%1", Some("@missing"));
+        report.key = AgentReportKey::new("opencode-server", "instance", "session-1");
+        report.target.pane_id = None;
+
+        let active = reconcile_active_reports(&store, vec![report], &HashMap::new(), &[], "test")?;
+
+        assert!(active.is_empty());
         Ok(())
     }
 
@@ -255,6 +369,95 @@ mod tests {
         );
         assert_eq!(active[0].target.worktree_handle.as_deref(), Some("project"));
         assert_eq!(active[0].target.branch.as_deref(), Some("main"));
+        Ok(())
+    }
+
+    #[test]
+    fn dedupes_pane_and_server_reports_for_same_session_window() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::test_with_path(temp.path())?;
+        let mut pane_report = report_state("%1", Some("@1"));
+        pane_report.session_id = Some("ses_root".to_owned());
+        pane_report.status = AgentStatus::Working;
+        pane_report.observed_at = 100;
+
+        let mut server_report = report_state("%server", Some("@1"));
+        server_report.key =
+            AgentReportKey::new("opencode-server", "http://127.0.0.1:4096", "ses_root");
+        server_report.session_id = None;
+        server_report.status = AgentStatus::Waiting;
+        server_report.observed_at = 200;
+        server_report.target.pane_id = None;
+        server_report.target.pane_title = None;
+        server_report.title = Some("Permission prompt".to_owned());
+
+        let windows = vec![window_snapshot(
+            "project",
+            "@1",
+            "project-main",
+            Some("project"),
+            Some("/repo/project"),
+            Some("main"),
+        )];
+
+        let active = reconcile_active_reports(
+            &store,
+            vec![pane_report, server_report],
+            &HashMap::from([(
+                "%1".to_owned(),
+                pane_snapshot("%1", "@1", "project", "project-main", Some("pane"), None),
+            )]),
+            &windows,
+            "test",
+        )?;
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].key.source, "opencode-server");
+        assert_eq!(active[0].status, AgentStatus::Waiting);
+        assert_eq!(active[0].target.pane_id.as_deref(), Some("%1"));
+        assert_eq!(active[0].title.as_deref(), Some("Permission prompt"));
+        Ok(())
+    }
+
+    #[test]
+    fn keeps_distinct_non_pane_sessions_in_same_window() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::test_with_path(temp.path())?;
+        let mut first = report_state("%server-a", None);
+        first.key = AgentReportKey::new("opencode-server", "server", "ses_a");
+        first.session_id = Some("ses_a".to_owned());
+        first.target.pane_id = None;
+        first.target.worktree_path = Some("/repo/project".to_owned());
+        first.title = Some("First session".to_owned());
+
+        let mut second = report_state("%server-b", None);
+        second.key = AgentReportKey::new("opencode-server", "server", "ses_b");
+        second.session_id = Some("ses_b".to_owned());
+        second.target.pane_id = None;
+        second.target.worktree_path = Some("/repo/project".to_owned());
+        second.title = Some("Second session".to_owned());
+
+        let windows = vec![window_snapshot(
+            "project",
+            "@1",
+            "project-main",
+            Some("project"),
+            Some("/repo/project"),
+            Some("main"),
+        )];
+
+        let active = reconcile_active_reports(
+            &store,
+            vec![first, second],
+            &HashMap::new(),
+            &windows,
+            "test",
+        )?;
+
+        assert_eq!(active.len(), 2);
+        assert_eq!(active[0].target.window_id.as_deref(), Some("@1"));
+        assert_eq!(active[1].target.window_id.as_deref(), Some("@1"));
+        assert_ne!(active[0].key.id, active[1].key.id);
         Ok(())
     }
 
@@ -310,6 +513,7 @@ mod tests {
     fn report_state(pane_id: &str, window_id: Option<&str>) -> AgentReportState {
         AgentReportState {
             key: AgentReportKey::tmux_pane("test", pane_id),
+            session_id: None,
             status: AgentStatus::Working,
             status_changed_at: 100,
             observed_at: 100,

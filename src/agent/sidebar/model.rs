@@ -24,7 +24,25 @@ impl SidebarIcons {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct SidebarRowIdentity {
+    source: String,
+    instance: String,
+    id: String,
+}
+
+impl SidebarRowIdentity {
+    fn from_report(report: &AgentReportState) -> Self {
+        Self {
+            source: report.key.source.clone(),
+            instance: report.key.instance.clone(),
+            id: report.key.id.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarRow {
+    pub(super) identity: SidebarRowIdentity,
     pub(super) status: AgentStatus,
     pub(super) icon: String,
     pub(super) primary: String,
@@ -83,8 +101,9 @@ impl SidebarRow {
                     .filter(|title| *title != primary && *title != secondary)
             })
             .or(target.pane_current_command.as_deref())
-            .unwrap_or_default()
-            .to_owned();
+            .map(str::to_owned)
+            .or_else(|| fallback_session_title(report, &primary, &secondary))
+            .unwrap_or_default();
         let secondary_right = report
             .context
             .as_deref()
@@ -105,6 +124,7 @@ impl SidebarRow {
         };
 
         Self {
+            identity: SidebarRowIdentity::from_report(report),
             status: report.status,
             icon,
             primary,
@@ -169,6 +189,13 @@ pub(super) fn row_index_by_window(rows: &[SidebarRow], window_id: &str) -> Optio
     rows.iter().position(|row| row.window_id == window_id)
 }
 
+pub(super) fn row_index_by_identity(
+    rows: &[SidebarRow],
+    identity: &SidebarRowIdentity,
+) -> Option<usize> {
+    rows.iter().position(|row| &row.identity == identity)
+}
+
 pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<usize> {
     rows.iter()
         .position(|row| row.pane_id.as_deref() == Some(pane_id))
@@ -184,6 +211,26 @@ fn compact_elapsed(seconds: u64) -> String {
     } else {
         format!("{}d", seconds / (60 * 60 * 24))
     }
+}
+
+fn fallback_session_title(
+    report: &AgentReportState,
+    primary: &str,
+    secondary: &str,
+) -> Option<String> {
+    let session_id = report.session_id.as_deref().or_else(|| {
+        report
+            .target
+            .pane_id
+            .is_none()
+            .then_some(report.key.id.as_str())
+    })?;
+    let label = format!("session {}", compact_session_id(session_id));
+    (label != primary && label != secondary).then_some(label)
+}
+
+fn compact_session_id(session_id: &str) -> &str {
+    session_id.get(..12).unwrap_or(session_id)
 }
 
 #[cfg(test)]
@@ -208,6 +255,7 @@ pub(super) fn report_state(
 ) -> AgentReportState {
     AgentReportState {
         key: AgentReportKey::tmux_pane("test", pane_id),
+        session_id: None,
         status,
         status_changed_at,
         observed_at: status_changed_at,
@@ -322,5 +370,31 @@ mod tests {
 
         assert_eq!(rows[0].icon, "a");
         assert_eq!(rows[1].icon, "?");
+    }
+
+    #[test]
+    fn row_model_keeps_multiple_sessions_for_one_window_distinguishable() {
+        let mut first = report_state(AgentStatus::Working, 120, "@1", "%1");
+        first.key = AgentReportKey::new("opencode-server", "server", "ses_first");
+        first.session_id = Some("ses_first".to_owned());
+        first.target.pane_id = None;
+        first.title = Some("Implement sidebar rows".to_owned());
+
+        let mut second = report_state(AgentStatus::Waiting, 120, "@1", "%2");
+        second.key = AgentReportKey::new("opencode-server", "server", "ses_second");
+        second.session_id = Some("ses_second".to_owned());
+        second.target.pane_id = None;
+        second.title = None;
+        second.target.pane_title = None;
+        second.target.pane_current_command = None;
+
+        let rows = build_rows(&[first, second], 300, 1_800);
+
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].primary, "feature-sidebar");
+        assert_eq!(rows[1].primary, "feature-sidebar");
+        assert_eq!(rows[0].title, "Implement sidebar rows");
+        assert_eq!(rows[1].title, "session ses_second");
+        assert_ne!(rows[0].identity, rows[1].identity);
     }
 }
