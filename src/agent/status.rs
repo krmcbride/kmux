@@ -86,14 +86,20 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
     let config = Config::load()?;
     let tmux = Tmux::from_env();
     let store = StateStore::new()?;
-    let Some(context) = tmux.current_context()? else {
+    let explicit_identity = has_explicit_identity(&args);
+    let context = if explicit_identity {
+        None
+    } else {
+        tmux.current_context()?
+    };
+    let Some(key) = report_key(&args, &tmux, context.as_ref(), explicit_identity)? else {
         return Ok(());
     };
-    let tmux_instance = tmux.instance_id();
-    let key = AgentReportKey::tmux_pane(tmux_instance.clone(), context.pane_id.clone());
 
     if args.status == cli::AgentStatus::Clear {
-        tmux.unset_window_option(&context.pane_id, KMUX_STATUS_OPTION)?;
+        if !explicit_identity && let Some(context) = context.as_ref() {
+            tmux.unset_window_option(&context.pane_id, KMUX_STATUS_OPTION)?;
+        }
         store.delete_report(&key)?;
         return Ok(());
     }
@@ -104,19 +110,17 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
         cli::AgentStatus::Done => (StoredAgentStatus::Done, config.status_icons.done()),
         cli::AgentStatus::Clear => return Ok(()),
     };
-    tmux.set_window_option(&context.pane_id, KMUX_STATUS_OPTION, icon)?;
+    if !explicit_identity && let Some(context) = context.as_ref() {
+        tmux.set_window_option(&context.pane_id, KMUX_STATUS_OPTION, icon)?;
+    }
 
     let now = now_unix_seconds();
+    let target = report_target(&args, &config, &tmux, context.as_ref(), explicit_identity)?;
     let previous = store.get_report(&key)?;
     let status_changed_at = previous
         .as_ref()
-        .filter(|report| {
-            report.status == status
-                && report.target.window_id.as_deref() == Some(&context.window_id)
-        })
+        .filter(|report| report.status == status && report.target.window_id == target.window_id)
         .map_or(now, |report| report.status_changed_at);
-    let details = tmux.pane_details(&context.pane_id).ok();
-    let worktree = current_window_worktree(&config, &tmux, &context)?;
     let state = AgentReportState {
         key,
         status,
@@ -124,25 +128,98 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
         observed_at: now,
         title: clean_optional(args.title),
         context: clean_optional(args.context),
-        target: AgentTargetHints {
-            tmux_instance: Some(tmux_instance),
-            pane_id: Some(context.pane_id),
-            window_id: Some(context.window_id),
-            session_name: Some(context.session_name),
-            window_name: Some(context.window_name),
-            pane_title: details.as_ref().and_then(|details| details.title.clone()),
-            pane_current_command: details.and_then(|details| details.current_command),
-            worktree_handle: worktree.handle,
-            worktree_path: worktree.path.map(|path| path.display().to_string()),
-            branch: worktree.branch,
-            directory: None,
-        },
+        target,
     };
     store.upsert_report(&state)?;
     Ok(())
 }
 
+fn has_explicit_identity(args: &cli::SetWindowStatusArgs) -> bool {
+    args.source.is_some() || args.source_instance.is_some() || args.session_id.is_some()
+}
+
+fn report_key(
+    args: &cli::SetWindowStatusArgs,
+    tmux: &Tmux,
+    context: Option<&crate::tmux::TmuxContext>,
+    explicit_identity: bool,
+) -> Result<Option<AgentReportKey>> {
+    if !explicit_identity {
+        return Ok(context.map(|context| {
+            AgentReportKey::tmux_pane(tmux.instance_id(), context.pane_id.clone())
+        }));
+    }
+
+    let source = clean_optional_ref(args.source.as_ref())
+        .ok_or_else(|| anyhow::anyhow!("--source is required for explicit reports"))?;
+    let instance = clean_optional_ref(args.source_instance.as_ref())
+        .or_else(|| clean_optional_ref(args.tmux_instance.as_ref()))
+        .unwrap_or_else(|| "default".to_owned());
+    let id = clean_optional_ref(args.session_id.as_ref())
+        .or_else(|| clean_optional_ref(args.pane_id.as_ref()))
+        .ok_or_else(|| {
+            anyhow::anyhow!("--session-id or --pane-id is required for explicit reports")
+        })?;
+
+    Ok(Some(AgentReportKey::new(source, instance, id)))
+}
+
+fn report_target(
+    args: &cli::SetWindowStatusArgs,
+    config: &Config,
+    tmux: &Tmux,
+    context: Option<&crate::tmux::TmuxContext>,
+    explicit_identity: bool,
+) -> Result<AgentTargetHints> {
+    let inferred_context = (!explicit_identity).then_some(context).flatten();
+    let details = inferred_context.and_then(|context| tmux.pane_details(&context.pane_id).ok());
+    let worktree = if let Some(context) = inferred_context {
+        Some(current_window_worktree(config, tmux, context)?)
+    } else {
+        None
+    };
+
+    Ok(AgentTargetHints {
+        tmux_instance: clean_optional_ref(args.tmux_instance.as_ref())
+            .or_else(|| inferred_context.map(|_| tmux.instance_id())),
+        pane_id: clean_optional_ref(args.pane_id.as_ref())
+            .or_else(|| inferred_context.map(|context| context.pane_id.clone())),
+        window_id: clean_optional_ref(args.window_id.as_ref())
+            .or_else(|| inferred_context.map(|context| context.window_id.clone())),
+        session_name: clean_optional_ref(args.session_name.as_ref())
+            .or_else(|| inferred_context.map(|context| context.session_name.clone())),
+        window_name: clean_optional_ref(args.window_name.as_ref())
+            .or_else(|| inferred_context.map(|context| context.window_name.clone())),
+        pane_title: details.as_ref().and_then(|details| details.title.clone()),
+        pane_current_command: details.and_then(|details| details.current_command),
+        worktree_handle: clean_optional_ref(args.worktree_handle.as_ref()).or_else(|| {
+            worktree
+                .as_ref()
+                .and_then(|worktree| worktree.handle.clone())
+        }),
+        worktree_path: clean_optional_ref(args.worktree_path.as_ref()).or_else(|| {
+            worktree
+                .as_ref()
+                .and_then(|worktree| worktree.path.as_ref())
+                .map(|path| path.display().to_string())
+        }),
+        branch: clean_optional_ref(args.branch.as_ref()).or_else(|| {
+            worktree
+                .as_ref()
+                .and_then(|worktree| worktree.branch.clone())
+        }),
+        directory: clean_optional_ref(args.directory.as_ref()),
+    })
+}
+
 fn clean_optional(value: Option<String>) -> Option<String> {
+    value.and_then(|value| {
+        let value = value.trim();
+        (!value.is_empty()).then(|| value.to_owned())
+    })
+}
+
+fn clean_optional_ref(value: Option<&String>) -> Option<String> {
     value.and_then(|value| {
         let value = value.trim();
         (!value.is_empty()).then(|| value.to_owned())

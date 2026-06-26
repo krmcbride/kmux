@@ -1,16 +1,18 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use anyhow::Result;
 
+use crate::paths::same_path;
 use crate::state::{AgentReportState, StateStore, TMUX_PANE_SOURCE};
-use crate::tmux::{Tmux, TmuxPaneSnapshot};
+use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxWindow};
 
 pub fn active_reports(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentReportState>> {
     let instance_id = tmux.instance_id();
     let candidates = store
         .list_reports()?
         .into_iter()
-        .filter(|report| is_current_tmux_instance(report, &instance_id))
+        .filter(|report| is_candidate_for_tmux_instance(report, &instance_id))
         .collect::<Vec<_>>();
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -26,18 +28,28 @@ pub fn active_reports(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentReport
             return Ok(Vec::new());
         }
     };
-    reconcile_active_reports(store, candidates, &panes)
+    let windows = tmux.list_windows(None).unwrap_or_default();
+    reconcile_active_reports(store, candidates, &panes, &windows, &instance_id)
 }
 
-fn is_current_tmux_instance(report: &AgentReportState, instance_id: &str) -> bool {
-    report.target.tmux_instance.as_deref() == Some(instance_id)
-        || (report.key.source == TMUX_PANE_SOURCE && report.key.instance == instance_id)
+fn is_candidate_for_tmux_instance(report: &AgentReportState, instance_id: &str) -> bool {
+    if report.key.source == TMUX_PANE_SOURCE {
+        return report.key.instance == instance_id;
+    }
+
+    report
+        .target
+        .tmux_instance
+        .as_deref()
+        .is_none_or(|target_instance| target_instance == instance_id)
 }
 
 fn reconcile_active_reports(
     store: &StateStore,
     reports: Vec<AgentReportState>,
     panes: &HashMap<String, TmuxPaneSnapshot>,
+    windows: &[TmuxWindow],
+    instance_id: &str,
 ) -> Result<Vec<AgentReportState>> {
     let mut active = Vec::new();
     for mut report in reports {
@@ -70,6 +82,22 @@ fn reconcile_active_reports(
             if pane.current_command.is_some() {
                 report.target.pane_current_command = pane.current_command.clone();
             }
+        } else if report.target.window_id.is_none()
+            && let Some(window) = resolve_report_window(&report, windows)
+        {
+            report.target.tmux_instance = Some(instance_id.to_owned());
+            report.target.window_id = Some(window.window_id.clone());
+            report.target.session_name = Some(window.session_name.clone());
+            report.target.window_name = Some(window.window_name.clone());
+            if window.kmux_worktree_handle.is_some() {
+                report.target.worktree_handle = window.kmux_worktree_handle.clone();
+            }
+            if window.kmux_worktree_path.is_some() {
+                report.target.worktree_path = window.kmux_worktree_path.clone();
+            }
+            if window.kmux_worktree_branch.is_some() {
+                report.target.branch = window.kmux_worktree_branch.clone();
+            }
         }
 
         if report.target.window_id.is_some() {
@@ -77,6 +105,53 @@ fn reconcile_active_reports(
         }
     }
     Ok(active)
+}
+
+fn resolve_report_window<'a>(
+    report: &AgentReportState,
+    windows: &'a [TmuxWindow],
+) -> Option<&'a TmuxWindow> {
+    if let Some(window_id) = report.target.window_id.as_deref() {
+        return windows.iter().find(|window| window.window_id == window_id);
+    }
+
+    if let Some(window) = unique_window(windows.iter().filter(|window| {
+        report
+            .target
+            .worktree_path
+            .as_deref()
+            .zip(window.kmux_worktree_path.as_deref())
+            .is_some_and(|(left, right)| same_path(Path::new(left), Path::new(right)))
+    })) {
+        return Some(window);
+    }
+
+    if let Some(window) = unique_window(windows.iter().filter(|window| {
+        report
+            .target
+            .directory
+            .as_deref()
+            .zip(window.kmux_worktree_path.as_deref())
+            .is_some_and(|(left, right)| same_path(Path::new(left), Path::new(right)))
+    })) {
+        return Some(window);
+    }
+
+    if let (Some(session_name), Some(window_name)) = (
+        report.target.session_name.as_deref(),
+        report.target.window_name.as_deref(),
+    ) {
+        return windows.iter().find(|window| {
+            window.session_name == session_name && window.window_name == window_name
+        });
+    }
+
+    None
+}
+
+fn unique_window<'a>(mut windows: impl Iterator<Item = &'a TmuxWindow>) -> Option<&'a TmuxWindow> {
+    let window = windows.next()?;
+    windows.next().is_none().then_some(window)
 }
 
 fn prune_pane_reports(store: &StateStore, reports: &[AgentReportState]) -> Result<()> {
@@ -116,7 +191,7 @@ mod tests {
             ),
         )]);
 
-        let active = reconcile_active_reports(&store, vec![report], &panes)?;
+        let active = reconcile_active_reports(&store, vec![report], &panes, &[], "test")?;
 
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].target.session_name.as_deref(), Some("project"));
@@ -140,11 +215,46 @@ mod tests {
         report.key = AgentReportKey::new("test-source", "instance", "session-1");
         report.target.pane_id = None;
 
-        let active = reconcile_active_reports(&store, vec![report], &HashMap::new())?;
+        let active = reconcile_active_reports(&store, vec![report], &HashMap::new(), &[], "test")?;
 
         assert_eq!(active.len(), 1);
         assert_eq!(active[0].target.window_id.as_deref(), Some("@1"));
         assert_eq!(active[0].target.pane_id, None);
+        Ok(())
+    }
+
+    #[test]
+    fn resolves_non_pane_reports_by_worktree_path() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::test_with_path(temp.path())?;
+        let mut report = report_state("%1", None);
+        report.key = AgentReportKey::new("opencode-server", "http://127.0.0.1:4096", "session-1");
+        report.target.tmux_instance = None;
+        report.target.pane_id = None;
+        report.target.worktree_path = Some("/repo/project".to_owned());
+
+        let windows = vec![window_snapshot(
+            "project",
+            "@7",
+            "project-main",
+            Some("project"),
+            Some("/repo/project"),
+            Some("main"),
+        )];
+
+        let active =
+            reconcile_active_reports(&store, vec![report], &HashMap::new(), &windows, "test")?;
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].target.tmux_instance.as_deref(), Some("test"));
+        assert_eq!(active[0].target.window_id.as_deref(), Some("@7"));
+        assert_eq!(active[0].target.session_name.as_deref(), Some("project"));
+        assert_eq!(
+            active[0].target.window_name.as_deref(),
+            Some("project-main")
+        );
+        assert_eq!(active[0].target.worktree_handle.as_deref(), Some("project"));
+        assert_eq!(active[0].target.branch.as_deref(), Some("main"));
         Ok(())
     }
 
@@ -162,8 +272,13 @@ mod tests {
             pane_snapshot("%2", "@not-recorded", "project", "other", None, None),
         )]);
 
-        let active =
-            reconcile_active_reports(&store, vec![missing.clone(), reused.clone()], &panes)?;
+        let active = reconcile_active_reports(
+            &store,
+            vec![missing.clone(), reused.clone()],
+            &panes,
+            &[],
+            "test",
+        )?;
 
         assert!(active.is_empty());
         assert!(store.get_report(&missing.key)?.is_none());
@@ -235,6 +350,26 @@ mod tests {
             window_active: false,
             session_attached: false,
             kmux_role: None,
+        }
+    }
+
+    fn window_snapshot(
+        session_name: &str,
+        window_id: &str,
+        window_name: &str,
+        worktree_handle: Option<&str>,
+        worktree_path: Option<&str>,
+        branch: Option<&str>,
+    ) -> TmuxWindow {
+        TmuxWindow {
+            session_name: session_name.to_owned(),
+            window_id: window_id.to_owned(),
+            window_index: "1".to_owned(),
+            window_name: window_name.to_owned(),
+            active: false,
+            kmux_worktree_handle: worktree_handle.map(str::to_owned),
+            kmux_worktree_path: worktree_path.map(str::to_owned),
+            kmux_worktree_branch: branch.map(str::to_owned),
         }
     }
 }

@@ -46,7 +46,7 @@ pub enum Command {
     CompleteGitBranches,
     /// Update the current tmux window status from an external integration.
     #[command(name = "set-window-status", hide = true)]
-    SetWindowStatus(SetWindowStatusArgs),
+    SetWindowStatus(Box<SetWindowStatusArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -125,6 +125,18 @@ pub struct StatusArgs {
 pub struct SetWindowStatusArgs {
     pub status: AgentStatus,
 
+    /// Generic producer/source label for non-pane reports.
+    #[arg(long)]
+    pub source: Option<String>,
+
+    /// Producer instance label, such as an agent server URL.
+    #[arg(long)]
+    pub source_instance: Option<String>,
+
+    /// External agent session identifier.
+    #[arg(long)]
+    pub session_id: Option<String>,
+
     /// Human-readable agent/session title supplied by an external integration.
     #[arg(long)]
     pub title: Option<String>,
@@ -132,6 +144,42 @@ pub struct SetWindowStatusArgs {
     /// Compact context/usage label supplied by an external integration.
     #[arg(long)]
     pub context: Option<String>,
+
+    /// Target tmux instance for reports that know it.
+    #[arg(long)]
+    pub tmux_instance: Option<String>,
+
+    /// Target tmux pane id.
+    #[arg(long)]
+    pub pane_id: Option<String>,
+
+    /// Target tmux window id.
+    #[arg(long)]
+    pub window_id: Option<String>,
+
+    /// Target tmux session name.
+    #[arg(long)]
+    pub session_name: Option<String>,
+
+    /// Target tmux window name.
+    #[arg(long)]
+    pub window_name: Option<String>,
+
+    /// Worktree handle target hint.
+    #[arg(long)]
+    pub worktree_handle: Option<String>,
+
+    /// Worktree path target hint.
+    #[arg(long)]
+    pub worktree_path: Option<String>,
+
+    /// Branch target hint.
+    #[arg(long)]
+    pub branch: Option<String>,
+
+    /// Directory target hint.
+    #[arg(long)]
+    pub directory: Option<String>,
 }
 
 #[derive(Debug, Args)]

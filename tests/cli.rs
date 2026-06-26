@@ -422,25 +422,58 @@ fn kmux_with_pane(
 }
 
 fn agent_report_for_pane(config_home: &Path, pane_id: &str) -> Result<serde_json::Value> {
-    let reports_dir = config_home
-        .with_file_name("state-home")
-        .join("kmux")
-        .join("agent-reports");
+    find_agent_report(config_home, |value| {
+        value
+            .pointer("/target/pane_id")
+            .and_then(serde_json::Value::as_str)
+            == Some(pane_id)
+    })?
+    .ok_or_else(|| anyhow!("state for pane '{pane_id}' not found"))
+}
+
+fn agent_report_for_key(
+    config_home: &Path,
+    source: &str,
+    instance: &str,
+    id: &str,
+) -> Result<serde_json::Value> {
+    find_agent_report(config_home, |value| {
+        value
+            .pointer("/key/source")
+            .and_then(serde_json::Value::as_str)
+            == Some(source)
+            && value
+                .pointer("/key/instance")
+                .and_then(serde_json::Value::as_str)
+                == Some(instance)
+            && value.pointer("/key/id").and_then(serde_json::Value::as_str) == Some(id)
+    })?
+    .ok_or_else(|| anyhow!("state for report '{source}/{instance}/{id}' not found"))
+}
+
+fn find_agent_report(
+    config_home: &Path,
+    matches: impl Fn(&serde_json::Value) -> bool,
+) -> Result<Option<serde_json::Value>> {
+    let reports_dir = agent_reports_dir(config_home);
     for entry in fs::read_dir(&reports_dir)
         .with_context(|| format!("failed to read state directory {}", reports_dir.display()))?
     {
         let path = entry?.path();
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)
             .with_context(|| format!("failed to parse {}", path.display()))?;
-        if value
-            .pointer("/target/pane_id")
-            .and_then(serde_json::Value::as_str)
-            == Some(pane_id)
-        {
-            return Ok(value);
+        if matches(&value) {
+            return Ok(Some(value));
         }
     }
-    Err(anyhow!("state for pane '{pane_id}' not found"))
+    Ok(None)
+}
+
+fn agent_reports_dir(config_home: &Path) -> PathBuf {
+    config_home
+        .with_file_name("state-home")
+        .join("kmux")
+        .join("agent-reports")
 }
 
 fn state_timestamp(state: &serde_json::Value, field: &str) -> Result<u64> {
@@ -724,6 +757,245 @@ status_icons:
 
     assert!(third_changed > second_changed);
     assert_eq!(third_observed, third_changed);
+    Ok(())
+}
+
+#[test]
+fn set_window_status_accepts_non_pane_agent_reports() -> Result<()> {
+    let temp = TempDir::new()?;
+    let config_home = write_config(temp.path(), "")?;
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd)?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+            "--title",
+            "Implement producer",
+            "--context",
+            "12.3K (6%)",
+            "--directory",
+            "/repo/project",
+            "--worktree-path",
+            "/repo/project",
+            "--branch",
+            "main",
+        ])
+        .assert()
+        .success();
+
+    let report = agent_report_for_key(
+        &config_home,
+        "opencode-server",
+        "http://127.0.0.1:4096",
+        "ses_parent",
+    )?;
+    assert_eq!(report["status"].as_str(), Some("working"));
+    assert_eq!(report["title"].as_str(), Some("Implement producer"));
+    assert_eq!(report["context"].as_str(), Some("12.3K (6%)"));
+    assert_eq!(
+        report
+            .pointer("/target/directory")
+            .and_then(serde_json::Value::as_str),
+        Some("/repo/project")
+    );
+    assert_eq!(
+        report
+            .pointer("/target/worktree_path")
+            .and_then(serde_json::Value::as_str),
+        Some("/repo/project")
+    );
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "clear",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+        ])
+        .assert()
+        .success();
+
+    assert!(agent_reports_dir(&config_home).read_dir()?.next().is_none());
+    Ok(())
+}
+
+#[test]
+fn explicit_set_window_status_does_not_inherit_current_tmux_pane() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+            "--directory",
+            "/repo/project",
+        ])
+        .assert()
+        .success();
+
+    let report = agent_report_for_key(
+        &config_home,
+        "opencode-server",
+        "http://127.0.0.1:4096",
+        "ses_parent",
+    )?;
+    assert_eq!(report.pointer("/target/tmux_instance"), None);
+    assert_eq!(report.pointer("/target/pane_id"), None);
+    assert_eq!(report.pointer("/target/window_id"), None);
+    assert_eq!(report.pointer("/target/session_name"), None);
+    assert_eq!(report.pointer("/target/window_name"), None);
+    assert_eq!(tmux.window_option(&tmux.pane_id, "@kmux_status")?, None);
+    Ok(())
+}
+
+#[test]
+fn explicit_set_window_status_ignores_stale_tmux_environment() -> Result<()> {
+    let temp = TempDir::new()?;
+    let config_home = write_config(temp.path(), "")?;
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd)?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("TMUX", "/tmp/missing-tmux-socket,1,0")
+        .env("TMUX_PANE", "%999")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+        ])
+        .assert()
+        .success();
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("TMUX", "/tmp/missing-tmux-socket,1,0")
+        .env("TMUX_PANE", "%999")
+        .args([
+            "set-window-status",
+            "clear",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+        ])
+        .assert()
+        .success();
+
+    assert!(agent_reports_dir(&config_home).read_dir()?.next().is_none());
+    Ok(())
+}
+
+#[test]
+fn non_pane_agent_report_resolves_to_matching_tmux_worktree_window() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "")?;
+    let repo_path = repo.display().to_string();
+
+    tmux.tmux_output(&[
+        "set-option",
+        "-w",
+        "-t",
+        &tmux.pane_id,
+        "@kmux_worktree_handle",
+        "project",
+    ])?;
+    tmux.tmux_output(&[
+        "set-option",
+        "-w",
+        "-t",
+        &tmux.pane_id,
+        "@kmux_worktree_path",
+        &repo_path,
+    ])?;
+    tmux.tmux_output(&[
+        "set-option",
+        "-w",
+        "-t",
+        &tmux.pane_id,
+        "@kmux_worktree_branch",
+        "main",
+    ])?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&repo)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("KMUX_TMUX_SOCKET_NAME")
+        .env_remove("KMUX_TMUX_TMPDIR")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+            "--title",
+            "Implement producer",
+            "--worktree-path",
+            &repo_path,
+        ])
+        .assert()
+        .success();
+
+    let status = kmux(&repo, &config_home, &tmux)?
+        .arg("status")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&status.get_output().stdout);
+    assert!(stdout.contains("project"));
+    assert!(stdout.contains("working"));
+    assert!(stdout.contains("Implement producer"));
     Ok(())
 }
 
