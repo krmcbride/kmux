@@ -4,13 +4,14 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::agent::active::active_agents;
+use crate::agent::active::active_reports;
 use crate::cli;
-use crate::config::Config;
+use crate::config::{Config, StatusIcons};
 use crate::git::{Git, WorktreeInfo};
 use crate::paths::{RepoPaths, same_path};
 use crate::state::{
-    AgentState, AgentStatus as StoredAgentStatus, PaneKey, StateStore, now_unix_seconds,
+    AgentReportKey, AgentReportState, AgentStatus as StoredAgentStatus, AgentTargetHints,
+    StateStore, now_unix_seconds,
 };
 use crate::tmux::{
     KMUX_WORKTREE_BRANCH_OPTION, KMUX_WORKTREE_HANDLE_OPTION, KMUX_WORKTREE_PATH_OPTION, Tmux,
@@ -41,8 +42,7 @@ struct StatusEntry {
     icon: String,
     elapsed_secs: u64,
     title: Option<String>,
-    agent_title: Option<String>,
-    context_usage: Option<String>,
+    context: Option<String>,
     pane_id: String,
     worktree_handle: Option<String>,
     worktree_path: Option<String>,
@@ -64,8 +64,9 @@ struct DisplayRow {
 pub fn run(args: cli::StatusArgs) -> Result<()> {
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
-    let agents = active_agents(&store, &tmux)?;
-    let entries = status_entries(&agents, &args)?;
+    let config = Config::load()?;
+    let reports = active_reports(&store, &tmux)?;
+    let entries = status_entries(&reports, &args, &config.status_icons)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -88,11 +89,12 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
     let Some(context) = tmux.current_context()? else {
         return Ok(());
     };
-    let key = PaneKey::new_tmux(tmux.instance_id(), context.pane_id.clone());
+    let tmux_instance = tmux.instance_id();
+    let key = AgentReportKey::tmux_pane(tmux_instance.clone(), context.pane_id.clone());
 
     if args.status == cli::AgentStatus::Clear {
         tmux.unset_window_option(&context.pane_id, KMUX_STATUS_OPTION)?;
-        store.delete_agent(&key)?;
+        store.delete_report(&key)?;
         return Ok(());
     }
 
@@ -105,31 +107,38 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
     tmux.set_window_option(&context.pane_id, KMUX_STATUS_OPTION, icon)?;
 
     let now = now_unix_seconds();
-    let previous = store.get_agent(&key)?;
+    let previous = store.get_report(&key)?;
     let status_changed_at = previous
         .as_ref()
-        .filter(|agent| agent.status == status && agent.window_id == context.window_id)
-        .map_or(now, |agent| agent.status_changed_at);
+        .filter(|report| {
+            report.status == status
+                && report.target.window_id.as_deref() == Some(&context.window_id)
+        })
+        .map_or(now, |report| report.status_changed_at);
     let details = tmux.pane_details(&context.pane_id).ok();
     let worktree = current_window_worktree(&config, &tmux, &context)?;
-    let state = AgentState {
-        pane_key: key,
+    let state = AgentReportState {
+        key,
         status,
-        icon: icon.to_owned(),
         status_changed_at,
         observed_at: now,
-        agent_title: clean_optional(args.title),
-        context_usage: clean_optional(args.context),
-        pane_title: details.as_ref().and_then(|details| details.title.clone()),
-        pane_current_command: details.and_then(|details| details.current_command),
-        worktree_handle: worktree.handle,
-        worktree_path: worktree.path.map(|path| path.display().to_string()),
-        branch: worktree.branch,
-        session_name: context.session_name,
-        window_name: context.window_name,
-        window_id: context.window_id,
+        title: clean_optional(args.title),
+        context: clean_optional(args.context),
+        target: AgentTargetHints {
+            tmux_instance: Some(tmux_instance),
+            pane_id: Some(context.pane_id),
+            window_id: Some(context.window_id),
+            session_name: Some(context.session_name),
+            window_name: Some(context.window_name),
+            pane_title: details.as_ref().and_then(|details| details.title.clone()),
+            pane_current_command: details.and_then(|details| details.current_command),
+            worktree_handle: worktree.handle,
+            worktree_path: worktree.path.map(|path| path.display().to_string()),
+            branch: worktree.branch,
+            directory: None,
+        },
     };
-    store.upsert_agent(&state)?;
+    store.upsert_report(&state)?;
     Ok(())
 }
 
@@ -140,34 +149,39 @@ fn clean_optional(value: Option<String>) -> Option<String> {
     })
 }
 
-fn status_entries(agents: &[AgentState], args: &cli::StatusArgs) -> Result<Vec<StatusEntry>> {
+fn status_entries(
+    reports: &[AgentReportState],
+    args: &cli::StatusArgs,
+    icons: &StatusIcons,
+) -> Result<Vec<StatusEntry>> {
     let now = unix_now();
     if !args.filters.is_empty() {
-        return Ok(agents
+        return Ok(reports
             .iter()
-            .filter(|agent| {
+            .filter(|report| {
                 args.filters
                     .iter()
-                    .any(|filter| agent_matches_filter(agent, filter))
+                    .any(|filter| report_matches_filter(report, filter))
             })
-            .map(|agent| entry_for_agent(agent, None, now, args.git))
+            .map(|report| entry_for_report(report, None, now, args.git, icons))
             .collect());
     }
 
-    if let Some(entries) = current_repo_entries(agents, now, args.git)? {
+    if let Some(entries) = current_repo_entries(reports, now, args.git, icons)? {
         return Ok(entries);
     }
 
-    Ok(agents
+    Ok(reports
         .iter()
-        .map(|agent| entry_for_agent(agent, None, now, args.git))
+        .map(|report| entry_for_report(report, None, now, args.git, icons))
         .collect())
 }
 
 fn current_repo_entries(
-    agents: &[AgentState],
+    reports: &[AgentReportState],
     now: u64,
     show_git: bool,
+    icons: &StatusIcons,
 ) -> Result<Option<Vec<StatusEntry>>> {
     let cwd = std::env::current_dir().context("failed to read current directory")?;
     let Ok(paths) = RepoPaths::discover(&cwd) else {
@@ -178,34 +192,44 @@ fn current_repo_entries(
 
     let mut entries = Vec::new();
     for worktree in &worktrees {
-        for agent in agents
+        for report in reports
             .iter()
-            .filter(|agent| agent_matches_worktree(agent, worktree))
+            .filter(|report| report_matches_worktree(report, worktree))
         {
-            entries.push(entry_for_agent(agent, Some(worktree), now, show_git));
+            entries.push(entry_for_report(
+                report,
+                Some(worktree),
+                now,
+                show_git,
+                icons,
+            ));
         }
     }
     Ok(Some(entries))
 }
 
-fn entry_for_agent(
-    agent: &AgentState,
+fn entry_for_report(
+    report: &AgentReportState,
     worktree: Option<&WorktreeInfo>,
     now: u64,
     show_git: bool,
+    icons: &StatusIcons,
 ) -> StatusEntry {
     let worktree_path = worktree
         .map(|worktree| worktree.path.display().to_string())
-        .or_else(|| agent.worktree_path.clone());
+        .or_else(|| report.target.worktree_path.clone());
     let handle = worktree
         .and_then(|worktree| worktree.path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .or_else(|| agent.worktree_handle.clone());
+        .or_else(|| report.target.worktree_handle.clone());
     let branch = worktree
         .and_then(|worktree| worktree.branch.clone())
-        .or_else(|| agent.branch.clone())
+        .or_else(|| report.target.branch.clone())
         .unwrap_or_else(|| "-".to_owned());
-    let worktree_name = handle.clone().unwrap_or_else(|| agent.window_name.clone());
+    let worktree_name = handle
+        .clone()
+        .or_else(|| report.target.window_name.clone())
+        .unwrap_or_else(|| report.key.id.clone());
     let git = if show_git {
         worktree_path
             .as_deref()
@@ -218,47 +242,56 @@ fn entry_for_agent(
     StatusEntry {
         worktree: worktree_name,
         branch,
-        status: agent.status.as_str().to_owned(),
-        icon: agent.icon.clone(),
-        elapsed_secs: now.saturating_sub(agent.status_changed_at),
-        title: agent
-            .agent_title
+        status: report.status.as_str().to_owned(),
+        icon: status_icon(report.status, icons).to_owned(),
+        elapsed_secs: now.saturating_sub(report.status_changed_at),
+        title: report
+            .title
             .clone()
-            .or_else(|| agent.pane_title.clone()),
-        agent_title: agent.agent_title.clone(),
-        context_usage: agent.context_usage.clone(),
-        pane_id: agent.pane_key.pane_id.clone(),
+            .or_else(|| report.target.pane_title.clone()),
+        context: report.context.clone(),
+        pane_id: report.target.pane_id.clone().unwrap_or_default(),
         worktree_handle: handle,
         worktree_path,
-        session_name: agent.session_name.clone(),
-        window_name: agent.window_name.clone(),
-        window_id: agent.window_id.clone(),
+        session_name: report.target.session_name.clone().unwrap_or_default(),
+        window_name: report.target.window_name.clone().unwrap_or_default(),
+        window_id: report.target.window_id.clone().unwrap_or_default(),
         git,
     }
 }
 
-fn agent_matches_filter(agent: &AgentState, filter: &str) -> bool {
-    agent.worktree_handle.as_deref() == Some(filter)
-        || agent.branch.as_deref() == Some(filter)
-        || agent.window_name == filter
-        || agent.worktree_path.as_deref() == Some(filter)
+fn report_matches_filter(report: &AgentReportState, filter: &str) -> bool {
+    report.target.worktree_handle.as_deref() == Some(filter)
+        || report.target.branch.as_deref() == Some(filter)
+        || report.target.window_name.as_deref() == Some(filter)
+        || report.target.worktree_path.as_deref() == Some(filter)
+        || report.target.directory.as_deref() == Some(filter)
+        || report.key.id == filter
 }
 
-fn agent_matches_worktree(agent: &AgentState, worktree: &WorktreeInfo) -> bool {
-    let agent_path = agent.worktree_path.as_deref().map(Path::new);
-    if let Some(agent_path) = agent_path
-        && same_path(agent_path, &worktree.path)
+fn report_matches_worktree(report: &AgentReportState, worktree: &WorktreeInfo) -> bool {
+    let report_path = report.target.worktree_path.as_deref().map(Path::new);
+    if let Some(report_path) = report_path
+        && same_path(report_path, &worktree.path)
     {
         return true;
     }
 
     let handle = worktree.path.file_name().map(|name| name.to_string_lossy());
-    let branch_matches = agent.branch.as_deref() == worktree.branch.as_deref();
+    let branch_matches = report.target.branch.as_deref() == worktree.branch.as_deref();
     let handle_matches = handle
         .as_deref()
-        .is_some_and(|handle| agent.worktree_handle.as_deref() == Some(handle));
+        .is_some_and(|handle| report.target.worktree_handle.as_deref() == Some(handle));
 
-    agent_path.is_none() && branch_matches && handle_matches
+    report_path.is_none() && branch_matches && handle_matches
+}
+
+fn status_icon(status: StoredAgentStatus, icons: &StatusIcons) -> &str {
+    match status {
+        StoredAgentStatus::Working => icons.working(),
+        StoredAgentStatus::Waiting => icons.waiting(),
+        StoredAgentStatus::Done => icons.done(),
+    }
 }
 
 fn current_window_worktree(

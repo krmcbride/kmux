@@ -421,19 +421,19 @@ fn kmux_with_pane(
     Ok(command)
 }
 
-fn agent_state_for_pane(config_home: &Path, pane_id: &str) -> Result<serde_json::Value> {
-    let agents_dir = config_home
+fn agent_report_for_pane(config_home: &Path, pane_id: &str) -> Result<serde_json::Value> {
+    let reports_dir = config_home
         .with_file_name("state-home")
         .join("kmux")
-        .join("agents");
-    for entry in fs::read_dir(&agents_dir)
-        .with_context(|| format!("failed to read state directory {}", agents_dir.display()))?
+        .join("agent-reports");
+    for entry in fs::read_dir(&reports_dir)
+        .with_context(|| format!("failed to read state directory {}", reports_dir.display()))?
     {
         let path = entry?.path();
         let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)
             .with_context(|| format!("failed to parse {}", path.display()))?;
         if value
-            .pointer("/pane_key/pane_id")
+            .pointer("/target/pane_id")
             .and_then(serde_json::Value::as_str)
             == Some(pane_id)
         {
@@ -686,14 +686,11 @@ status_icons:
         ])
         .assert()
         .success();
-    let first = agent_state_for_pane(&config_home, &tmux.pane_id)?;
+    let first = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let first_changed = state_timestamp(&first, "status_changed_at")?;
     let first_observed = state_timestamp(&first, "observed_at")?;
-    assert_eq!(
-        first["agent_title"].as_str(),
-        Some("Implement richer sidebar")
-    );
-    assert_eq!(first["context_usage"].as_str(), Some("163.2K (41%)"));
+    assert_eq!(first["title"].as_str(), Some("Implement richer sidebar"));
+    assert_eq!(first["context"].as_str(), Some("163.2K (41%)"));
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?
@@ -707,24 +704,21 @@ status_icons:
         ])
         .assert()
         .success();
-    let second = agent_state_for_pane(&config_home, &tmux.pane_id)?;
+    let second = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let second_changed = state_timestamp(&second, "status_changed_at")?;
     let second_observed = state_timestamp(&second, "observed_at")?;
 
     assert_eq!(second_changed, first_changed);
     assert!(second_observed > first_observed);
-    assert_eq!(
-        second["agent_title"].as_str(),
-        Some("Implement richer sidebar")
-    );
-    assert_eq!(second["context_usage"].as_str(), Some("170.0K (43%)"));
+    assert_eq!(second["title"].as_str(), Some("Implement richer sidebar"));
+    assert_eq!(second["context"].as_str(), Some("170.0K (43%)"));
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?
         .args(["set-window-status", "waiting"])
         .assert()
         .success();
-    let third = agent_state_for_pane(&config_home, &tmux.pane_id)?;
+    let third = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let third_changed = state_timestamp(&third, "status_changed_at")?;
     let third_observed = state_timestamp(&third, "observed_at")?;
 

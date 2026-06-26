@@ -5,6 +5,7 @@ use std::io::IsTerminal;
 use anyhow::{Context, Result};
 
 use crate::agent::sidebar::app::SidebarApp;
+use crate::agent::sidebar::model::SidebarIcons;
 use crate::agent::sidebar::runtime::run_terminal_app;
 use crate::config::{Config, SidebarSize};
 use crate::state::StateStore;
@@ -86,10 +87,11 @@ pub(super) fn run_tui() -> Result<()> {
         .status_icons
         .working_frames()
         .map_or_else(Vec::new, <[String]>::to_vec);
+    let icons = SidebarIcons::from_config(&config.status_icons);
     let mut app = SidebarApp::new(
         tmux,
         store,
-        config.status_icons.sleeping().to_owned(),
+        icons,
         working_frames,
         config.sidebar.idle_after_seconds(),
     );

@@ -1,9 +1,9 @@
 use anyhow::Result;
 use ratatui::widgets::ListState;
 
-use crate::agent::active::active_agents;
+use crate::agent::active::active_reports;
 use crate::agent::sidebar::model::{
-    SidebarRow, build_rows_with_working_icon, row_index_by_pane, row_index_by_window,
+    SidebarIcons, SidebarRow, build_rows_with_working_icon, row_index_by_pane, row_index_by_window,
 };
 use crate::state::{AgentStatus, StateStore};
 use crate::tmux::{Tmux, TmuxPaneVisibility};
@@ -17,7 +17,7 @@ enum SelectionMode {
 pub(super) struct SidebarApp {
     tmux: Tmux,
     store: StateStore,
-    sleeping_icon: String,
+    icons: SidebarIcons,
     working_frames: Vec<String>,
     idle_after_seconds: u64,
     spinner_frame: usize,
@@ -39,7 +39,7 @@ impl SidebarApp {
     pub(super) fn new(
         tmux: Tmux,
         store: StateStore,
-        sleeping_icon: String,
+        icons: SidebarIcons,
         working_frames: Vec<String>,
         idle_after_seconds: u64,
     ) -> Self {
@@ -49,7 +49,7 @@ impl SidebarApp {
         Self {
             tmux,
             store,
-            sleeping_icon,
+            icons,
             working_frames,
             idle_after_seconds,
             spinner_frame: 0,
@@ -73,7 +73,7 @@ impl SidebarApp {
         let mut app = Self {
             tmux: Tmux::new(),
             store: test_state_store(),
-            sleeping_icon: crate::agent::sidebar::model::TEST_SLEEPING_ICON.to_owned(),
+            icons: crate::agent::sidebar::model::test_icons(),
             working_frames: Vec::new(),
             idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
             spinner_frame: 0,
@@ -107,13 +107,13 @@ impl SidebarApp {
             return false;
         }
 
-        match active_agents(&self.store, &self.tmux) {
-            Ok(agents) => {
+        match active_reports(&self.store, &self.tmux) {
+            Ok(reports) => {
                 let working_icon = self.working_icon().map(str::to_owned);
                 self.rows = build_rows_with_working_icon(
-                    &agents,
+                    &reports,
                     crate::state::now_unix_seconds(),
-                    &self.sleeping_icon,
+                    &self.icons,
                     working_icon.as_deref(),
                     self.idle_after_seconds,
                 );
@@ -282,7 +282,10 @@ impl SidebarApp {
     fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
         self.tmux.select_window_id(&row.window_id)?;
         let _ = self.tmux.switch_client_to_session(&row.session_name);
-        self.tmux.select_pane(&row.pane_id)
+        if let Some(pane_id) = &row.pane_id {
+            self.tmux.select_pane(pane_id)?;
+        }
+        Ok(())
     }
 
     fn selected_row(&self) -> Option<&SidebarRow> {
@@ -314,7 +317,7 @@ impl SidebarApp {
         let index = index.min(self.rows.len().saturating_sub(1));
         self.list_state.select(Some(index));
         if let Some(row) = self.rows.get(index) {
-            self.selected_pane_id = Some(row.pane_id.clone());
+            self.selected_pane_id = row.pane_id.clone();
             self.selected_window_id = Some(row.window_id.clone());
         }
     }

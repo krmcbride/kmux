@@ -328,8 +328,8 @@ mod tests {
     #[test]
     fn ratatui_renderer_draws_active_tile_with_expected_text() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Waiting, 120, "@1", "%1");
-        agent.agent_title = Some("Implement richer sidebar".to_owned());
-        agent.context_usage = Some("163.2K (41%)".to_owned());
+        agent.title = Some("Implement richer sidebar".to_owned());
+        agent.context = Some("163.2K (41%)".to_owned());
         let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
         let backend = TestBackend::new(42, 5);
         let mut terminal = Terminal::new(backend)?;
@@ -396,7 +396,7 @@ mod tests {
     #[test]
     fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
-        agent.worktree_handle = Some("very-long-sidebar-worktree-name".to_owned());
+        agent.target.worktree_handle = Some("very-long-sidebar-worktree-name".to_owned());
         let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
         let backend = TestBackend::new(18, 4);
         let mut terminal = Terminal::new(backend)?;

@@ -159,15 +159,14 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::model::{SidebarRow, TEST_SLEEPING_ICON, agent_state};
+    use crate::agent::sidebar::model::{SidebarRow, report_state};
     use crate::state::AgentStatus;
 
     #[test]
     fn quit_keys_request_disable_without_directly_exiting_test_app() {
-        let rows = vec![SidebarRow::from_agent(
-            &agent_state(AgentStatus::Waiting, 100, "@1", "%1"),
+        let rows = vec![SidebarRow::from_report(
+            &report_state(AgentStatus::Waiting, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -221,10 +220,9 @@ mod tests {
 
     #[test]
     fn f5_event_reports_redraw_request_for_wake_signal() {
-        let rows = vec![SidebarRow::from_agent(
-            &agent_state(AgentStatus::Done, 100, "@1", "%1"),
+        let rows = vec![SidebarRow::from_report(
+            &report_state(AgentStatus::Done, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(None, rows);
 

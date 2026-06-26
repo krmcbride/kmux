@@ -7,6 +7,8 @@ use anyhow::{Context, Result};
 use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 
+pub const TMUX_PANE_SOURCE: &str = "tmux-pane";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AgentStatus {
@@ -26,63 +28,77 @@ impl AgentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PaneKey {
-    pub backend: String,
+pub struct AgentReportKey {
+    pub source: String,
     pub instance: String,
-    pub pane_id: String,
+    pub id: String,
 }
 
-impl PaneKey {
-    pub fn new_tmux(instance: impl Into<String>, pane_id: impl Into<String>) -> Self {
+impl AgentReportKey {
+    pub fn new(
+        source: impl Into<String>,
+        instance: impl Into<String>,
+        id: impl Into<String>,
+    ) -> Self {
         Self {
-            backend: "tmux".to_owned(),
+            source: source.into(),
             instance: instance.into(),
-            pane_id: pane_id.into(),
+            id: id.into(),
         }
+    }
+
+    pub fn tmux_pane(instance: impl Into<String>, pane_id: impl Into<String>) -> Self {
+        Self::new(TMUX_PANE_SOURCE, instance, pane_id)
     }
 
     fn filename(&self) -> String {
         format!(
             "{}__{}__{}.json",
-            filename_component(&self.backend),
+            filename_component(&self.source),
             filename_component(&self.instance),
-            filename_component(&self.pane_id)
+            filename_component(&self.id)
         )
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct AgentState {
-    pub pane_key: PaneKey,
-    pub status: AgentStatus,
-    pub icon: String,
-    #[serde(alias = "updated_at")]
-    pub status_changed_at: u64,
-    #[serde(default)]
-    pub observed_at: u64,
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTargetHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_title: Option<String>,
+    pub tmux_instance: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context_usage: Option<String>,
+    pub pane_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_current_command: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_handle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub branch: Option<String>,
-    pub session_name: String,
-    pub window_name: String,
-    pub window_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
-impl AgentState {
-    fn normalize_timestamps(mut self) -> Self {
-        if self.observed_at == 0 {
-            self.observed_at = self.status_changed_at;
-        }
-        self
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentReportState {
+    pub key: AgentReportKey,
+    pub status: AgentStatus,
+    pub status_changed_at: u64,
+    pub observed_at: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+    #[serde(default)]
+    pub target: AgentTargetHints,
 }
 
 #[derive(Debug, Clone)]
@@ -99,25 +115,25 @@ impl StateStore {
         Self::with_path(state_root.join("kmux"))
     }
 
-    pub fn upsert_agent(&self, state: &AgentState) -> Result<()> {
-        let path = self.agent_path(&state.pane_key);
+    pub fn upsert_report(&self, state: &AgentReportState) -> Result<()> {
+        let path = self.report_path(&state.key);
         let content = serde_json::to_vec_pretty(state)?;
         write_atomic(&path, &content)
     }
 
-    pub fn get_agent(&self, key: &PaneKey) -> Result<Option<AgentState>> {
-        read_agent_file(&self.agent_path(key))
+    pub fn get_report(&self, key: &AgentReportKey) -> Result<Option<AgentReportState>> {
+        read_report_file(&self.report_path(key))
     }
 
-    pub fn list_agents(&self) -> Result<Vec<AgentState>> {
-        let agents_dir = self.agents_dir();
-        if !agents_dir.exists() {
+    pub fn list_reports(&self) -> Result<Vec<AgentReportState>> {
+        let reports_dir = self.reports_dir();
+        if !reports_dir.exists() {
             return Ok(Vec::new());
         }
 
-        let mut agents = Vec::new();
-        for entry in fs::read_dir(&agents_dir)
-            .with_context(|| format!("failed to read state directory {}", agents_dir.display()))?
+        let mut reports = Vec::new();
+        for entry in fs::read_dir(&reports_dir)
+            .with_context(|| format!("failed to read state directory {}", reports_dir.display()))?
         {
             let entry = entry?;
             let path = entry.path();
@@ -125,23 +141,26 @@ impl StateStore {
                 .extension()
                 .is_some_and(|extension| extension == "json")
             {
-                match read_agent_file(&path)? {
-                    Some(agent) => agents.push(agent),
+                match read_report_file(&path)? {
+                    Some(report) => reports.push(report),
                     None => delete_file_if_exists(&path)?,
                 }
             }
         }
 
-        agents.sort_by(|left, right| {
-            left.worktree_handle
-                .cmp(&right.worktree_handle)
-                .then_with(|| left.pane_key.pane_id.cmp(&right.pane_key.pane_id))
+        reports.sort_by(|left, right| {
+            left.target
+                .worktree_handle
+                .cmp(&right.target.worktree_handle)
+                .then_with(|| left.key.source.cmp(&right.key.source))
+                .then_with(|| left.key.instance.cmp(&right.key.instance))
+                .then_with(|| left.key.id.cmp(&right.key.id))
         });
-        Ok(agents)
+        Ok(reports)
     }
 
-    pub fn delete_agent(&self, key: &PaneKey) -> Result<()> {
-        delete_file_if_exists(&self.agent_path(key))
+    pub fn delete_report(&self, key: &AgentReportKey) -> Result<()> {
+        delete_file_if_exists(&self.report_path(key))
     }
 
     pub fn migrate_worktree(
@@ -154,20 +173,21 @@ impl StateStore {
         new_window_name: &str,
     ) -> Result<usize> {
         let mut migrated = 0;
-        for mut agent in self.list_agents()? {
-            let matches_handle = agent.worktree_handle.as_deref() == Some(old_handle);
-            let matches_path = agent
+        for mut report in self.list_reports()? {
+            let matches_handle = report.target.worktree_handle.as_deref() == Some(old_handle);
+            let matches_path = report
+                .target
                 .worktree_path
                 .as_deref()
                 .is_some_and(|path| Path::new(path) == old_path);
-            let matches_window = agent.window_name == old_window_name;
+            let matches_window = report.target.window_name.as_deref() == Some(old_window_name);
 
             if matches_handle || matches_path || matches_window {
-                agent.worktree_handle = Some(new_handle.to_owned());
-                agent.worktree_path = Some(new_path.display().to_string());
-                agent.window_name = new_window_name.to_owned();
-                agent.observed_at = now_unix_seconds();
-                self.upsert_agent(&agent)?;
+                report.target.worktree_handle = Some(new_handle.to_owned());
+                report.target.worktree_path = Some(new_path.display().to_string());
+                report.target.window_name = Some(new_window_name.to_owned());
+                report.observed_at = now_unix_seconds();
+                self.upsert_report(&report)?;
                 migrated += 1;
             }
         }
@@ -181,17 +201,17 @@ impl StateStore {
 
     fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path = base_path.into();
-        fs::create_dir_all(base_path.join("agents"))
+        fs::create_dir_all(base_path.join("agent-reports"))
             .with_context(|| format!("failed to create state directory {}", base_path.display()))?;
         Ok(Self { base_path })
     }
 
-    fn agents_dir(&self) -> PathBuf {
-        self.base_path.join("agents")
+    fn reports_dir(&self) -> PathBuf {
+        self.base_path.join("agent-reports")
     }
 
-    fn agent_path(&self, key: &PaneKey) -> PathBuf {
-        self.agents_dir().join(key.filename())
+    fn report_path(&self, key: &AgentReportKey) -> PathBuf {
+        self.reports_dir().join(key.filename())
     }
 }
 
@@ -201,7 +221,7 @@ pub fn now_unix_seconds() -> u64 {
         .map_or(0, |duration| duration.as_secs())
 }
 
-fn read_agent_file(path: &Path) -> Result<Option<AgentState>> {
+fn read_report_file(path: &Path) -> Result<Option<AgentReportState>> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
@@ -210,9 +230,7 @@ fn read_agent_file(path: &Path) -> Result<Option<AgentState>> {
         }
     };
 
-    Ok(serde_json::from_str::<AgentState>(&content)
-        .ok()
-        .map(AgentState::normalize_timestamps))
+    Ok(serde_json::from_str::<AgentReportState>(&content).ok())
 }
 
 fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
@@ -261,106 +279,76 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn state_store_round_trips_agent_state() -> Result<()> {
+    fn state_store_round_trips_agent_report_state() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let key = PaneKey::new_tmux("test", "%1");
-        let state = AgentState {
-            pane_key: key.clone(),
+        let key = AgentReportKey::tmux_pane("test", "%1");
+        let state = AgentReportState {
+            key: key.clone(),
             status: AgentStatus::Working,
-            icon: "W".to_owned(),
             status_changed_at: 42,
             observed_at: 43,
-            agent_title: Some("OpenCode session".to_owned()),
-            context_usage: Some("163.2K (41%)".to_owned()),
-            pane_title: Some("Agent title".to_owned()),
-            pane_current_command: Some("nvim".to_owned()),
-            worktree_handle: Some("feature-auth".to_owned()),
-            worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
-            branch: Some("feature/auth".to_owned()),
-            session_name: "project".to_owned(),
-            window_name: "kmux-feature-auth".to_owned(),
-            window_id: "@1".to_owned(),
+            title: Some("OpenCode session".to_owned()),
+            context: Some("163.2K (41%)".to_owned()),
+            target: AgentTargetHints {
+                tmux_instance: Some("test".to_owned()),
+                pane_id: Some("%1".to_owned()),
+                window_id: Some("@1".to_owned()),
+                session_name: Some("project".to_owned()),
+                window_name: Some("kmux-feature-auth".to_owned()),
+                pane_title: Some("Agent title".to_owned()),
+                pane_current_command: Some("nvim".to_owned()),
+                worktree_handle: Some("feature-auth".to_owned()),
+                worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
+                branch: Some("feature/auth".to_owned()),
+                directory: Some("/repo__worktrees/feature-auth".to_owned()),
+            },
         };
 
-        store.upsert_agent(&state)?;
+        store.upsert_report(&state)?;
 
-        assert_eq!(store.list_agents()?, vec![state]);
-        store.delete_agent(&key)?;
-        assert!(store.list_agents()?.is_empty());
+        assert_eq!(store.list_reports()?, vec![state]);
+        store.delete_report(&key)?;
+        assert!(store.list_reports()?.is_empty());
         Ok(())
     }
 
     #[test]
-    fn corrupt_agent_state_is_pruned() -> Result<()> {
+    fn corrupt_agent_report_state_is_pruned() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let corrupt_path = store.agents_dir().join("bad.json");
+        let corrupt_path = store.reports_dir().join("bad.json");
         fs::write(&corrupt_path, "not json")?;
 
-        assert!(store.list_agents()?.is_empty());
+        assert!(store.list_reports()?.is_empty());
         assert!(!corrupt_path.exists());
         Ok(())
     }
 
     #[test]
-    fn legacy_updated_at_state_deserializes_to_split_timestamps() -> Result<()> {
+    fn migrates_matching_worktree_report_state() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let key = PaneKey::new_tmux("test", "%1");
-        let content = serde_json::json!({
-            "pane_key": {
-                "backend": "tmux",
-                "instance": "test",
-                "pane_id": "%1"
-            },
-            "status": "working",
-            "icon": "W",
-            "updated_at": 42,
-            "agent_title": "OpenCode session",
-            "context_usage": "163.2K (41%)",
-            "worktree_handle": "feature-auth",
-            "worktree_path": "/repo__worktrees/feature-auth",
-            "branch": "feature/auth",
-            "session_name": "project",
-            "window_name": "kmux-feature-auth",
-            "window_id": "@1"
-        });
-        fs::write(store.agent_path(&key), serde_json::to_vec_pretty(&content)?)?;
-
-        let agents = store.list_agents()?;
-
-        assert_eq!(agents[0].status_changed_at, 42);
-        assert_eq!(agents[0].observed_at, 42);
-        let serialized = serde_json::to_string(&agents[0])?;
-        assert!(serialized.contains("status_changed_at"));
-        assert!(serialized.contains("observed_at"));
-        assert!(!serialized.contains("updated_at"));
-        Ok(())
-    }
-
-    #[test]
-    fn migrates_matching_worktree_state() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let state = AgentState {
-            pane_key: PaneKey::new_tmux("test", "%1"),
+        let state = AgentReportState {
+            key: AgentReportKey::tmux_pane("test", "%1"),
             status: AgentStatus::Done,
-            icon: "D".to_owned(),
             status_changed_at: 42,
             observed_at: 43,
-            agent_title: None,
-            context_usage: None,
-            pane_title: None,
-            pane_current_command: None,
-            worktree_handle: Some("old".to_owned()),
-            worktree_path: Some("/repo__worktrees/old".to_owned()),
-            branch: Some("feature/original".to_owned()),
-            session_name: "project".to_owned(),
-            window_name: "kmux-old".to_owned(),
-            window_id: "@1".to_owned(),
+            title: None,
+            context: None,
+            target: AgentTargetHints {
+                tmux_instance: Some("test".to_owned()),
+                pane_id: Some("%1".to_owned()),
+                window_id: Some("@1".to_owned()),
+                session_name: Some("project".to_owned()),
+                window_name: Some("kmux-old".to_owned()),
+                worktree_handle: Some("old".to_owned()),
+                worktree_path: Some("/repo__worktrees/old".to_owned()),
+                branch: Some("feature/original".to_owned()),
+                ..AgentTargetHints::default()
+            },
         };
-        store.upsert_agent(&state)?;
+        store.upsert_report(&state)?;
         let before = now_unix_seconds();
 
         assert_eq!(
@@ -375,16 +363,19 @@ mod tests {
             1
         );
 
-        let agents = store.list_agents()?;
-        assert_eq!(agents[0].worktree_handle.as_deref(), Some("new"));
+        let reports = store.list_reports()?;
+        assert_eq!(reports[0].target.worktree_handle.as_deref(), Some("new"));
         assert_eq!(
-            agents[0].worktree_path.as_deref(),
+            reports[0].target.worktree_path.as_deref(),
             Some("/repo__worktrees/new")
         );
-        assert_eq!(agents[0].window_name, "kmux-new");
-        assert_eq!(agents[0].branch.as_deref(), Some("feature/original"));
-        assert_eq!(agents[0].status_changed_at, 42);
-        assert!(agents[0].observed_at >= before);
+        assert_eq!(reports[0].target.window_name.as_deref(), Some("kmux-new"));
+        assert_eq!(
+            reports[0].target.branch.as_deref(),
+            Some("feature/original")
+        );
+        assert_eq!(reports[0].status_changed_at, 42);
+        assert!(reports[0].observed_at >= before);
         Ok(())
     }
 }

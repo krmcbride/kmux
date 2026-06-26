@@ -5,7 +5,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 
 use crate::cli;
-use crate::state::{AgentState, StateStore};
+use crate::config::StatusIcons;
+use crate::state::{AgentReportState, AgentStatus, StateStore};
 use crate::tmux::Tmux;
 
 use super::context::load_repo_context;
@@ -32,7 +33,7 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
 
     let agents = StateStore::new()
         .ok()
-        .and_then(|store| store.list_agents().ok())
+        .and_then(|store| store.list_reports().ok())
         .unwrap_or_default();
     let tmux = Tmux::from_env();
     let tmux_session = tmux
@@ -50,7 +51,7 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
         .map(|item| DisplayRow {
             branch: item.branch.as_deref().unwrap_or("-").to_owned(),
             age: format_age(item, now),
-            agent: format_agent(item, &agents),
+            agent: format_agent(item, &agents, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
             unmerged: format_unmerged(item, &repo.git),
             path: format_path(Path::new(&item.path), &current_dir),
@@ -85,7 +86,7 @@ fn compact_age(seconds: u64) -> String {
     }
 }
 
-fn format_agent(item: &ListItem, agents: &[AgentState]) -> String {
+fn format_agent(item: &ListItem, agents: &[AgentReportState], icons: &StatusIcons) -> String {
     let matching = agents
         .iter()
         .filter(|agent| agent_matches_item(agent, item))
@@ -94,12 +95,14 @@ fn format_agent(item: &ListItem, agents: &[AgentState]) -> String {
         return "-".to_owned();
     }
     if matching.len() == 1 {
-        return matching[0].icon.clone();
+        return status_icon(matching[0].status, icons).to_owned();
     }
 
     let mut counts = BTreeMap::new();
     for agent in matching {
-        *counts.entry(agent.icon.clone()).or_insert(0usize) += 1;
+        *counts
+            .entry(status_icon(agent.status, icons).to_owned())
+            .or_insert(0usize) += 1;
     }
 
     counts
@@ -109,10 +112,18 @@ fn format_agent(item: &ListItem, agents: &[AgentState]) -> String {
         .join(" ")
 }
 
-fn agent_matches_item(agent: &AgentState, item: &ListItem) -> bool {
-    agent.worktree_handle.as_deref() == Some(item.handle.as_str())
-        || agent.branch.as_deref() == item.branch.as_deref()
-        || agent.worktree_path.as_deref() == Some(item.path.as_str())
+fn agent_matches_item(agent: &AgentReportState, item: &ListItem) -> bool {
+    agent.target.worktree_handle.as_deref() == Some(item.handle.as_str())
+        || agent.target.branch.as_deref() == item.branch.as_deref()
+        || agent.target.worktree_path.as_deref() == Some(item.path.as_str())
+}
+
+fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {
+    match status {
+        AgentStatus::Working => icons.working(),
+        AgentStatus::Waiting => icons.waiting(),
+        AgentStatus::Done => icons.done(),
+    }
 }
 
 fn format_mux(
