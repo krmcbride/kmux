@@ -34,6 +34,9 @@ pub struct TmuxWindow {
     pub window_index: String,
     pub window_name: String,
     pub active: bool,
+    pub kmux_worktree_handle: Option<String>,
+    pub kmux_worktree_path: Option<String>,
+    pub kmux_worktree_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +80,10 @@ pub struct TmuxPaneVisibility {
 }
 
 const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
+
+pub const KMUX_WORKTREE_HANDLE_OPTION: &str = "@kmux_worktree_handle";
+pub const KMUX_WORKTREE_PATH_OPTION: &str = "@kmux_worktree_path";
+pub const KMUX_WORKTREE_BRANCH_OPTION: &str = "@kmux_worktree_branch";
 
 impl Tmux {
     pub fn new() -> Self {
@@ -295,8 +302,7 @@ impl Tmux {
     }
 
     pub fn list_windows(&self, session_name: Option<&str>) -> Result<Vec<TmuxWindow>> {
-        let format =
-            "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}";
+        let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{@kmux_worktree_handle}\t#{@kmux_worktree_path}\t#{@kmux_worktree_branch}";
         let output = if let Some(session_name) = session_name {
             let target = format!("{session_name}:");
             self.stdout(["list-windows", "-t", &target, "-F", format])?
@@ -495,7 +501,7 @@ fn parse_pane_snapshots(output: &str) -> Result<Vec<TmuxPaneSnapshot>> {
 
 fn parse_window(line: &str) -> Result<TmuxWindow> {
     let fields = line.split('\t').collect::<Vec<_>>();
-    if fields.len() != 5 {
+    if !(5..=8).contains(&fields.len()) {
         bail!("unexpected tmux window format: {line:?}");
     }
 
@@ -505,6 +511,9 @@ fn parse_window(line: &str) -> Result<TmuxWindow> {
         window_index: fields[2].to_owned(),
         window_name: fields[3].to_owned(),
         active: fields[4] == "1",
+        kmux_worktree_handle: fields.get(5).and_then(|field| non_empty_string(field)),
+        kmux_worktree_path: fields.get(6).and_then(|field| non_empty_string(field)),
+        kmux_worktree_branch: fields.get(7).and_then(|field| non_empty_string(field)),
     })
 }
 
@@ -734,6 +743,44 @@ mod tests {
     }
 
     #[test]
+    fn parses_windows_with_stable_kmux_worktree_metadata() -> Result<()> {
+        let windows = parse_windows(
+            "project\t@1\t2\tkmux-feature\t1\tfeature\t/tmp/project-feature\tfeature\nproject\t@2\t3\tscratch\t0\t\t\t",
+        )?;
+
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].session_name, "project");
+        assert_eq!(windows[0].window_id, "@1");
+        assert_eq!(windows[0].window_index, "2");
+        assert_eq!(windows[0].window_name, "kmux-feature");
+        assert!(windows[0].active);
+        assert_eq!(windows[0].kmux_worktree_handle.as_deref(), Some("feature"));
+        assert_eq!(
+            windows[0].kmux_worktree_path.as_deref(),
+            Some("/tmp/project-feature")
+        );
+        assert_eq!(windows[0].kmux_worktree_branch.as_deref(), Some("feature"));
+        assert_eq!(windows[1].kmux_worktree_handle, None);
+        assert_eq!(windows[1].kmux_worktree_path, None);
+        assert_eq!(windows[1].kmux_worktree_branch, None);
+        Ok(())
+    }
+
+    #[test]
+    fn parses_windows_without_stable_kmux_worktree_metadata() -> Result<()> {
+        let window = parse_window("project\t@1\t2\tkmux-feature\t1")?;
+
+        assert_eq!(window.session_name, "project");
+        assert_eq!(window.window_id, "@1");
+        assert_eq!(window.window_name, "kmux-feature");
+        assert!(window.active);
+        assert_eq!(window.kmux_worktree_handle, None);
+        assert_eq!(window.kmux_worktree_path, None);
+        assert_eq!(window.kmux_worktree_branch, None);
+        Ok(())
+    }
+
+    #[test]
     fn creates_selects_lists_and_kills_windows_on_isolated_socket() -> Result<()> {
         let Some(fixture) = TmuxFixture::new()? else {
             return Ok(());
@@ -819,13 +866,34 @@ mod tests {
         let option = kmux_worktree_option("feature-auth", "path")?;
 
         tmux.set_window_option(&target, &option, temp.path().to_string_lossy().as_ref())?;
+        tmux.set_window_option(&target, KMUX_WORKTREE_HANDLE_OPTION, "feature-auth")?;
+        tmux.set_window_option(
+            &target,
+            KMUX_WORKTREE_PATH_OPTION,
+            temp.path().to_string_lossy().as_ref(),
+        )?;
+        tmux.set_window_option(&target, KMUX_WORKTREE_BRANCH_OPTION, "feature/auth")?;
 
         assert_eq!(
             tmux.show_window_option(&target, &option)?.as_deref(),
             Some(temp.path().to_string_lossy().as_ref())
         );
+        let window = tmux
+            .list_windows(Some("project"))?
+            .into_iter()
+            .find(|window| window.window_name == "feature-auth")
+            .ok_or_else(|| anyhow::anyhow!("expected feature-auth window"))?;
+        assert_eq!(window.kmux_worktree_handle.as_deref(), Some("feature-auth"));
+        assert_eq!(
+            window.kmux_worktree_path.as_deref(),
+            Some(temp.path().to_string_lossy().as_ref())
+        );
+        assert_eq!(window.kmux_worktree_branch.as_deref(), Some("feature/auth"));
 
         tmux.unset_window_option(&target, &option)?;
+        tmux.unset_window_option(&target, KMUX_WORKTREE_HANDLE_OPTION)?;
+        tmux.unset_window_option(&target, KMUX_WORKTREE_PATH_OPTION)?;
+        tmux.unset_window_option(&target, KMUX_WORKTREE_BRANCH_OPTION)?;
 
         assert_eq!(tmux.show_window_option(&target, &option)?, None);
         Ok(())

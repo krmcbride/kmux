@@ -12,7 +12,10 @@ use crate::paths::{RepoPaths, same_path};
 use crate::state::{
     AgentState, AgentStatus as StoredAgentStatus, PaneKey, StateStore, now_unix_seconds,
 };
-use crate::tmux::{Tmux, kmux_worktree_option};
+use crate::tmux::{
+    KMUX_WORKTREE_BRANCH_OPTION, KMUX_WORKTREE_HANDLE_OPTION, KMUX_WORKTREE_PATH_OPTION, Tmux,
+    kmux_worktree_option,
+};
 
 const KMUX_STATUS_OPTION: &str = "@kmux_status";
 
@@ -269,6 +272,18 @@ fn current_window_worktree(
         .filter(|value| !value.is_empty())
         .unwrap_or(&context.window_name)
         .to_owned();
+
+    if let Some(path) = tmux.show_window_option(&context.pane_id, KMUX_WORKTREE_PATH_OPTION)? {
+        let branch = tmux.show_window_option(&context.pane_id, KMUX_WORKTREE_BRANCH_OPTION)?;
+        let stable_handle = tmux
+            .show_window_option(&context.pane_id, KMUX_WORKTREE_HANDLE_OPTION)?
+            .unwrap_or_else(|| handle.clone());
+        return Ok(WindowWorktree {
+            handle: Some(stable_handle),
+            path: Some(PathBuf::from(path)),
+            branch,
+        });
+    }
 
     if let Ok(path_option) = kmux_worktree_option(&handle, "path")
         && let Some(path) = tmux.show_window_option(&context.pane_id, &path_option)?
