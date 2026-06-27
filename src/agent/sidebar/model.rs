@@ -150,6 +150,7 @@ impl SidebarRow {
             .to_owned();
         let age = now.saturating_sub(report.status_changed_at);
         let state = SidebarRowState::from_status(report.status, age, idle_after_seconds);
+        let elapsed = report.elapsed_secs(now);
         let icon = if state.is_idle() {
             icons.sleeping.clone()
         } else {
@@ -169,7 +170,7 @@ impl SidebarRow {
             secondary,
             secondary_right,
             title,
-            elapsed: compact_elapsed(age),
+            elapsed: compact_elapsed(elapsed),
             session_name: target.session_name.clone().unwrap_or_default(),
             window_id: target.window_id.clone().unwrap_or_default(),
             pane_id: target.pane_id.clone(),
@@ -295,6 +296,7 @@ pub(super) fn report_state(
         session_id: None,
         status,
         status_changed_at,
+        working_elapsed_secs: 0,
         observed_at: status_changed_at,
         title: None,
         context: None,
@@ -428,6 +430,17 @@ mod tests {
 
         assert_eq!(rows[0].icon, "a");
         assert_eq!(rows[1].icon, "?");
+    }
+
+    #[test]
+    fn row_model_uses_accumulated_working_elapsed_for_working_rows() {
+        let mut report = report_state(AgentStatus::Working, 600, "@1", "%1");
+        report.working_elapsed_secs = 20 * 60;
+
+        let rows = build_rows(&[report], 15 * 60, 1_800);
+
+        assert_eq!(rows[0].state, SidebarRowState::Working);
+        assert_eq!(rows[0].elapsed, "25m");
     }
 
     #[test]

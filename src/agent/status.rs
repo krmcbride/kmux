@@ -11,7 +11,7 @@ use crate::git::{Git, WorktreeInfo};
 use crate::paths::{RepoPaths, same_path};
 use crate::state::{
     AgentReportKey, AgentReportState, AgentStatus as StoredAgentStatus, AgentTargetHints,
-    StateStore, now_unix_seconds,
+    StateStore, next_report_timing, now_unix_seconds,
 };
 use crate::tmux::{
     KMUX_WORKTREE_BRANCH_OPTION, KMUX_WORKTREE_HANDLE_OPTION, KMUX_WORKTREE_PATH_OPTION, Tmux,
@@ -117,15 +117,14 @@ pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
     let now = now_unix_seconds();
     let target = report_target(&args, &config, &tmux, context.as_ref(), explicit_identity)?;
     let previous = store.get_report(&key)?;
-    let status_changed_at = previous
-        .as_ref()
-        .filter(|report| report.status == status && report.target.window_id == target.window_id)
-        .map_or(now, |report| report.status_changed_at);
+    let session_id = clean_optional(args.session_id);
+    let timing = next_report_timing(previous.as_ref(), &key, session_id.as_deref(), status, now);
     let state = AgentReportState {
         key,
-        session_id: clean_optional(args.session_id),
+        session_id,
         status,
-        status_changed_at,
+        status_changed_at: timing.status_changed_at,
+        working_elapsed_secs: timing.working_elapsed_secs,
         observed_at: now,
         title: clean_optional(args.title),
         context: clean_optional(args.context),
@@ -153,9 +152,8 @@ fn report_key(
 
     let source = clean_optional_ref(args.source.as_ref())
         .ok_or_else(|| anyhow::anyhow!("--source is required for explicit reports"))?;
-    let instance = clean_optional_ref(args.source_instance.as_ref())
-        .or_else(|| clean_optional_ref(args.tmux_instance.as_ref()))
-        .unwrap_or_else(|| "default".to_owned());
+    let instance =
+        clean_optional_ref(args.source_instance.as_ref()).unwrap_or_else(|| "default".to_owned());
     let id = clean_optional_ref(args.session_id.as_ref())
         .or_else(|| clean_optional_ref(args.pane_id.as_ref()))
         .ok_or_else(|| {
@@ -322,7 +320,7 @@ fn entry_for_report(
         branch,
         status: report.status.as_str().to_owned(),
         icon: status_icon(report.status, icons).to_owned(),
-        elapsed_secs: now.saturating_sub(report.status_changed_at),
+        elapsed_secs: report.elapsed_secs(now),
         title: report
             .title
             .clone()

@@ -497,10 +497,15 @@ fn agent_reports_dir(config_home: &Path) -> PathBuf {
 }
 
 fn state_timestamp(state: &serde_json::Value, field: &str) -> Result<u64> {
+    state_u64(state, field)
+        .with_context(|| format!("state timestamp '{field}' is missing or invalid"))
+}
+
+fn state_u64(state: &serde_json::Value, field: &str) -> Result<u64> {
     state
         .get(field)
         .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("state timestamp '{field}' is missing or invalid"))
+        .ok_or_else(|| anyhow!("state field '{field}' is missing or invalid"))
 }
 
 #[test]
@@ -773,6 +778,7 @@ status_icons:
     let first = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let first_changed = state_timestamp(&first, "status_changed_at")?;
     let first_observed = state_timestamp(&first, "observed_at")?;
+    let first_working_elapsed = state_u64(&first, "working_elapsed_secs")?;
     assert_eq!(
         tmux.window_option(&tmux.pane_id, "@kmux_status")?,
         Some("W".to_owned())
@@ -780,12 +786,15 @@ status_icons:
     assert_eq!(first["title"].as_str(), Some("Implement richer sidebar"));
     assert_eq!(first["context"].as_str(), Some("163.2K (41%)"));
     assert_eq!(first["session_id"].as_str(), Some("ses_visible_root"));
+    assert_eq!(first_working_elapsed, 0);
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?
         .args([
             "set-window-status",
             "working",
+            "--session-id",
+            "ses_visible_root",
             "--title",
             "Implement richer sidebar",
             "--context",
@@ -796,23 +805,32 @@ status_icons:
     let second = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let second_changed = state_timestamp(&second, "status_changed_at")?;
     let second_observed = state_timestamp(&second, "observed_at")?;
+    let second_working_elapsed = state_u64(&second, "working_elapsed_secs")?;
 
     assert_eq!(second_changed, first_changed);
     assert!(second_observed > first_observed);
+    assert_eq!(second_working_elapsed, 0);
     assert_eq!(second["title"].as_str(), Some("Implement richer sidebar"));
     assert_eq!(second["context"].as_str(), Some("170.0K (43%)"));
 
     thread::sleep(Duration::from_millis(1100));
     kmux(&repo, &config_home, &tmux)?
-        .args(["set-window-status", "waiting"])
+        .args([
+            "set-window-status",
+            "waiting",
+            "--session-id",
+            "ses_visible_root",
+        ])
         .assert()
         .success();
     let third = agent_report_for_pane(&config_home, &tmux.pane_id)?;
     let third_changed = state_timestamp(&third, "status_changed_at")?;
     let third_observed = state_timestamp(&third, "observed_at")?;
+    let third_working_elapsed = state_u64(&third, "working_elapsed_secs")?;
 
     assert!(third_changed > second_changed);
     assert_eq!(third_observed, third_changed);
+    assert!(third_working_elapsed > 0);
     Ok(())
 }
 
@@ -933,6 +951,147 @@ fn explicit_set_window_status_does_not_inherit_current_tmux_pane() -> Result<()>
     assert_eq!(report.pointer("/target/session_name"), None);
     assert_eq!(report.pointer("/target/window_name"), None);
     assert_eq!(tmux.window_option(&tmux.pane_id, "@kmux_status")?, None);
+    Ok(())
+}
+
+#[test]
+fn explicit_set_window_status_preserves_timing_when_target_window_changes() -> Result<()> {
+    let temp = TempDir::new()?;
+    let config_home = write_config(temp.path(), "")?;
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd)?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+            "--window-id",
+            "@old",
+        ])
+        .assert()
+        .success();
+    let first = agent_report_for_key(
+        &config_home,
+        "opencode-server",
+        "http://127.0.0.1:4096",
+        "ses_parent",
+    )?;
+    let first_changed = state_timestamp(&first, "status_changed_at")?;
+
+    thread::sleep(Duration::from_millis(1100));
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--source-instance",
+            "http://127.0.0.1:4096",
+            "--session-id",
+            "ses_parent",
+            "--window-id",
+            "@new",
+        ])
+        .assert()
+        .success();
+
+    let second = agent_report_for_key(
+        &config_home,
+        "opencode-server",
+        "http://127.0.0.1:4096",
+        "ses_parent",
+    )?;
+    let second_changed = state_timestamp(&second, "status_changed_at")?;
+    assert_eq!(second_changed, first_changed);
+    assert_eq!(state_u64(&second, "working_elapsed_secs")?, 0);
+    assert_eq!(
+        second
+            .pointer("/target/window_id")
+            .and_then(serde_json::Value::as_str),
+        Some("@new")
+    );
+    Ok(())
+}
+
+#[test]
+fn explicit_set_window_status_keeps_tmux_instance_out_of_report_identity() -> Result<()> {
+    let temp = TempDir::new()?;
+    let config_home = write_config(temp.path(), "")?;
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd)?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--session-id",
+            "ses_parent",
+            "--tmux-instance",
+            "old-target",
+        ])
+        .assert()
+        .success();
+    let first = agent_report_for_key(&config_home, "opencode-server", "default", "ses_parent")?;
+    let first_changed = state_timestamp(&first, "status_changed_at")?;
+    assert_eq!(
+        first
+            .pointer("/target/tmux_instance")
+            .and_then(serde_json::Value::as_str),
+        Some("old-target")
+    );
+
+    thread::sleep(Duration::from_millis(1100));
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--session-id",
+            "ses_parent",
+            "--tmux-instance",
+            "new-target",
+        ])
+        .assert()
+        .success();
+
+    let second = agent_report_for_key(&config_home, "opencode-server", "default", "ses_parent")?;
+    let second_changed = state_timestamp(&second, "status_changed_at")?;
+    assert_eq!(second_changed, first_changed);
+    assert_eq!(
+        second
+            .pointer("/target/tmux_instance")
+            .and_then(serde_json::Value::as_str),
+        Some("new-target")
+    );
     Ok(())
 }
 

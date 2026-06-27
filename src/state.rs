@@ -94,6 +94,7 @@ pub struct AgentReportState {
     pub session_id: Option<String>,
     pub status: AgentStatus,
     pub status_changed_at: u64,
+    pub working_elapsed_secs: u64,
     pub observed_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
@@ -101,6 +102,82 @@ pub struct AgentReportState {
     pub context: Option<String>,
     #[serde(default)]
     pub target: AgentTargetHints,
+}
+
+impl AgentReportState {
+    pub fn elapsed_secs(&self, now: u64) -> u64 {
+        let status_age = now.saturating_sub(self.status_changed_at);
+        match self.status {
+            AgentStatus::Working => self.working_elapsed_secs.saturating_add(status_age),
+            AgentStatus::Waiting | AgentStatus::Done => status_age,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AgentReportTiming {
+    pub status_changed_at: u64,
+    pub working_elapsed_secs: u64,
+}
+
+pub fn next_report_timing(
+    previous: Option<&AgentReportState>,
+    key: &AgentReportKey,
+    session_id: Option<&str>,
+    status: AgentStatus,
+    now: u64,
+) -> AgentReportTiming {
+    let Some(previous) = previous.filter(|report| same_timing_identity(report, key, session_id))
+    else {
+        return fresh_report_timing(now);
+    };
+
+    if previous.status == status {
+        return AgentReportTiming {
+            status_changed_at: previous.status_changed_at,
+            working_elapsed_secs: match status {
+                AgentStatus::Done => 0,
+                AgentStatus::Working | AgentStatus::Waiting => previous.working_elapsed_secs,
+            },
+        };
+    }
+
+    match (previous.status, status) {
+        (AgentStatus::Working, AgentStatus::Waiting) => AgentReportTiming {
+            status_changed_at: now,
+            working_elapsed_secs: previous
+                .working_elapsed_secs
+                .saturating_add(now.saturating_sub(previous.status_changed_at)),
+        },
+        (AgentStatus::Waiting, AgentStatus::Working) => AgentReportTiming {
+            status_changed_at: now,
+            working_elapsed_secs: previous.working_elapsed_secs,
+        },
+        _ => fresh_report_timing(now),
+    }
+}
+
+fn fresh_report_timing(now: u64) -> AgentReportTiming {
+    AgentReportTiming {
+        status_changed_at: now,
+        working_elapsed_secs: 0,
+    }
+}
+
+fn same_timing_identity(
+    previous: &AgentReportState,
+    key: &AgentReportKey,
+    session_id: Option<&str>,
+) -> bool {
+    if &previous.key != key {
+        return false;
+    }
+
+    if key.source == TMUX_PANE_SOURCE {
+        return previous.session_id.as_deref() == session_id;
+    }
+
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -290,6 +367,7 @@ mod tests {
             session_id: Some("ses_123".to_owned()),
             status: AgentStatus::Working,
             status_changed_at: 42,
+            working_elapsed_secs: 5,
             observed_at: 43,
             title: Some("OpenCode session".to_owned()),
             context: Some("163.2K (41%)".to_owned()),
@@ -337,6 +415,7 @@ mod tests {
             session_id: None,
             status: AgentStatus::Done,
             status_changed_at: 42,
+            working_elapsed_secs: 0,
             observed_at: 43,
             title: None,
             context: None,
@@ -381,5 +460,149 @@ mod tests {
         assert_eq!(reports[0].status_changed_at, 42);
         assert!(reports[0].observed_at >= before);
         Ok(())
+    }
+
+    #[test]
+    fn elapsed_secs_uses_accumulator_only_for_working_reports() {
+        let mut report = test_report_state(AgentStatus::Working, 100);
+        report.working_elapsed_secs = 1_200;
+        assert_eq!(report.elapsed_secs(700), 1_800);
+
+        report.status = AgentStatus::Waiting;
+        assert_eq!(report.elapsed_secs(700), 600);
+
+        report.status = AgentStatus::Done;
+        assert_eq!(report.elapsed_secs(700), 600);
+    }
+
+    #[test]
+    fn timing_accumulates_working_across_waiting_pause() {
+        let key = AgentReportKey::tmux_pane("test", "%1");
+        let mut report = test_report_state(AgentStatus::Working, 0);
+        report.key = key.clone();
+        report.session_id = Some("ses_root".to_owned());
+
+        let waiting = next_report_timing(
+            Some(&report),
+            &key,
+            Some("ses_root"),
+            AgentStatus::Waiting,
+            20 * 60,
+        );
+        assert_eq!(waiting.status_changed_at, 20 * 60);
+        assert_eq!(waiting.working_elapsed_secs, 20 * 60);
+
+        report.status = AgentStatus::Waiting;
+        report.status_changed_at = waiting.status_changed_at;
+        report.working_elapsed_secs = waiting.working_elapsed_secs;
+
+        let resumed = next_report_timing(
+            Some(&report),
+            &key,
+            Some("ses_root"),
+            AgentStatus::Working,
+            25 * 60,
+        );
+        assert_eq!(resumed.status_changed_at, 25 * 60);
+        assert_eq!(resumed.working_elapsed_secs, 20 * 60);
+
+        report.status = AgentStatus::Working;
+        report.status_changed_at = resumed.status_changed_at;
+        report.working_elapsed_secs = resumed.working_elapsed_secs;
+
+        assert_eq!(report.elapsed_secs(35 * 60), 30 * 60);
+    }
+
+    #[test]
+    fn timing_preserves_same_non_pane_report_identity() {
+        let key = AgentReportKey::new("opencode-server", "server", "ses_root");
+        let mut report = test_report_state(AgentStatus::Working, 100);
+        report.key = key.clone();
+        report.session_id = Some("ses_root".to_owned());
+        report.working_elapsed_secs = 240;
+        report.target.window_id = Some("@old".to_owned());
+
+        let timing = next_report_timing(
+            Some(&report),
+            &key,
+            Some("ses_root"),
+            AgentStatus::Working,
+            300,
+        );
+
+        assert_eq!(timing.status_changed_at, 100);
+        assert_eq!(timing.working_elapsed_secs, 240);
+    }
+
+    #[test]
+    fn timing_resets_when_pane_report_root_session_changes() {
+        let key = AgentReportKey::tmux_pane("test", "%1");
+        let mut report = test_report_state(AgentStatus::Working, 100);
+        report.key = key.clone();
+        report.session_id = Some("ses_old".to_owned());
+        report.working_elapsed_secs = 240;
+
+        let timing = next_report_timing(
+            Some(&report),
+            &key,
+            Some("ses_new"),
+            AgentStatus::Working,
+            300,
+        );
+
+        assert_eq!(timing.status_changed_at, 300);
+        assert_eq!(timing.working_elapsed_secs, 0);
+    }
+
+    #[test]
+    fn timing_starts_and_ends_runs_cleanly() {
+        let key = AgentReportKey::tmux_pane("test", "%1");
+        let mut done = test_report_state(AgentStatus::Done, 100);
+        done.key = key.clone();
+        done.working_elapsed_secs = 240;
+
+        let started = next_report_timing(Some(&done), &key, None, AgentStatus::Working, 300);
+        assert_eq!(started.status_changed_at, 300);
+        assert_eq!(started.working_elapsed_secs, 0);
+
+        let mut working = test_report_state(AgentStatus::Working, 300);
+        working.key = key.clone();
+        working.working_elapsed_secs = 240;
+
+        let finished = next_report_timing(Some(&working), &key, None, AgentStatus::Done, 500);
+        assert_eq!(finished.status_changed_at, 500);
+        assert_eq!(finished.working_elapsed_secs, 0);
+
+        let repeated_done = next_report_timing(Some(&done), &key, None, AgentStatus::Done, 500);
+        assert_eq!(repeated_done.status_changed_at, 100);
+        assert_eq!(repeated_done.working_elapsed_secs, 0);
+    }
+
+    #[test]
+    fn timing_saturates_when_clock_moves_backwards() {
+        let key = AgentReportKey::tmux_pane("test", "%1");
+        let mut report = test_report_state(AgentStatus::Working, 300);
+        report.key = key.clone();
+        report.working_elapsed_secs = 60;
+
+        let waiting = next_report_timing(Some(&report), &key, None, AgentStatus::Waiting, 200);
+        assert_eq!(waiting.status_changed_at, 200);
+        assert_eq!(waiting.working_elapsed_secs, 60);
+
+        assert_eq!(report.elapsed_secs(200), 60);
+    }
+
+    fn test_report_state(status: AgentStatus, status_changed_at: u64) -> AgentReportState {
+        AgentReportState {
+            key: AgentReportKey::tmux_pane("test", "%1"),
+            session_id: None,
+            status,
+            status_changed_at,
+            working_elapsed_secs: 0,
+            observed_at: status_changed_at,
+            title: None,
+            context: None,
+            target: AgentTargetHints::default(),
+        }
     }
 }

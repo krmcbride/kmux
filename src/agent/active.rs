@@ -61,18 +61,6 @@ fn reconcile_active_reports(
                 continue;
             };
 
-            if report
-                .target
-                .window_id
-                .as_deref()
-                .is_some_and(|window_id| window_id != pane.window_id)
-            {
-                if is_pane_bound_report(&report) {
-                    store.delete_report(&report.key)?;
-                }
-                continue;
-            }
-
             report.target.session_name = Some(pane.session_name.clone());
             report.target.window_name = Some(pane.window_name.clone());
             report.target.window_id = Some(pane.window_id.clone());
@@ -462,30 +450,45 @@ mod tests {
     }
 
     #[test]
-    fn prunes_missing_or_reused_pane_bound_reports() -> Result<()> {
+    fn prunes_missing_pane_bound_reports() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::test_with_path(temp.path())?;
         let missing = report_state("%1", Some("@1"));
-        let reused = report_state("%2", Some("@2"));
         store.upsert_report(&missing)?;
-        store.upsert_report(&reused)?;
 
-        let panes = HashMap::from([(
-            "%2".to_owned(),
-            pane_snapshot("%2", "@not-recorded", "project", "other", None, None),
-        )]);
+        let active =
+            reconcile_active_reports(&store, vec![missing.clone()], &HashMap::new(), &[], "test")?;
+
+        assert!(active.is_empty());
+        assert!(store.get_report(&missing.key)?.is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn updates_pane_report_window_metadata_without_pruning_timing() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::test_with_path(temp.path())?;
+        let mut report = report_state("%1", Some("@old"));
+        report.session_id = Some("ses_root".to_owned());
+        report.working_elapsed_secs = 1_200;
+        store.upsert_report(&report)?;
 
         let active = reconcile_active_reports(
             &store,
-            vec![missing.clone(), reused.clone()],
-            &panes,
+            vec![report.clone()],
+            &HashMap::from([(
+                "%1".to_owned(),
+                pane_snapshot("%1", "@new", "project", "moved", None, None),
+            )]),
             &[],
             "test",
         )?;
 
-        assert!(active.is_empty());
-        assert!(store.get_report(&missing.key)?.is_none());
-        assert!(store.get_report(&reused.key)?.is_none());
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].target.window_id.as_deref(), Some("@new"));
+        assert_eq!(active[0].target.window_name.as_deref(), Some("moved"));
+        assert_eq!(active[0].working_elapsed_secs, 1_200);
+        assert_eq!(store.get_report(&report.key)?.as_ref(), Some(&report));
         Ok(())
     }
 
@@ -516,6 +519,7 @@ mod tests {
             session_id: None,
             status: AgentStatus::Working,
             status_changed_at: 100,
+            working_elapsed_secs: 0,
             observed_at: 100,
             title: None,
             context: None,
