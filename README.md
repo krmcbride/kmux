@@ -4,7 +4,7 @@ Personalized and simplified workmux, geared toward tmux and git worktrees while 
 
 This repository is currently being scaffolded. The first implementation target is a Rust CLI that manages git worktrees, tmux windows, status state, and sidebar presentation without the multi-backend, sandbox, agent-installer, dashboard, or PR-oriented parts of upstream workmux.
 
-Agent and editor integrations should be examples layered on top of stable extension points, such as `kmux set-window-status`, rather than assumptions baked into the core CLI.
+Agent and editor integrations should be examples layered on top of stable extension points, such as `kmux set-agent-status`, rather than assumptions baked into the core CLI.
 
 ## Development
 

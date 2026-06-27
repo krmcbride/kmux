@@ -44,9 +44,9 @@ pub enum Command {
     /// Output git branch refs for shell completion.
     #[command(name = "_complete-git-branches", hide = true)]
     CompleteGitBranches,
-    /// Update the current tmux window status from an external integration.
-    #[command(name = "set-window-status", hide = true)]
-    SetWindowStatus(Box<SetWindowStatusArgs>),
+    /// Push agent session state from an external integration.
+    #[command(name = "set-agent-status", hide = true)]
+    SetAgentStatus(Box<SetAgentStatusArgs>),
 }
 
 #[derive(Debug, Args)]
@@ -122,20 +122,34 @@ pub struct StatusArgs {
 }
 
 #[derive(Debug, Args)]
-pub struct SetWindowStatusArgs {
-    pub status: AgentStatus,
+pub struct SetAgentStatusArgs {
+    /// Optional agent status. Omit for metadata-only updates.
+    #[arg(value_enum)]
+    pub status: Option<AgentStatus>,
 
-    /// Generic producer/source label for non-pane reports.
+    /// Agent implementation/domain, such as opencode or codex.
     #[arg(long)]
-    pub source: Option<String>,
-
-    /// Producer instance label, such as an agent server URL.
-    #[arg(long)]
-    pub source_instance: Option<String>,
+    pub agent_kind: String,
 
     /// External agent session identifier.
     #[arg(long)]
-    pub session_id: Option<String>,
+    pub session_id: String,
+
+    /// Producer kind, such as tui or server.
+    #[arg(long)]
+    pub producer_kind: String,
+
+    /// Producer instance label, such as a tmux pane or server URL.
+    #[arg(long)]
+    pub producer_instance: String,
+
+    /// Delete this producer observation.
+    #[arg(long)]
+    pub delete: bool,
+
+    /// Delete all producer observations for this agent session.
+    #[arg(long)]
+    pub delete_session: bool,
 
     /// Human-readable agent/session title supplied by an external integration.
     #[arg(long)]
@@ -217,5 +231,4 @@ pub enum AgentStatus {
     Working,
     Waiting,
     Done,
-    Clear,
 }

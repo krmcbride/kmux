@@ -1,10 +1,13 @@
 use std::path::Path;
 
+use crate::agent::sessions::AgentSessionView;
 use crate::config::StatusIcons;
-use crate::state::{AgentReportState, AgentStatus};
+#[cfg(test)]
+use crate::state::AgentLocationHints;
+use crate::state::AgentStatus;
 
 #[cfg(test)]
-use crate::state::{AgentReportKey, AgentTargetHints};
+use crate::state::AgentSessionKey as TestAgentSessionKey;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarIcons {
@@ -27,17 +30,15 @@ impl SidebarIcons {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarRowIdentity {
-    source: String,
-    instance: String,
-    id: String,
+    agent_kind: String,
+    session_id: String,
 }
 
 impl SidebarRowIdentity {
-    fn from_report(report: &AgentReportState) -> Self {
+    fn from_view(view: &AgentSessionView) -> Self {
         Self {
-            source: report.key.source.clone(),
-            instance: report.key.instance.clone(),
-            id: report.key.id.clone(),
+            agent_kind: view.key.agent_kind.clone(),
+            session_id: view.key.session_id.clone(),
         }
     }
 }
@@ -97,10 +98,10 @@ impl SidebarRow {
 
 impl SidebarRow {
     #[cfg(test)]
-    pub(super) fn from_report(report: &AgentReportState, now: u64) -> Self {
+    pub(super) fn from_view(view: &AgentSessionView, now: u64) -> Self {
         let icons = test_icons();
-        Self::from_report_with_working_icon(
-            report,
+        Self::from_view_with_working_icon(
+            view,
             now,
             &icons,
             None,
@@ -109,21 +110,21 @@ impl SidebarRow {
     }
 
     #[cfg(test)]
-    pub(super) fn from_agent(report: &AgentReportState, now: u64, _sleeping_icon: &str) -> Self {
-        Self::from_report(report, now)
+    pub(super) fn from_agent(view: &AgentSessionView, now: u64, _sleeping_icon: &str) -> Self {
+        Self::from_view(view, now)
     }
 
-    fn from_report_with_working_icon(
-        report: &AgentReportState,
+    fn from_view_with_working_icon(
+        view: &AgentSessionView,
         now: u64,
         icons: &SidebarIcons,
         working_icon: Option<&str>,
         idle_after_seconds: u64,
     ) -> Self {
-        let target = &report.target;
-        let primary = repo_label(report);
-        let secondary = branch_label(report, &primary);
-        let title = report
+        let target = &view.target;
+        let primary = repo_label(view);
+        let secondary = branch_label(view, &primary);
+        let title = view
             .title
             .as_deref()
             .filter(|title| *title != primary && *title != secondary)
@@ -135,22 +136,22 @@ impl SidebarRow {
             })
             .or(target.pane_current_command.as_deref())
             .map(str::to_owned)
-            .or_else(|| fallback_session_title(report, &primary, &secondary))
+            .or_else(|| fallback_session_title(view, &primary, &secondary))
             .unwrap_or_default();
-        let secondary_right = report
+        let secondary_right = view
             .context
             .as_deref()
             .map(str::trim)
             .filter(|context| !context.is_empty())
             .unwrap_or_default()
             .to_owned();
-        let age = now.saturating_sub(report.status_changed_at);
-        let state = SidebarRowState::from_status(report.status, age, idle_after_seconds);
-        let elapsed = report.elapsed_secs(now);
+        let age = now.saturating_sub(view.status_changed_at);
+        let state = SidebarRowState::from_status(view.status, age, idle_after_seconds);
+        let elapsed = view.elapsed_secs(now);
         let icon = if state.is_idle() {
             icons.sleeping.clone()
         } else {
-            match report.status {
+            match view.status {
                 AgentStatus::Working => working_icon.unwrap_or(&icons.working).to_owned(),
                 AgentStatus::Waiting => icons.waiting.clone(),
                 AgentStatus::Done => icons.done.clone(),
@@ -158,8 +159,8 @@ impl SidebarRow {
         };
 
         Self {
-            identity: SidebarRowIdentity::from_report(report),
-            status: report.status,
+            identity: SidebarRowIdentity::from_view(view),
+            status: view.status,
             state,
             icon,
             primary,
@@ -174,22 +175,22 @@ impl SidebarRow {
     }
 }
 
-fn repo_label(report: &AgentReportState) -> String {
-    clean_label(report.target.repo_name.as_deref())
-        .or_else(|| path_label(report.target.repo_path.as_deref()))
-        .or_else(|| path_label(report.target.directory.as_deref()))
-        .or_else(|| path_label(report.target.worktree_path.as_deref()))
-        .or_else(|| clean_label(report.target.window_name.as_deref()))
-        .unwrap_or_else(|| report.key.id.clone())
+fn repo_label(view: &AgentSessionView) -> String {
+    clean_label(view.target.repo_name.as_deref())
+        .or_else(|| path_label(view.target.repo_path.as_deref()))
+        .or_else(|| path_label(view.target.directory.as_deref()))
+        .or_else(|| path_label(view.target.worktree_path.as_deref()))
+        .or_else(|| clean_label(view.target.window_name.as_deref()))
+        .unwrap_or_else(|| view.key.session_id.clone())
 }
 
-fn branch_label(report: &AgentReportState, primary: &str) -> String {
-    clean_label(report.target.branch.as_deref())
-        .or_else(|| distinct_label(report.target.worktree_handle.as_deref(), primary))
-        .or_else(|| path_distinct_label(report.target.directory.as_deref(), primary))
-        .or_else(|| path_distinct_label(report.target.worktree_path.as_deref(), primary))
-        .or_else(|| distinct_label(report.target.window_name.as_deref(), primary))
-        .or_else(|| fallback_session_label(report, primary))
+fn branch_label(view: &AgentSessionView, primary: &str) -> String {
+    clean_label(view.target.branch.as_deref())
+        .or_else(|| distinct_label(view.target.worktree_handle.as_deref(), primary))
+        .or_else(|| path_distinct_label(view.target.directory.as_deref(), primary))
+        .or_else(|| path_distinct_label(view.target.worktree_path.as_deref(), primary))
+        .or_else(|| distinct_label(view.target.window_name.as_deref(), primary))
+        .or_else(|| fallback_session_label(view, primary))
         .unwrap_or_default()
 }
 
@@ -217,40 +218,33 @@ fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
     path_label(value).filter(|value| value != primary)
 }
 
-fn fallback_session_label(report: &AgentReportState, primary: &str) -> Option<String> {
-    let session_id = report.session_id.as_deref().or_else(|| {
-        report
-            .target
-            .pane_id
-            .is_none()
-            .then_some(report.key.id.as_str())
-    })?;
-    let label = compact_session_id(session_id).to_owned();
+fn fallback_session_label(view: &AgentSessionView, primary: &str) -> Option<String> {
+    let label = compact_session_id(&view.key.session_id).to_owned();
     (label != primary).then_some(label)
 }
 
 #[cfg(test)]
 pub(super) fn build_rows(
-    reports: &[AgentReportState],
+    views: &[AgentSessionView],
     now: u64,
     idle_after_seconds: u64,
 ) -> Vec<SidebarRow> {
     let icons = test_icons();
-    build_rows_with_working_icon(reports, now, &icons, None, idle_after_seconds)
+    build_rows_with_working_icon(views, now, &icons, None, idle_after_seconds)
 }
 
 pub(super) fn build_rows_with_working_icon(
-    reports: &[AgentReportState],
+    views: &[AgentSessionView],
     now: u64,
     icons: &SidebarIcons,
     working_icon: Option<&str>,
     idle_after_seconds: u64,
 ) -> Vec<SidebarRow> {
-    reports
+    views
         .iter()
-        .map(|report| {
-            SidebarRow::from_report_with_working_icon(
-                report,
+        .map(|view| {
+            SidebarRow::from_view_with_working_icon(
+                view,
                 now,
                 icons,
                 working_icon,
@@ -289,18 +283,11 @@ fn compact_elapsed(seconds: u64) -> String {
 }
 
 fn fallback_session_title(
-    report: &AgentReportState,
+    view: &AgentSessionView,
     primary: &str,
     secondary: &str,
 ) -> Option<String> {
-    let session_id = report.session_id.as_deref().or_else(|| {
-        report
-            .target
-            .pane_id
-            .is_none()
-            .then_some(report.key.id.as_str())
-    })?;
-    let label = format!("session {}", compact_session_id(session_id));
+    let label = format!("session {}", compact_session_id(&view.key.session_id));
     (label != primary && label != secondary).then_some(label)
 }
 
@@ -327,17 +314,16 @@ pub(super) fn report_state(
     status_changed_at: u64,
     window_id: &str,
     pane_id: &str,
-) -> AgentReportState {
-    AgentReportState {
-        key: AgentReportKey::tmux_pane("test", pane_id),
-        session_id: None,
+) -> AgentSessionView {
+    AgentSessionView {
+        key: TestAgentSessionKey::new("opencode", format!("ses_{pane_id}")),
         status,
         status_changed_at,
         working_elapsed_secs: 0,
         observed_at: status_changed_at,
         title: None,
         context: None,
-        target: AgentTargetHints {
+        target: AgentLocationHints {
             tmux_instance: Some("test".to_owned()),
             pane_id: Some(pane_id.to_owned()),
             window_id: Some(window_id.to_owned()),
@@ -345,6 +331,7 @@ pub(super) fn report_state(
             window_name: Some("kmux-feature-sidebar".to_owned()),
             pane_title: Some("Implement sidebar".to_owned()),
             pane_current_command: Some("nvim".to_owned()),
+            pane_current_path: None,
             repo_name: Some("kmux".to_owned()),
             repo_path: Some("/repo".to_owned()),
             worktree_handle: Some("feature-sidebar".to_owned()),
@@ -361,7 +348,7 @@ pub(super) fn agent_state(
     status_changed_at: u64,
     window_id: &str,
     pane_id: &str,
-) -> AgentReportState {
+) -> AgentSessionView {
     report_state(status, status_changed_at, window_id, pane_id)
 }
 
@@ -485,14 +472,12 @@ mod tests {
     #[test]
     fn row_model_keeps_multiple_sessions_for_one_window_distinguishable() {
         let mut first = report_state(AgentStatus::Working, 120, "@1", "%1");
-        first.key = AgentReportKey::new("opencode-server", "server", "ses_first");
-        first.session_id = Some("ses_first".to_owned());
+        first.key = TestAgentSessionKey::new("opencode", "ses_first");
         first.target.pane_id = None;
         first.title = Some("Implement sidebar rows".to_owned());
 
         let mut second = report_state(AgentStatus::Waiting, 120, "@1", "%2");
-        second.key = AgentReportKey::new("opencode-server", "server", "ses_second");
-        second.session_id = Some("ses_second".to_owned());
+        second.key = TestAgentSessionKey::new("opencode", "ses_second");
         second.target.pane_id = None;
         second.title = None;
         second.target.pane_title = None;

@@ -779,6 +779,7 @@ mod tests {
             window_width: 120,
             title: title.map(str::to_owned),
             current_command: current_command.map(str::to_owned),
+            current_path: None,
             pane_active: false,
             window_active: false,
             session_attached: false,

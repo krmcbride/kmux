@@ -60,6 +60,7 @@ pub struct TmuxPaneSnapshot {
     pub window_width: u16,
     pub title: Option<String>,
     pub current_command: Option<String>,
+    pub current_path: Option<String>,
     pub pane_active: bool,
     pub window_active: bool,
     pub session_attached: bool,
@@ -73,6 +74,7 @@ pub enum TmuxSplitSize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub struct TmuxPaneDetails {
     pub title: Option<String>,
     pub current_command: Option<String>,
@@ -189,6 +191,7 @@ impl Tmux {
         self.query_context(Some(pane_id))
     }
 
+    #[cfg(test)]
     pub fn pane_details(&self, pane_id: &str) -> Result<TmuxPaneDetails> {
         let format = format!("#{{pane_title}}{TMUX_FIELD_SEPARATOR}#{{pane_current_command}}");
         let output = self.stdout(vec![
@@ -326,7 +329,7 @@ impl Tmux {
     pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
         let separator = TMUX_FIELD_SEPARATOR;
         let format = format!(
-            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
+            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
         );
         let output = self.stdout(["list-panes", "-a", "-F", &format])?;
         parse_pane_snapshots(&output)
@@ -345,6 +348,7 @@ impl Tmux {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn show_window_option(&self, target: &str, option_name: &str) -> Result<Option<String>> {
         validate_user_option(option_name)?;
         let output = self.output(["show-option", "-wqv", "-t", target, option_name])?;
@@ -548,7 +552,7 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
 
 fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
-    if fields.len() != 15 {
+    if fields.len() != 16 {
         bail!("unexpected tmux pane snapshot format: {line:?}");
     }
 
@@ -564,13 +568,15 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         window_width: fields[8].parse().unwrap_or_default(),
         title: non_empty_string(fields[9]),
         current_command: non_empty_string(fields[10]),
-        pane_active: tmux_bool(fields[11]),
-        window_active: tmux_bool(fields[12]),
-        session_attached: tmux_attached(fields[13]),
-        kmux_role: non_empty_string(fields[14]),
+        current_path: non_empty_string(fields[11]),
+        pane_active: tmux_bool(fields[12]),
+        window_active: tmux_bool(fields[13]),
+        session_attached: tmux_attached(fields[14]),
+        kmux_role: non_empty_string(fields[15]),
     })
 }
 
+#[cfg(test)]
 fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
     let mut fields = output.split(TMUX_FIELD_SEPARATOR);
     let title = fields.next().unwrap_or_default();
@@ -737,7 +743,7 @@ mod tests {
     fn parses_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}kmux{separator}nvim{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}{separator}{separator}0{separator}0{separator}0{separator}"
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}{separator}{separator}{separator}0{separator}0{separator}0{separator}"
         );
 
         let panes = parse_pane_snapshots(&output)?;
@@ -754,6 +760,7 @@ mod tests {
         assert_eq!(panes[0].window_width, 120);
         assert_eq!(panes[0].title.as_deref(), Some("kmux"));
         assert_eq!(panes[0].current_command.as_deref(), Some("nvim"));
+        assert_eq!(panes[0].current_path.as_deref(), Some("/repo/feature"));
         assert!(panes[0].pane_active);
         assert!(panes[0].window_active);
         assert!(panes[0].session_attached);

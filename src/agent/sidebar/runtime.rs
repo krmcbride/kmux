@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn quit_keys_request_disable_without_directly_exiting_test_app() {
-        let rows = vec![SidebarRow::from_report(
+        let rows = vec![SidebarRow::from_view(
             &report_state(AgentStatus::Waiting, 100, "@1", "%1"),
             100,
         )];
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn f5_event_reports_redraw_request_for_wake_signal() {
-        let rows = vec![SidebarRow::from_report(
+        let rows = vec![SidebarRow::from_view(
             &report_state(AgentStatus::Done, 100, "@1", "%1"),
             100,
         )];

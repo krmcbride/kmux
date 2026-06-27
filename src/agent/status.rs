@@ -1,31 +1,22 @@
-use std::path::{Path, PathBuf};
+use std::collections::HashMap;
+use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 
-use crate::agent::active::active_reports;
+use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::cli;
 use crate::config::{Config, StatusIcons};
 use crate::git::{Git, WorktreeInfo};
 use crate::paths::{RepoPaths, infer_repo_metadata_from_paths, path_basename, same_path};
 use crate::state::{
-    AgentReportKey, AgentReportState, AgentStatus as StoredAgentStatus, AgentTargetHints,
-    StateStore, next_report_timing, now_unix_seconds,
+    AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
+    AgentStatus as StoredAgentStatus, StateStore, next_observation_timing, now_unix_seconds,
 };
-use crate::tmux::{
-    KMUX_WORKTREE_BRANCH_OPTION, KMUX_WORKTREE_HANDLE_OPTION, KMUX_WORKTREE_PATH_OPTION, Tmux,
-    kmux_worktree_option,
-};
+use crate::tmux::Tmux;
 
 const KMUX_STATUS_OPTION: &str = "@kmux_status";
-
-#[derive(Debug)]
-struct WindowWorktree {
-    handle: Option<String>,
-    path: Option<PathBuf>,
-    branch: Option<String>,
-}
 
 #[derive(Debug, Clone, Serialize)]
 struct GitInfo {
@@ -36,6 +27,8 @@ struct GitInfo {
 
 #[derive(Debug, Serialize)]
 struct StatusEntry {
+    agent_kind: String,
+    session_id: String,
     worktree: String,
     branch: String,
     status: String,
@@ -65,8 +58,8 @@ pub fn run(args: cli::StatusArgs) -> Result<()> {
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
     let config = Config::load()?;
-    let reports = active_reports(&store, &tmux)?;
-    let entries = status_entries(&reports, &args, &config.status_icons)?;
+    let views = session_views(&store, &tmux)?;
+    let entries = status_entries(&views, &args, &config.status_icons)?;
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -78,198 +71,169 @@ pub fn run(args: cli::StatusArgs) -> Result<()> {
     Ok(())
 }
 
-pub fn set_window_status(args: cli::SetWindowStatusArgs) -> Result<()> {
-    if std::env::var_os("KMUX_DISABLE_SET_WINDOW_STATUS").is_some() {
+pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
+    if std::env::var_os("KMUX_DISABLE_SET_AGENT_STATUS").is_some() {
         return Ok(());
     }
 
     let config = Config::load()?;
     let tmux = Tmux::from_env();
     let store = StateStore::new()?;
-    let explicit_identity = has_explicit_identity(&args);
-    let context = if explicit_identity {
-        None
-    } else {
-        tmux.current_context()?
-    };
-    let Some(key) = report_key(&args, &tmux, context.as_ref(), explicit_identity)? else {
-        return Ok(());
-    };
+    let key = observation_key(&args)?;
 
-    if args.status == cli::AgentStatus::Clear {
-        if !explicit_identity && let Some(context) = context.as_ref() {
-            tmux.unset_window_option(&context.pane_id, KMUX_STATUS_OPTION)?;
-        }
-        store.delete_report(&key)?;
+    if args.delete_session {
+        store.delete_session(&key.session)?;
+        let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
         return Ok(());
     }
-
-    let (status, icon) = match args.status {
-        cli::AgentStatus::Working => (StoredAgentStatus::Working, config.status_icons.working()),
-        cli::AgentStatus::Waiting => (StoredAgentStatus::Waiting, config.status_icons.waiting()),
-        cli::AgentStatus::Done => (StoredAgentStatus::Done, config.status_icons.done()),
-        cli::AgentStatus::Clear => return Ok(()),
-    };
-    if !explicit_identity && let Some(context) = context.as_ref() {
-        tmux.set_window_option(&context.pane_id, KMUX_STATUS_OPTION, icon)?;
+    if args.delete {
+        store.delete_observation(&key)?;
+        let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
+        return Ok(());
     }
 
     let now = now_unix_seconds();
-    let target = report_target(&args, &config, &tmux, context.as_ref(), explicit_identity)?;
-    let previous = store.get_report(&key)?;
-    let session_id = clean_optional(args.session_id);
-    let timing = next_report_timing(previous.as_ref(), &key, session_id.as_deref(), status, now);
-    let state = AgentReportState {
-        key,
-        session_id,
-        status,
-        status_changed_at: timing.status_changed_at,
-        working_elapsed_secs: timing.working_elapsed_secs,
+    let previous = store.get_observation(&key)?;
+    let status = args.status.map(stored_status);
+    let status_supplied = status.is_some();
+    let timing = next_observation_timing(previous.as_ref(), status, now);
+    let mut state = previous.unwrap_or_else(|| AgentObservationState {
+        key: key.clone(),
+        status: None,
+        status_observed_at: None,
+        status_changed_at: None,
+        working_elapsed_secs: 0,
         observed_at: now,
-        title: clean_optional(args.title),
-        context: clean_optional(args.context),
-        target,
-    };
-    store.upsert_report(&state)?;
+        title: None,
+        context: None,
+        target: AgentLocationHints::default(),
+    });
+    state.key = key;
+    if status_supplied {
+        state.status = status;
+        state.status_observed_at = Some(now);
+    }
+    state.status_changed_at = timing.status_changed_at;
+    state.working_elapsed_secs = timing.working_elapsed_secs;
+    state.observed_at = now;
+    if let Some(title) = clean_optional_ref(args.title.as_ref()) {
+        state.title = Some(title);
+    }
+    if let Some(context) = clean_optional_ref(args.context.as_ref()) {
+        state.context = Some(context);
+    }
+    apply_location_args(&mut state.target, &args);
+    enrich_missing_repo_metadata(&mut state.target);
+
+    store.upsert_observation(&state)?;
+    let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
     Ok(())
 }
 
-fn has_explicit_identity(args: &cli::SetWindowStatusArgs) -> bool {
-    args.source.is_some() || args.source_instance.is_some()
+fn observation_key(args: &cli::SetAgentStatusArgs) -> Result<AgentObservationKey> {
+    Ok(AgentObservationKey {
+        session: AgentSessionKey {
+            agent_kind: clean_required(&args.agent_kind, "--agent-kind")?,
+            session_id: clean_required(&args.session_id, "--session-id")?,
+        },
+        producer_kind: clean_required(&args.producer_kind, "--producer-kind")?,
+        producer_instance: clean_required(&args.producer_instance, "--producer-instance")?,
+    })
 }
 
-fn report_key(
-    args: &cli::SetWindowStatusArgs,
-    tmux: &Tmux,
-    context: Option<&crate::tmux::TmuxContext>,
-    explicit_identity: bool,
-) -> Result<Option<AgentReportKey>> {
-    if !explicit_identity {
-        return Ok(context.map(|context| {
-            AgentReportKey::tmux_pane(tmux.instance_id(), context.pane_id.clone())
-        }));
+fn stored_status(status: cli::AgentStatus) -> StoredAgentStatus {
+    match status {
+        cli::AgentStatus::Working => StoredAgentStatus::Working,
+        cli::AgentStatus::Waiting => StoredAgentStatus::Waiting,
+        cli::AgentStatus::Done => StoredAgentStatus::Done,
     }
-
-    let source = clean_optional_ref(args.source.as_ref())
-        .ok_or_else(|| anyhow::anyhow!("--source is required for explicit reports"))?;
-    let instance =
-        clean_optional_ref(args.source_instance.as_ref()).unwrap_or_else(|| "default".to_owned());
-    let id = clean_optional_ref(args.session_id.as_ref())
-        .or_else(|| clean_optional_ref(args.pane_id.as_ref()))
-        .ok_or_else(|| {
-            anyhow::anyhow!("--session-id or --pane-id is required for explicit reports")
-        })?;
-
-    Ok(Some(AgentReportKey::new(source, instance, id)))
 }
 
-fn report_target(
-    args: &cli::SetWindowStatusArgs,
-    config: &Config,
-    tmux: &Tmux,
-    context: Option<&crate::tmux::TmuxContext>,
-    explicit_identity: bool,
-) -> Result<AgentTargetHints> {
-    let inferred_context = (!explicit_identity).then_some(context).flatten();
-    let details = inferred_context.and_then(|context| tmux.pane_details(&context.pane_id).ok());
-    let worktree = if let Some(context) = inferred_context {
-        Some(current_window_worktree(config, tmux, context)?)
-    } else {
-        None
-    };
-    let repo_name_hint = clean_optional_ref(args.repo_name.as_ref());
-    let repo_path_hint = clean_optional_ref(args.repo_path.as_ref());
-    let worktree_path = clean_optional_ref(args.worktree_path.as_ref()).or_else(|| {
-        worktree
-            .as_ref()
-            .and_then(|worktree| worktree.path.as_ref())
-            .map(|path| path.display().to_string())
-    });
-    let directory = clean_optional_ref(args.directory.as_ref());
-    let repo_metadata =
-        infer_repo_metadata_from_paths(&[worktree_path.as_deref(), directory.as_deref()]);
-    let repo_path = repo_path_hint.or_else(|| repo_metadata.repo_path.clone());
-    let repo_name = repo_name_hint
-        .or_else(|| repo_path.as_deref().and_then(path_basename))
-        .or(repo_metadata.repo_name);
-    let branch = clean_optional_ref(args.branch.as_ref())
-        .or_else(|| {
-            worktree
-                .as_ref()
-                .and_then(|worktree| worktree.branch.clone())
-        })
-        .or(repo_metadata.branch);
-
-    Ok(AgentTargetHints {
-        tmux_instance: clean_optional_ref(args.tmux_instance.as_ref())
-            .or_else(|| inferred_context.map(|_| tmux.instance_id())),
-        pane_id: clean_optional_ref(args.pane_id.as_ref())
-            .or_else(|| inferred_context.map(|context| context.pane_id.clone())),
-        window_id: clean_optional_ref(args.window_id.as_ref())
-            .or_else(|| inferred_context.map(|context| context.window_id.clone())),
-        session_name: clean_optional_ref(args.session_name.as_ref())
-            .or_else(|| inferred_context.map(|context| context.session_name.clone())),
-        window_name: clean_optional_ref(args.window_name.as_ref())
-            .or_else(|| inferred_context.map(|context| context.window_name.clone())),
-        pane_title: details.as_ref().and_then(|details| details.title.clone()),
-        pane_current_command: details.and_then(|details| details.current_command),
-        repo_name,
-        repo_path,
-        worktree_handle: clean_optional_ref(args.worktree_handle.as_ref()).or_else(|| {
-            worktree
-                .as_ref()
-                .and_then(|worktree| worktree.handle.clone())
-        }),
-        worktree_path,
-        branch,
-        directory,
-    })
+fn apply_location_args(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
+    apply_optional(&mut target.tmux_instance, &args.tmux_instance);
+    apply_optional(&mut target.pane_id, &args.pane_id);
+    apply_optional(&mut target.window_id, &args.window_id);
+    apply_optional(&mut target.session_name, &args.session_name);
+    apply_optional(&mut target.window_name, &args.window_name);
+    apply_optional(&mut target.repo_name, &args.repo_name);
+    apply_optional(&mut target.repo_path, &args.repo_path);
+    apply_optional(&mut target.worktree_handle, &args.worktree_handle);
+    apply_optional(&mut target.worktree_path, &args.worktree_path);
+    apply_optional(&mut target.branch, &args.branch);
+    apply_optional(&mut target.directory, &args.directory);
 }
 
-fn clean_optional(value: Option<String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    })
+fn apply_optional(target: &mut Option<String>, value: &Option<String>) {
+    if let Some(value) = clean_optional_ref(value.as_ref()) {
+        *target = Some(value);
+    }
+}
+
+fn clean_required(value: &str, label: &str) -> Result<String> {
+    clean_str(value)
+        .map(str::to_owned)
+        .ok_or_else(|| anyhow!("{label} cannot be empty"))
 }
 
 fn clean_optional_ref(value: Option<&String>) -> Option<String> {
-    value.and_then(|value| {
-        let value = value.trim();
-        (!value.is_empty()).then(|| value.to_owned())
-    })
+    value.and_then(|value| clean_str(value).map(str::to_owned))
+}
+
+fn clean_str(value: &str) -> Option<&str> {
+    let value = value.trim();
+    (!value.is_empty()).then_some(value)
+}
+
+fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
+    let metadata = infer_repo_metadata_from_paths(&[
+        target.directory.as_deref(),
+        target.worktree_path.as_deref(),
+    ]);
+    if target.repo_path.is_none() {
+        target.repo_path = metadata.repo_path.clone();
+    }
+    if target.repo_name.is_none() {
+        target.repo_name = target
+            .repo_path
+            .as_deref()
+            .and_then(path_basename)
+            .or(metadata.repo_name);
+    }
+    if target.branch.is_none() {
+        target.branch = metadata.branch;
+    }
 }
 
 fn status_entries(
-    reports: &[AgentReportState],
+    views: &[AgentSessionView],
     args: &cli::StatusArgs,
     icons: &StatusIcons,
 ) -> Result<Vec<StatusEntry>> {
     let now = unix_now();
     if !args.filters.is_empty() {
-        return Ok(reports
+        return Ok(views
             .iter()
-            .filter(|report| {
+            .filter(|view| {
                 args.filters
                     .iter()
-                    .any(|filter| report_matches_filter(report, filter))
+                    .any(|filter| view_matches_filter(view, filter))
             })
-            .map(|report| entry_for_report(report, None, now, args.git, icons))
+            .map(|view| entry_for_view(view, None, now, args.git, icons))
             .collect());
     }
 
-    if let Some(entries) = current_repo_entries(reports, now, args.git, icons)? {
+    if let Some(entries) = current_repo_entries(views, now, args.git, icons)? {
         return Ok(entries);
     }
 
-    Ok(reports
+    Ok(views
         .iter()
-        .map(|report| entry_for_report(report, None, now, args.git, icons))
+        .map(|view| entry_for_view(view, None, now, args.git, icons))
         .collect())
 }
 
 fn current_repo_entries(
-    reports: &[AgentReportState],
+    views: &[AgentSessionView],
     now: u64,
     show_git: bool,
     icons: &StatusIcons,
@@ -283,24 +247,18 @@ fn current_repo_entries(
 
     let mut entries = Vec::new();
     for worktree in &worktrees {
-        for report in reports
+        for view in views
             .iter()
-            .filter(|report| report_matches_worktree(report, worktree))
+            .filter(|view| view_matches_worktree(view, worktree))
         {
-            entries.push(entry_for_report(
-                report,
-                Some(worktree),
-                now,
-                show_git,
-                icons,
-            ));
+            entries.push(entry_for_view(view, Some(worktree), now, show_git, icons));
         }
     }
     Ok(Some(entries))
 }
 
-fn entry_for_report(
-    report: &AgentReportState,
+fn entry_for_view(
+    view: &AgentSessionView,
     worktree: Option<&WorktreeInfo>,
     now: u64,
     show_git: bool,
@@ -308,19 +266,20 @@ fn entry_for_report(
 ) -> StatusEntry {
     let worktree_path = worktree
         .map(|worktree| worktree.path.display().to_string())
-        .or_else(|| report.target.worktree_path.clone());
+        .or_else(|| view.target.worktree_path.clone())
+        .or_else(|| view.target.directory.clone());
     let handle = worktree
         .and_then(|worktree| worktree.path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .or_else(|| report.target.worktree_handle.clone());
+        .or_else(|| view.target.worktree_handle.clone());
     let branch = worktree
         .and_then(|worktree| worktree.branch.clone())
-        .or_else(|| report.target.branch.clone())
+        .or_else(|| view.target.branch.clone())
         .unwrap_or_else(|| "-".to_owned());
     let worktree_name = handle
         .clone()
-        .or_else(|| report.target.window_name.clone())
-        .unwrap_or_else(|| report.key.id.clone());
+        .or_else(|| view.target.window_name.clone())
+        .unwrap_or_else(|| view.key.session_id.clone());
     let git = if show_git {
         worktree_path
             .as_deref()
@@ -331,37 +290,46 @@ fn entry_for_report(
     };
 
     StatusEntry {
+        agent_kind: view.key.agent_kind.clone(),
+        session_id: view.key.session_id.clone(),
         worktree: worktree_name,
         branch,
-        status: report.status.as_str().to_owned(),
-        icon: status_icon(report.status, icons).to_owned(),
-        elapsed_secs: report.elapsed_secs(now),
-        title: report
+        status: view.status.as_str().to_owned(),
+        icon: status_icon(view.status, icons).to_owned(),
+        elapsed_secs: view.elapsed_secs(now),
+        title: view
             .title
             .clone()
-            .or_else(|| report.target.pane_title.clone()),
-        context: report.context.clone(),
-        pane_id: report.target.pane_id.clone().unwrap_or_default(),
+            .or_else(|| view.target.pane_title.clone()),
+        context: view.context.clone(),
+        pane_id: view.target.pane_id.clone().unwrap_or_default(),
         worktree_handle: handle,
         worktree_path,
-        session_name: report.target.session_name.clone().unwrap_or_default(),
-        window_name: report.target.window_name.clone().unwrap_or_default(),
-        window_id: report.target.window_id.clone().unwrap_or_default(),
+        session_name: view.target.session_name.clone().unwrap_or_default(),
+        window_name: view.target.window_name.clone().unwrap_or_default(),
+        window_id: view.target.window_id.clone().unwrap_or_default(),
         git,
     }
 }
 
-fn report_matches_filter(report: &AgentReportState, filter: &str) -> bool {
-    report.target.worktree_handle.as_deref() == Some(filter)
-        || report.target.branch.as_deref() == Some(filter)
-        || report.target.window_name.as_deref() == Some(filter)
-        || report.target.worktree_path.as_deref() == Some(filter)
-        || report.target.directory.as_deref() == Some(filter)
-        || report.key.id == filter
+fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
+    view.key.agent_kind == filter
+        || view.key.session_id == filter
+        || view.target.worktree_handle.as_deref() == Some(filter)
+        || view.target.branch.as_deref() == Some(filter)
+        || view.target.window_name.as_deref() == Some(filter)
+        || view.target.worktree_path.as_deref() == Some(filter)
+        || view.target.directory.as_deref() == Some(filter)
+        || view.title.as_deref() == Some(filter)
 }
 
-fn report_matches_worktree(report: &AgentReportState, worktree: &WorktreeInfo) -> bool {
-    let report_path = report.target.worktree_path.as_deref().map(Path::new);
+fn view_matches_worktree(view: &AgentSessionView, worktree: &WorktreeInfo) -> bool {
+    let report_path = view
+        .target
+        .worktree_path
+        .as_deref()
+        .or(view.target.directory.as_deref())
+        .map(Path::new);
     if let Some(report_path) = report_path
         && same_path(report_path, &worktree.path)
     {
@@ -369,10 +337,10 @@ fn report_matches_worktree(report: &AgentReportState, worktree: &WorktreeInfo) -
     }
 
     let handle = worktree.path.file_name().map(|name| name.to_string_lossy());
-    let branch_matches = report.target.branch.as_deref() == worktree.branch.as_deref();
+    let branch_matches = view.target.branch.as_deref() == worktree.branch.as_deref();
     let handle_matches = handle
         .as_deref()
-        .is_some_and(|handle| report.target.worktree_handle.as_deref() == Some(handle));
+        .is_some_and(|handle| view.target.worktree_handle.as_deref() == Some(handle));
 
     report_path.is_none() && branch_matches && handle_matches
 }
@@ -383,71 +351,6 @@ fn status_icon(status: StoredAgentStatus, icons: &StatusIcons) -> &str {
         StoredAgentStatus::Waiting => icons.waiting(),
         StoredAgentStatus::Done => icons.done(),
     }
-}
-
-fn current_window_worktree(
-    config: &Config,
-    tmux: &Tmux,
-    context: &crate::tmux::TmuxContext,
-) -> Result<WindowWorktree> {
-    let handle = context
-        .window_name
-        .strip_prefix(config.window_prefix())
-        .filter(|value| !value.is_empty())
-        .unwrap_or(&context.window_name)
-        .to_owned();
-
-    if let Some(path) = tmux.show_window_option(&context.pane_id, KMUX_WORKTREE_PATH_OPTION)? {
-        let branch = tmux.show_window_option(&context.pane_id, KMUX_WORKTREE_BRANCH_OPTION)?;
-        let stable_handle = tmux
-            .show_window_option(&context.pane_id, KMUX_WORKTREE_HANDLE_OPTION)?
-            .unwrap_or_else(|| handle.clone());
-        return Ok(WindowWorktree {
-            handle: Some(stable_handle),
-            path: Some(PathBuf::from(path)),
-            branch,
-        });
-    }
-
-    if let Ok(path_option) = kmux_worktree_option(&handle, "path")
-        && let Some(path) = tmux.show_window_option(&context.pane_id, &path_option)?
-    {
-        let branch = kmux_worktree_option(&handle, "branch")
-            .ok()
-            .and_then(|option| {
-                tmux.show_window_option(&context.pane_id, &option)
-                    .ok()
-                    .flatten()
-            });
-        return Ok(WindowWorktree {
-            handle: Some(handle),
-            path: Some(PathBuf::from(path)),
-            branch,
-        });
-    }
-
-    let cwd = std::env::current_dir().context("failed to read current directory")?;
-    if let Ok(paths) = RepoPaths::discover(&cwd) {
-        let branch = Git::new(&paths.current_worktree)
-            .current_branch()
-            .ok()
-            .flatten();
-        let handle = paths
-            .current_worktree
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned());
-        return Ok(WindowWorktree {
-            handle,
-            path: Some(paths.current_worktree),
-            branch,
-        });
-    }
-
-    Ok(WindowWorktree {
-        handle: Some(handle),
-        path: None,
-        branch: None,
-    })
 }
 
 fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
@@ -462,6 +365,45 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
                 .map(|safe| !safe)
                 .unwrap_or(false)
         },
+    }
+}
+
+fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
+    let views = session_views(store, tmux)?;
+    let mut by_window = HashMap::<String, StoredAgentStatus>::new();
+    for view in views {
+        let Some(window_id) = view.target.window_id else {
+            continue;
+        };
+        by_window
+            .entry(window_id)
+            .and_modify(|status| {
+                if status_rank(view.status) > status_rank(*status) {
+                    *status = view.status;
+                }
+            })
+            .or_insert(view.status);
+    }
+
+    for window in tmux.list_windows(None)? {
+        if let Some(status) = by_window.get(&window.window_id).copied() {
+            tmux.set_window_option(
+                &window.window_id,
+                KMUX_STATUS_OPTION,
+                status_icon(status, icons),
+            )?;
+        } else {
+            tmux.unset_window_option(&window.window_id, KMUX_STATUS_OPTION)?;
+        }
+    }
+    Ok(())
+}
+
+fn status_rank(status: StoredAgentStatus) -> u8 {
+    match status {
+        StoredAgentStatus::Waiting => 3,
+        StoredAgentStatus::Working => 2,
+        StoredAgentStatus::Done => 1,
     }
 }
 

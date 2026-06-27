@@ -4,9 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
+use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::cli;
 use crate::config::StatusIcons;
-use crate::state::{AgentReportState, AgentStatus, StateStore};
+use crate::state::{AgentStatus, StateStore};
 use crate::tmux::Tmux;
 
 use super::context::load_repo_context;
@@ -31,11 +32,11 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
         return Ok(());
     }
 
+    let tmux = Tmux::from_env();
     let agents = StateStore::new()
         .ok()
-        .and_then(|store| store.list_reports().ok())
+        .and_then(|store| session_views(&store, &tmux).ok())
         .unwrap_or_default();
-    let tmux = Tmux::from_env();
     let tmux_session = tmux
         .current_context()
         .ok()
@@ -86,7 +87,7 @@ fn compact_age(seconds: u64) -> String {
     }
 }
 
-fn format_agent(item: &ListItem, agents: &[AgentReportState], icons: &StatusIcons) -> String {
+fn format_agent(item: &ListItem, agents: &[AgentSessionView], icons: &StatusIcons) -> String {
     let matching = agents
         .iter()
         .filter(|agent| agent_matches_item(agent, item))
@@ -112,10 +113,15 @@ fn format_agent(item: &ListItem, agents: &[AgentReportState], icons: &StatusIcon
         .join(" ")
 }
 
-fn agent_matches_item(agent: &AgentReportState, item: &ListItem) -> bool {
+fn agent_matches_item(agent: &AgentSessionView, item: &ListItem) -> bool {
     agent.target.worktree_handle.as_deref() == Some(item.handle.as_str())
         || agent.target.branch.as_deref() == item.branch.as_deref()
-        || agent.target.worktree_path.as_deref() == Some(item.path.as_str())
+        || path_matches_item(agent.target.worktree_path.as_deref(), item)
+        || path_matches_item(agent.target.directory.as_deref(), item)
+}
+
+fn path_matches_item(path: Option<&str>, item: &ListItem) -> bool {
+    path.is_some_and(|path| same_path(Path::new(path), Path::new(&item.path)))
 }
 
 fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {

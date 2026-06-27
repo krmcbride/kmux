@@ -1,7 +1,7 @@
 use anyhow::Result;
 use ratatui::widgets::ListState;
 
-use crate::agent::active::active_reports;
+use crate::agent::sessions::session_views;
 use crate::agent::sidebar::model::{
     SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
     row_index_by_identity, row_index_by_pane, row_index_by_window,
@@ -111,11 +111,11 @@ impl SidebarApp {
             return false;
         }
 
-        match active_reports(&self.store, &self.tmux) {
-            Ok(reports) => {
+        match session_views(&self.store, &self.tmux) {
+            Ok(views) => {
                 let working_icon = self.working_icon().map(str::to_owned);
                 self.rows = build_rows_with_working_icon(
-                    &reports,
+                    &views,
                     crate::state::now_unix_seconds(),
                     &self.icons,
                     working_icon.as_deref(),
@@ -749,10 +749,9 @@ mod tests {
 
     fn server_row(session_id: &str, title: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, "@1", "%server");
-        report.key = crate::state::AgentReportKey::new("opencode-server", "server", session_id);
-        report.session_id = Some(session_id.to_owned());
+        report.key = crate::state::AgentSessionKey::new("opencode", session_id);
         report.title = Some(title.to_owned());
         report.target.pane_id = None;
-        SidebarRow::from_report(&report, 100)
+        SidebarRow::from_view(&report, 100)
     }
 }
