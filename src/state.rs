@@ -31,16 +31,6 @@ pub struct AgentSessionKey {
     pub session_id: String,
 }
 
-impl AgentSessionKey {
-    #[cfg(test)]
-    pub fn new(agent_kind: impl Into<String>, session_id: impl Into<String>) -> Self {
-        Self {
-            agent_kind: agent_kind.into(),
-            session_id: session_id.into(),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct AgentObservationKey {
     pub session: AgentSessionKey,
@@ -49,20 +39,6 @@ pub struct AgentObservationKey {
 }
 
 impl AgentObservationKey {
-    #[cfg(test)]
-    pub fn new(
-        agent_kind: impl Into<String>,
-        session_id: impl Into<String>,
-        producer_kind: impl Into<String>,
-        producer_instance: impl Into<String>,
-    ) -> Self {
-        Self {
-            session: AgentSessionKey::new(agent_kind, session_id),
-            producer_kind: producer_kind.into(),
-            producer_instance: producer_instance.into(),
-        }
-    }
-
     fn filename(&self) -> String {
         format!(
             "{}__{}__{}__{}.json",
@@ -123,18 +99,6 @@ pub struct AgentObservationState {
     pub context: Option<String>,
     #[serde(default)]
     pub target: AgentLocationHints,
-}
-
-impl AgentObservationState {
-    #[cfg(test)]
-    pub fn elapsed_secs(&self, now: u64) -> Option<u64> {
-        let status_changed_at = self.status_changed_at?;
-        let status_age = now.saturating_sub(status_changed_at);
-        match self.status? {
-            AgentStatus::Working => Some(self.working_elapsed_secs.saturating_add(status_age)),
-            AgentStatus::Waiting | AgentStatus::Done => Some(status_age),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -396,7 +360,7 @@ mod tests {
     fn state_store_round_trips_agent_observation_state() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let key = AgentObservationKey::new("opencode", "ses_123", "tui", "default/%1");
+        let key = test_observation_key("ses_123", "tui", "default/%1");
         let state = AgentObservationState {
             key: key.clone(),
             status: Some(AgentStatus::Working),
@@ -436,8 +400,8 @@ mod tests {
     fn observation_filename_components_are_collision_safe() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let escaped = AgentObservationKey::new("opencode", "a/b", "server", "default");
-        let literal = AgentObservationKey::new("opencode", "a_x2Fb", "server", "default");
+        let escaped = test_observation_key("a/b", "server", "default");
+        let literal = test_observation_key("a_x2Fb", "server", "default");
 
         assert_ne!(
             store.observation_path(&escaped),
@@ -450,7 +414,7 @@ mod tests {
     fn get_observation_rejects_mismatched_file_key() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let requested = AgentObservationKey::new("opencode", "requested", "server", "default");
+        let requested = test_observation_key("requested", "server", "default");
         let state = test_observation("server", "default", AgentStatus::Working, 100);
         fs::write(
             store.observation_path(&requested),
@@ -586,19 +550,6 @@ mod tests {
     }
 
     #[test]
-    fn elapsed_secs_uses_accumulator_only_for_working_observations() {
-        let mut observation = test_observation("tui", "default/%1", AgentStatus::Working, 100);
-        observation.working_elapsed_secs = 1_200;
-        assert_eq!(observation.elapsed_secs(700), Some(1_800));
-
-        observation.status = Some(AgentStatus::Waiting);
-        assert_eq!(observation.elapsed_secs(700), Some(600));
-
-        observation.status = Some(AgentStatus::Done);
-        assert_eq!(observation.elapsed_secs(700), Some(600));
-    }
-
-    #[test]
     fn timing_accumulates_working_across_waiting_pause() {
         let mut observation = test_observation("tui", "default/%1", AgentStatus::Working, 0);
 
@@ -661,7 +612,7 @@ mod tests {
         status_changed_at: u64,
     ) -> AgentObservationState {
         AgentObservationState {
-            key: AgentObservationKey::new("opencode", "ses_root", producer_kind, producer_instance),
+            key: test_observation_key("ses_root", producer_kind, producer_instance),
             status: Some(status),
             status_observed_at: Some(status_changed_at),
             status_changed_at: Some(status_changed_at),
@@ -675,6 +626,21 @@ mod tests {
                 branch: Some("feature".to_owned()),
                 ..AgentLocationHints::default()
             },
+        }
+    }
+
+    fn test_observation_key(
+        session_id: &str,
+        producer_kind: &str,
+        producer_instance: &str,
+    ) -> AgentObservationKey {
+        AgentObservationKey {
+            session: AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: session_id.to_owned(),
+            },
+            producer_kind: producer_kind.to_owned(),
+            producer_instance: producer_instance.to_owned(),
         }
     }
 }

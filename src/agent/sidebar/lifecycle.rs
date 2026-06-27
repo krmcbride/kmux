@@ -332,15 +332,6 @@ impl SidebarCandidateMatcher {
         }
     }
 
-    #[cfg(test)]
-    fn test(size: Option<TmuxSplitSize>) -> Self {
-        Self {
-            size,
-            resurrect_panes: HashSet::new(),
-            geometry_panes: HashSet::new(),
-        }
-    }
-
     fn is_sidebar_candidate(&self, pane: &TmuxPaneSnapshot) -> bool {
         pane.kmux_role.as_deref() == Some(SIDEBAR_ROLE)
             || is_title_restored_sidebar_candidate(pane, self.size)
@@ -637,7 +628,7 @@ mod tests {
         let wide = pane_snapshot("%2", "@1", 0, 90, Some("kmux"), None, None);
         let not_left = pane_snapshot("%3", "@1", 10, 30, Some("kmux"), None, None);
         let tagged = pane_snapshot("%4", "@1", 10, 90, Some("shell"), None, Some(SIDEBAR_ROLE));
-        let matcher = SidebarCandidateMatcher::test(Some(TmuxSplitSize::Cells(30)));
+        let matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
 
         assert!(matcher.is_sidebar_candidate(&restored));
         assert!(!matcher.is_sidebar_candidate(&wide));
@@ -649,7 +640,7 @@ mod tests {
     fn resurrect_save_rows_identify_sidebars_after_titles_are_lost() {
         let restored = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
         let unrelated = pane_snapshot("%2", "@1", 30, 90, Some("fish"), Some("fish"), None);
-        let mut matcher = SidebarCandidateMatcher::test(Some(TmuxSplitSize::Cells(30)));
+        let mut matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
         matcher.resurrect_panes.insert(ResurrectPaneKey {
             session_name: "project".to_owned(),
             window_index: "1".to_owned(),
@@ -722,7 +713,7 @@ mod tests {
             Some(SIDEBAR_ROLE),
         );
         let panes = vec![restored, running];
-        let matcher = SidebarCandidateMatcher::test(Some(TmuxSplitSize::Cells(30)));
+        let matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
 
         let sidebar = sidebar_candidates_by_window(&panes, &matcher)
             .remove("@1")
@@ -784,6 +775,14 @@ mod tests {
             window_active: false,
             session_attached: false,
             kmux_role: kmux_role.map(str::to_owned),
+        }
+    }
+
+    fn test_matcher(size: Option<TmuxSplitSize>) -> SidebarCandidateMatcher {
+        SidebarCandidateMatcher {
+            size,
+            resurrect_panes: HashSet::new(),
+            geometry_panes: HashSet::new(),
         }
     }
 }

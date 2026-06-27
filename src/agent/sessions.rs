@@ -807,7 +807,14 @@ mod tests {
     ) -> AgentObservationState {
         let status_changed_at = status.map(|_| observed_at);
         AgentObservationState {
-            key: AgentObservationKey::new("opencode", "ses_root", producer_kind, producer_instance),
+            key: AgentObservationKey {
+                session: AgentSessionKey {
+                    agent_kind: "opencode".to_owned(),
+                    session_id: "ses_root".to_owned(),
+                },
+                producer_kind: producer_kind.to_owned(),
+                producer_instance: producer_instance.to_owned(),
+            },
             status,
             status_observed_at: status.map(|_| observed_at),
             status_changed_at,

@@ -6,9 +6,6 @@ use crate::config::StatusIcons;
 use crate::state::AgentLocationHints;
 use crate::state::AgentStatus;
 
-#[cfg(test)]
-use crate::state::AgentSessionKey as TestAgentSessionKey;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarIcons {
     working: String,
@@ -107,11 +104,6 @@ impl SidebarRow {
             None,
             crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
         )
-    }
-
-    #[cfg(test)]
-    pub(super) fn from_agent(view: &AgentSessionView, now: u64, _sleeping_icon: &str) -> Self {
-        Self::from_view(view, now)
     }
 
     fn from_view_with_working_icon(
@@ -316,7 +308,10 @@ pub(super) fn report_state(
     pane_id: &str,
 ) -> AgentSessionView {
     AgentSessionView {
-        key: TestAgentSessionKey::new("opencode", format!("ses_{pane_id}")),
+        key: crate::state::AgentSessionKey {
+            agent_kind: "opencode".to_owned(),
+            session_id: format!("ses_{pane_id}"),
+        },
         status,
         status_changed_at,
         working_elapsed_secs: 0,
@@ -472,12 +467,18 @@ mod tests {
     #[test]
     fn row_model_keeps_multiple_sessions_for_one_window_distinguishable() {
         let mut first = report_state(AgentStatus::Working, 120, "@1", "%1");
-        first.key = TestAgentSessionKey::new("opencode", "ses_first");
+        first.key = crate::state::AgentSessionKey {
+            agent_kind: "opencode".to_owned(),
+            session_id: "ses_first".to_owned(),
+        };
         first.target.pane_id = None;
         first.title = Some("Implement sidebar rows".to_owned());
 
         let mut second = report_state(AgentStatus::Waiting, 120, "@1", "%2");
-        second.key = TestAgentSessionKey::new("opencode", "ses_second");
+        second.key = crate::state::AgentSessionKey {
+            agent_kind: "opencode".to_owned(),
+            session_id: "ses_second".to_owned(),
+        };
         second.target.pane_id = None;
         second.title = None;
         second.target.pane_title = None;

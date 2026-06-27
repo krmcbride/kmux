@@ -408,20 +408,11 @@ mod tests {
     #[test]
     fn spinner_tick_updates_only_active_working_rows() {
         let rows = vec![
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
+            SidebarRow::from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            SidebarRow::from_view(
                 &agent_state(AgentStatus::Done, 0, "@3", "%3"),
                 DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
-                TEST_SLEEPING_ICON,
             ),
         ];
         let mut app = SidebarApp::test(None, rows);
@@ -438,10 +429,9 @@ mod tests {
 
     #[test]
     fn spinner_tick_is_noop_without_frames_or_working_rows() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Waiting, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(None, rows);
 
@@ -457,10 +447,9 @@ mod tests {
 
     #[test]
     fn spinner_tick_is_noop_when_window_is_hidden() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(None, rows);
         app.working_frames = vec!["a".to_owned(), "b".to_owned()];
@@ -476,16 +465,11 @@ mod tests {
     #[test]
     fn hidden_idle_refresh_skips_model_rebuild() {
         let rows = vec![
-            SidebarRow::from_agent(
+            SidebarRow::from_view(
                 &agent_state(AgentStatus::Done, 0, "@1", "%1"),
                 DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
-                TEST_SLEEPING_ICON,
             ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
@@ -507,10 +491,9 @@ mod tests {
 
     #[test]
     fn hidden_missing_host_refresh_skips_model_rebuild() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Working, 100, "@other", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
 
@@ -527,10 +510,9 @@ mod tests {
 
     #[test]
     fn hidden_non_idle_model_refresh_rebuilds_rows() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -547,16 +529,8 @@ mod tests {
     #[test]
     fn selection_follows_host_window_then_manual_navigation_takes_over() {
         let rows = vec![
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
+            SidebarRow::from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@2"), rows);
 
@@ -574,10 +548,9 @@ mod tests {
 
     #[test]
     fn selection_clears_when_followed_host_window_has_no_agent_row() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
 
@@ -593,16 +566,8 @@ mod tests {
     #[test]
     fn manual_selection_survives_empty_refresh_and_pane_id_change() {
         let rows = vec![
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
+            SidebarRow::from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -612,16 +577,8 @@ mod tests {
         app.rows = Vec::new();
         app.sync_selection();
         app.rows = vec![
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 200, "@1", "%10"),
-                200,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 200, "@2", "%20"),
-                200,
-                TEST_SLEEPING_ICON,
-            ),
+            SidebarRow::from_view(&agent_state(AgentStatus::Working, 200, "@1", "%10"), 200),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
         ];
         app.sync_selection();
 
@@ -656,16 +613,8 @@ mod tests {
     #[test]
     fn manual_selection_returns_to_host_when_sidebar_loses_focus() {
         let rows = vec![
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
+            SidebarRow::from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -687,16 +636,8 @@ mod tests {
     #[test]
     fn successful_cross_window_jump_marks_source_sidebar_hidden() {
         let rows = vec![
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Working, 100, "@1", "%1"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
-            SidebarRow::from_agent(
-                &agent_state(AgentStatus::Waiting, 100, "@2", "%2"),
-                100,
-                TEST_SLEEPING_ICON,
-            ),
+            SidebarRow::from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
@@ -712,10 +653,9 @@ mod tests {
 
     #[test]
     fn successful_same_window_jump_keeps_source_sidebar_visible() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.sidebar_has_focus = true;
@@ -731,10 +671,9 @@ mod tests {
 
     #[test]
     fn jump_failure_is_reported_without_panicking_or_quitting() {
-        let rows = vec![SidebarRow::from_agent(
+        let rows = vec![SidebarRow::from_view(
             &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
             100,
-            TEST_SLEEPING_ICON,
         )];
         let mut app = SidebarApp::test(Some("not-a-window"), rows);
 
@@ -749,7 +688,10 @@ mod tests {
 
     fn server_row(session_id: &str, title: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, "@1", "%server");
-        report.key = crate::state::AgentSessionKey::new("opencode", session_id);
+        report.key = crate::state::AgentSessionKey {
+            agent_kind: "opencode".to_owned(),
+            session_id: session_id.to_owned(),
+        };
         report.title = Some(title.to_owned());
         report.target.pane_id = None;
         SidebarRow::from_view(&report, 100)

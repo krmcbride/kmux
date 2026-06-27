@@ -73,13 +73,6 @@ pub enum TmuxSplitSize {
     Percent(u16),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
-pub struct TmuxPaneDetails {
-    pub title: Option<String>,
-    pub current_command: Option<String>,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TmuxPaneVisibility {
     pub pane_has_focus: bool,
@@ -189,19 +182,6 @@ impl Tmux {
 
     pub fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
         self.query_context(Some(pane_id))
-    }
-
-    #[cfg(test)]
-    pub fn pane_details(&self, pane_id: &str) -> Result<TmuxPaneDetails> {
-        let format = format!("#{{pane_title}}{TMUX_FIELD_SEPARATOR}#{{pane_current_command}}");
-        let output = self.stdout(vec![
-            OsString::from("display-message"),
-            OsString::from("-p"),
-            OsString::from("-t"),
-            OsString::from(pane_id),
-            OsString::from(format),
-        ])?;
-        parse_pane_details(&output)
     }
 
     pub fn create_window_with_command(
@@ -346,17 +326,6 @@ impl Tmux {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-w", "-t", target, option_name, value])?;
         Ok(())
-    }
-
-    #[cfg(test)]
-    pub fn show_window_option(&self, target: &str, option_name: &str) -> Result<Option<String>> {
-        validate_user_option(option_name)?;
-        let output = self.output(["show-option", "-wqv", "-t", target, option_name])?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-
-        Ok(Some(output.stdout.trim_end().to_owned()).filter(|value| !value.is_empty()))
     }
 
     pub fn unset_window_option(&self, target: &str, option_name: &str) -> Result<()> {
@@ -573,21 +542,6 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         window_active: tmux_bool(fields[13]),
         session_attached: tmux_attached(fields[14]),
         kmux_role: non_empty_string(fields[15]),
-    })
-}
-
-#[cfg(test)]
-fn parse_pane_details(output: &str) -> Result<TmuxPaneDetails> {
-    let mut fields = output.split(TMUX_FIELD_SEPARATOR);
-    let title = fields.next().unwrap_or_default();
-    let current_command = fields.next().unwrap_or_default();
-    if fields.next().is_some() {
-        bail!("unexpected tmux pane details format: {output:?}");
-    }
-
-    Ok(TmuxPaneDetails {
-        title: non_empty_string(title),
-        current_command: non_empty_string(current_command),
     })
 }
 
@@ -847,7 +801,12 @@ mod tests {
         tmux.select_window_id(&context.window_id)?;
         tmux.select_pane(&pane_id)?;
         tmux.set_pane_title(&pane_id, "kmux")?;
-        assert_eq!(tmux.pane_details(&pane_id)?.title.as_deref(), Some("kmux"));
+        let updated_snapshot = tmux
+            .list_pane_snapshots()?
+            .into_iter()
+            .find(|pane| pane.pane_id == pane_id)
+            .ok_or_else(|| anyhow::anyhow!("expected updated pane in tmux snapshot"))?;
+        assert_eq!(updated_snapshot.title.as_deref(), Some("kmux"));
         assert!(!tmux.pane_visibility(&pane_id)?.pane_has_focus);
 
         tmux.select_window("project", "feature-auth")?;
@@ -907,7 +866,7 @@ mod tests {
         tmux.set_window_option(&target, KMUX_WORKTREE_BRANCH_OPTION, "feature/auth")?;
 
         assert_eq!(
-            tmux.show_window_option(&target, &option)?.as_deref(),
+            show_window_option(tmux, &target, &option)?.as_deref(),
             Some(temp.path().to_string_lossy().as_ref())
         );
         let window = tmux
@@ -927,8 +886,17 @@ mod tests {
         tmux.unset_window_option(&target, KMUX_WORKTREE_PATH_OPTION)?;
         tmux.unset_window_option(&target, KMUX_WORKTREE_BRANCH_OPTION)?;
 
-        assert_eq!(tmux.show_window_option(&target, &option)?, None);
+        assert_eq!(show_window_option(tmux, &target, &option)?, None);
         Ok(())
+    }
+
+    fn show_window_option(tmux: &Tmux, target: &str, option_name: &str) -> Result<Option<String>> {
+        let output = tmux.output(["show-option", "-wqv", "-t", target, option_name])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        Ok(Some(output.stdout.trim_end().to_owned()).filter(|value| !value.is_empty()))
     }
 
     #[test]
