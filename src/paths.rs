@@ -90,6 +90,48 @@ pub fn same_path(left: &Path, right: &Path) -> bool {
     }
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoMetadata {
+    pub repo_name: Option<String>,
+    pub repo_path: Option<String>,
+    pub branch: Option<String>,
+}
+
+pub fn infer_repo_metadata_from_paths(paths: &[Option<&str>]) -> RepoMetadata {
+    paths
+        .iter()
+        .flatten()
+        .find_map(|path| infer_repo_metadata(path))
+        .unwrap_or_default()
+}
+
+pub fn path_basename(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
+fn infer_repo_metadata(path: &str) -> Option<RepoMetadata> {
+    let paths = RepoPaths::discover(path).ok()?;
+    let branch = Git::new(&paths.current_worktree)
+        .current_branch()
+        .ok()
+        .flatten();
+
+    Some(RepoMetadata {
+        repo_name: path_name(&paths.main_worktree),
+        repo_path: Some(paths.main_worktree.display().to_string()),
+        branch,
+    })
+}
+
+fn path_name(path: &Path) -> Option<String> {
+    path.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
 fn normalize_existing(path: &Path) -> Result<PathBuf> {
     path.canonicalize()
         .with_context(|| format!("failed to canonicalize {}", path.display()))

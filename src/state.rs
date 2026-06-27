@@ -78,6 +78,10 @@ pub struct AgentTargetHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pane_current_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repo_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_handle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_path: Option<String>,
@@ -379,6 +383,8 @@ mod tests {
                 window_name: Some("kmux-feature-auth".to_owned()),
                 pane_title: Some("Agent title".to_owned()),
                 pane_current_command: Some("nvim".to_owned()),
+                repo_name: Some("repo".to_owned()),
+                repo_path: Some("/repo".to_owned()),
                 worktree_handle: Some("feature-auth".to_owned()),
                 worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 branch: Some("feature/auth".to_owned()),
@@ -425,6 +431,8 @@ mod tests {
                 window_id: Some("@1".to_owned()),
                 session_name: Some("project".to_owned()),
                 window_name: Some("kmux-old".to_owned()),
+                repo_name: Some("repo".to_owned()),
+                repo_path: Some("/repo".to_owned()),
                 worktree_handle: Some("old".to_owned()),
                 worktree_path: Some("/repo__worktrees/old".to_owned()),
                 branch: Some("feature/original".to_owned()),

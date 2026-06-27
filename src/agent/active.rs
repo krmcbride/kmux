@@ -3,8 +3,8 @@ use std::path::Path;
 
 use anyhow::Result;
 
-use crate::paths::same_path;
-use crate::state::{AgentReportState, StateStore, TMUX_PANE_SOURCE};
+use crate::paths::{infer_repo_metadata_from_paths, same_path};
+use crate::state::{AgentReportState, AgentTargetHints, StateStore, TMUX_PANE_SOURCE};
 use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxWindow};
 
 pub fn active_reports(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentReportState>> {
@@ -76,6 +76,7 @@ fn reconcile_active_reports(
             };
             enrich_report_from_window(&mut report, window, instance_id);
         }
+        enrich_missing_repo_metadata(&mut report);
 
         if report.target.window_id.is_some() {
             active.push(report);
@@ -101,6 +102,29 @@ fn enrich_report_from_window(
     }
     if window.kmux_worktree_branch.is_some() {
         report.target.branch = window.kmux_worktree_branch.clone();
+    }
+}
+
+fn enrich_missing_repo_metadata(report: &mut AgentReportState) {
+    if report.target.repo_name.is_some()
+        && report.target.repo_path.is_some()
+        && report.target.branch.is_some()
+    {
+        return;
+    }
+
+    let metadata = infer_repo_metadata_from_paths(&[
+        report.target.worktree_path.as_deref(),
+        report.target.directory.as_deref(),
+    ]);
+    if report.target.repo_name.is_none() {
+        report.target.repo_name = metadata.repo_name;
+    }
+    if report.target.repo_path.is_none() {
+        report.target.repo_path = metadata.repo_path;
+    }
+    if report.target.branch.is_none() {
+        report.target.branch = metadata.branch;
     }
 }
 
@@ -205,16 +229,39 @@ fn merge_equivalent_reports(
     if selected.session_id.is_none() {
         selected.session_id = fallback.session_id;
     }
+    let fallback_target = fallback.target;
     if selected.target.pane_id.is_none() {
-        selected.target.pane_id = fallback.target.pane_id;
+        selected.target.pane_id = fallback_target.pane_id.clone();
     }
     if selected.target.pane_title.is_none() {
-        selected.target.pane_title = fallback.target.pane_title;
+        selected.target.pane_title = fallback_target.pane_title.clone();
     }
     if selected.target.pane_current_command.is_none() {
-        selected.target.pane_current_command = fallback.target.pane_current_command;
+        selected.target.pane_current_command = fallback_target.pane_current_command.clone();
     }
+    fill_missing_target_metadata(&mut selected.target, fallback_target);
     selected
+}
+
+fn fill_missing_target_metadata(selected: &mut AgentTargetHints, fallback: AgentTargetHints) {
+    if selected.repo_name.is_none() {
+        selected.repo_name = fallback.repo_name;
+    }
+    if selected.repo_path.is_none() {
+        selected.repo_path = fallback.repo_path;
+    }
+    if selected.worktree_handle.is_none() {
+        selected.worktree_handle = fallback.worktree_handle;
+    }
+    if selected.worktree_path.is_none() {
+        selected.worktree_path = fallback.worktree_path;
+    }
+    if selected.branch.is_none() {
+        selected.branch = fallback.branch;
+    }
+    if selected.directory.is_none() {
+        selected.directory = fallback.directory;
+    }
 }
 
 fn report_preference_key(report: &AgentReportState) -> (u8, u64, u8) {
@@ -248,6 +295,10 @@ fn is_pane_bound_report(report: &AgentReportState) -> bool {
 mod tests {
     use super::*;
     use crate::state::{AgentReportKey, AgentStatus, AgentTargetHints};
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
 
     use tempfile::TempDir;
 
@@ -361,6 +412,109 @@ mod tests {
     }
 
     #[test]
+    fn enriches_window_resolved_reports_with_repo_metadata_from_worktree_path() -> Result<()> {
+        let (temp, repo) = init_git_repo()?;
+        let worktree = temp.path().join("project__worktrees/go-refactor-dbops");
+        fs::create_dir_all(worktree.parent().expect("worktree path has parent"))?;
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "go-refactor/dbops",
+                path_str(&worktree)?,
+            ],
+        )?;
+        let repo_path = repo.display().to_string();
+        let worktree_path = worktree.display().to_string();
+        let store = StateStore::test_with_path(temp.path().join("state"))?;
+        let mut report = report_state("%server", Some("@1"));
+        report.key = AgentReportKey::new("opencode-server", "server", "ses_root");
+        report.target.pane_id = None;
+        report.target.repo_name = None;
+        report.target.repo_path = None;
+        report.target.worktree_handle = None;
+        report.target.worktree_path = None;
+        report.target.branch = None;
+
+        let windows = vec![window_snapshot(
+            "eden",
+            "@1",
+            "go-refactor-dbops",
+            Some("go-refactor-dbops"),
+            Some(&worktree_path),
+            Some("go-refactor/dbops"),
+        )];
+
+        let active =
+            reconcile_active_reports(&store, vec![report], &HashMap::new(), &windows, "test")?;
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].target.repo_name.as_deref(), Some("project"));
+        assert_eq!(
+            active[0].target.repo_path.as_deref(),
+            Some(repo_path.as_str())
+        );
+        assert_eq!(
+            active[0].target.worktree_path.as_deref(),
+            Some(worktree_path.as_str())
+        );
+        assert_eq!(
+            active[0].target.branch.as_deref(),
+            Some("go-refactor/dbops")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn enriches_missing_branch_even_when_repo_metadata_exists() -> Result<()> {
+        let (temp, repo) = init_git_repo()?;
+        let worktree = temp.path().join("project__worktrees/go-refactor-dbops");
+        fs::create_dir_all(worktree.parent().expect("worktree path has parent"))?;
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "go-refactor/dbops",
+                path_str(&worktree)?,
+            ],
+        )?;
+        let repo_path = repo.display().to_string();
+        let worktree_path = worktree.display().to_string();
+        let store = StateStore::test_with_path(temp.path().join("state"))?;
+        let mut report = report_state("%server", Some("@1"));
+        report.key = AgentReportKey::new("opencode-server", "server", "ses_root");
+        report.target.pane_id = None;
+        report.target.repo_name = Some("project".to_owned());
+        report.target.repo_path = Some(repo_path);
+        report.target.worktree_path = Some(worktree_path.clone());
+        report.target.branch = None;
+
+        let windows = vec![window_snapshot(
+            "eden",
+            "@1",
+            "go-refactor-dbops",
+            Some("go-refactor-dbops"),
+            Some(&worktree_path),
+            None,
+        )];
+
+        let active =
+            reconcile_active_reports(&store, vec![report], &HashMap::new(), &windows, "test")?;
+
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].target.repo_name.as_deref(), Some("project"));
+        assert_eq!(
+            active[0].target.branch.as_deref(),
+            Some("go-refactor/dbops")
+        );
+        Ok(())
+    }
+
+    #[test]
     fn dedupes_pane_and_server_reports_for_same_session_window() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::test_with_path(temp.path())?;
@@ -377,6 +531,8 @@ mod tests {
         server_report.observed_at = 200;
         server_report.target.pane_id = None;
         server_report.target.pane_title = None;
+        server_report.target.repo_name = None;
+        server_report.target.repo_path = None;
         server_report.title = Some("Permission prompt".to_owned());
 
         let windows = vec![window_snapshot(
@@ -403,6 +559,8 @@ mod tests {
         assert_eq!(active[0].key.source, "opencode-server");
         assert_eq!(active[0].status, AgentStatus::Waiting);
         assert_eq!(active[0].target.pane_id.as_deref(), Some("%1"));
+        assert_eq!(active[0].target.repo_name.as_deref(), Some("repo"));
+        assert_eq!(active[0].target.repo_path.as_deref(), Some("/repo"));
         assert_eq!(active[0].title.as_deref(), Some("Permission prompt"));
         Ok(())
     }
@@ -531,6 +689,8 @@ mod tests {
                 window_name: Some("old-window".to_owned()),
                 pane_title: Some("old-title".to_owned()),
                 pane_current_command: Some("old-command".to_owned()),
+                repo_name: Some("repo".to_owned()),
+                repo_path: Some("/repo".to_owned()),
                 worktree_handle: Some("feature".to_owned()),
                 worktree_path: Some("/repo__worktrees/feature".to_owned()),
                 branch: Some("feature".to_owned()),
@@ -584,5 +744,35 @@ mod tests {
             kmux_worktree_path: worktree_path.map(str::to_owned),
             kmux_worktree_branch: branch.map(str::to_owned),
         }
+    }
+
+    fn init_git_repo() -> Result<(TempDir, PathBuf)> {
+        let temp = TempDir::new()?;
+        let repo = temp.path().join("project");
+        fs::create_dir(&repo)?;
+        git(&repo, &["init", "--initial-branch", "main"])?;
+        git(&repo, &["config", "user.email", "test@example.invalid"])?;
+        git(&repo, &["config", "user.name", "Test User"])?;
+        fs::write(repo.join("README.md"), "test\n")?;
+        git(&repo, &["add", "README.md"])?;
+        git(&repo, &["commit", "-m", "initial"])?;
+        Ok((temp, repo))
+    }
+
+    fn git(cwd: &Path, args: &[&str]) -> Result<()> {
+        let output = Command::new("git").args(args).current_dir(cwd).output()?;
+        if !output.status.success() {
+            anyhow::bail!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stderr)
+            );
+        }
+        Ok(())
+    }
+
+    fn path_str(path: &Path) -> Result<&str> {
+        path.to_str()
+            .ok_or_else(|| anyhow::anyhow!("path is not valid UTF-8: {}", path.display()))
     }
 }

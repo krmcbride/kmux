@@ -687,6 +687,7 @@ status_icons:
 "#,
     )?;
     let worktree = temp.path().join("project__worktrees/feature-status");
+    let repo_path = repo.display().to_string();
 
     tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
     kmux(&repo, &config_home, &tmux)?
@@ -704,6 +705,25 @@ status_icons:
         .args(["set-window-status", "working"])
         .assert()
         .success();
+    let feature_report = agent_report_for_pane(&config_home, &worktree_pane)?;
+    assert_eq!(
+        feature_report
+            .pointer("/target/repo_name")
+            .and_then(serde_json::Value::as_str),
+        Some("project")
+    );
+    assert_eq!(
+        feature_report
+            .pointer("/target/repo_path")
+            .and_then(serde_json::Value::as_str),
+        Some(repo_path.as_str())
+    );
+    assert_eq!(
+        feature_report
+            .pointer("/target/branch")
+            .and_then(serde_json::Value::as_str),
+        Some("feature/status")
+    );
 
     fs::write(worktree.join("staged.txt"), "staged\n")?;
     git(&worktree, &["add", "staged.txt"])?;
@@ -860,6 +880,10 @@ fn set_window_status_accepts_non_pane_agent_reports() -> Result<()> {
             "Implement producer",
             "--context",
             "12.3K (6%)",
+            "--repo-name",
+            "project",
+            "--repo-path",
+            "/repo/project",
             "--directory",
             "/repo/project",
             "--worktree-path",
@@ -882,6 +906,18 @@ fn set_window_status_accepts_non_pane_agent_reports() -> Result<()> {
     assert_eq!(
         report
             .pointer("/target/directory")
+            .and_then(serde_json::Value::as_str),
+        Some("/repo/project")
+    );
+    assert_eq!(
+        report
+            .pointer("/target/repo_name")
+            .and_then(serde_json::Value::as_str),
+        Some("project")
+    );
+    assert_eq!(
+        report
+            .pointer("/target/repo_path")
             .and_then(serde_json::Value::as_str),
         Some("/repo/project")
     );
@@ -1203,6 +1239,31 @@ fn non_pane_agent_report_resolves_to_matching_tmux_worktree_window() -> Result<(
         .assert()
         .success();
 
+    let report = agent_report_for_key(
+        &config_home,
+        "opencode-server",
+        "http://127.0.0.1:4096",
+        "ses_parent",
+    )?;
+    assert_eq!(
+        report
+            .pointer("/target/repo_name")
+            .and_then(serde_json::Value::as_str),
+        Some("project")
+    );
+    assert_eq!(
+        report
+            .pointer("/target/repo_path")
+            .and_then(serde_json::Value::as_str),
+        Some(repo_path.as_str())
+    );
+    assert_eq!(
+        report
+            .pointer("/target/branch")
+            .and_then(serde_json::Value::as_str),
+        Some("main")
+    );
+
     let status = kmux(&repo, &config_home, &tmux)?
         .arg("status")
         .assert()
@@ -1211,6 +1272,61 @@ fn non_pane_agent_report_resolves_to_matching_tmux_worktree_window() -> Result<(
     assert!(stdout.contains("project"));
     assert!(stdout.contains("working"));
     assert!(stdout.contains("Implement producer"));
+    Ok(())
+}
+
+#[test]
+fn explicit_set_window_status_infers_repo_metadata_from_directory_fallback() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let config_home = write_config(temp.path(), "")?;
+    let repo_path = repo.display().to_string();
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&repo)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args([
+            "set-window-status",
+            "working",
+            "--source",
+            "opencode-server",
+            "--session-id",
+            "ses_parent",
+            "--worktree-path",
+            "/tmp/does-not-exist/kmux-worktree",
+            "--directory",
+            &repo_path,
+        ])
+        .assert()
+        .success();
+
+    let report = agent_report_for_key(&config_home, "opencode-server", "default", "ses_parent")?;
+    assert_eq!(
+        report
+            .pointer("/target/repo_name")
+            .and_then(serde_json::Value::as_str),
+        Some("project")
+    );
+    assert_eq!(
+        report
+            .pointer("/target/repo_path")
+            .and_then(serde_json::Value::as_str),
+        Some(repo_path.as_str())
+    );
+    assert_eq!(
+        report
+            .pointer("/target/branch")
+            .and_then(serde_json::Value::as_str),
+        Some("main")
+    );
+    assert_eq!(
+        report
+            .pointer("/target/worktree_path")
+            .and_then(serde_json::Value::as_str),
+        Some("/tmp/does-not-exist/kmux-worktree")
+    );
     Ok(())
 }
 

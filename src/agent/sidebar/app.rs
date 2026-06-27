@@ -502,7 +502,7 @@ mod tests {
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
         assert_eq!(selected_index(&app), Some(0));
         assert_eq!(app.rows().len(), 2);
-        assert_eq!(app.rows()[0].primary, "feature-sidebar");
+        assert_eq!(app.rows()[0].primary, "kmux");
     }
 
     #[test]

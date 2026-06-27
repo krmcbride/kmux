@@ -165,6 +165,14 @@ pub struct SetWindowStatusArgs {
     #[arg(long)]
     pub window_name: Option<String>,
 
+    /// Repository/project name target hint.
+    #[arg(long)]
+    pub repo_name: Option<String>,
+
+    /// Main repository path target hint.
+    #[arg(long)]
+    pub repo_path: Option<String>,
+
     /// Worktree handle target hint.
     #[arg(long)]
     pub worktree_handle: Option<String>,

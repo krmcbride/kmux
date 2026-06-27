@@ -8,7 +8,7 @@ use crate::agent::active::active_reports;
 use crate::cli;
 use crate::config::{Config, StatusIcons};
 use crate::git::{Git, WorktreeInfo};
-use crate::paths::{RepoPaths, same_path};
+use crate::paths::{RepoPaths, infer_repo_metadata_from_paths, path_basename, same_path};
 use crate::state::{
     AgentReportKey, AgentReportState, AgentStatus as StoredAgentStatus, AgentTargetHints,
     StateStore, next_report_timing, now_unix_seconds,
@@ -177,6 +177,28 @@ fn report_target(
     } else {
         None
     };
+    let repo_name_hint = clean_optional_ref(args.repo_name.as_ref());
+    let repo_path_hint = clean_optional_ref(args.repo_path.as_ref());
+    let worktree_path = clean_optional_ref(args.worktree_path.as_ref()).or_else(|| {
+        worktree
+            .as_ref()
+            .and_then(|worktree| worktree.path.as_ref())
+            .map(|path| path.display().to_string())
+    });
+    let directory = clean_optional_ref(args.directory.as_ref());
+    let repo_metadata =
+        infer_repo_metadata_from_paths(&[worktree_path.as_deref(), directory.as_deref()]);
+    let repo_path = repo_path_hint.or_else(|| repo_metadata.repo_path.clone());
+    let repo_name = repo_name_hint
+        .or_else(|| repo_path.as_deref().and_then(path_basename))
+        .or(repo_metadata.repo_name);
+    let branch = clean_optional_ref(args.branch.as_ref())
+        .or_else(|| {
+            worktree
+                .as_ref()
+                .and_then(|worktree| worktree.branch.clone())
+        })
+        .or(repo_metadata.branch);
 
     Ok(AgentTargetHints {
         tmux_instance: clean_optional_ref(args.tmux_instance.as_ref())
@@ -191,23 +213,16 @@ fn report_target(
             .or_else(|| inferred_context.map(|context| context.window_name.clone())),
         pane_title: details.as_ref().and_then(|details| details.title.clone()),
         pane_current_command: details.and_then(|details| details.current_command),
+        repo_name,
+        repo_path,
         worktree_handle: clean_optional_ref(args.worktree_handle.as_ref()).or_else(|| {
             worktree
                 .as_ref()
                 .and_then(|worktree| worktree.handle.clone())
         }),
-        worktree_path: clean_optional_ref(args.worktree_path.as_ref()).or_else(|| {
-            worktree
-                .as_ref()
-                .and_then(|worktree| worktree.path.as_ref())
-                .map(|path| path.display().to_string())
-        }),
-        branch: clean_optional_ref(args.branch.as_ref()).or_else(|| {
-            worktree
-                .as_ref()
-                .and_then(|worktree| worktree.branch.clone())
-        }),
-        directory: clean_optional_ref(args.directory.as_ref()),
+        worktree_path,
+        branch,
+        directory,
     })
 }
 

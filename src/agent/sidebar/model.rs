@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use crate::config::StatusIcons;
 use crate::state::{AgentReportState, AgentStatus};
 
@@ -119,14 +121,8 @@ impl SidebarRow {
         idle_after_seconds: u64,
     ) -> Self {
         let target = &report.target;
-        let primary = target
-            .worktree_handle
-            .as_deref()
-            .or(target.branch.as_deref())
-            .or(target.window_name.as_deref())
-            .unwrap_or(&report.key.id)
-            .to_owned();
-        let secondary = secondary_label(report, &primary);
+        let primary = repo_label(report);
+        let secondary = branch_label(report, &primary);
         let title = report
             .title
             .as_deref()
@@ -178,18 +174,59 @@ impl SidebarRow {
     }
 }
 
-fn secondary_label(report: &AgentReportState, primary: &str) -> String {
-    let session = report.target.session_name.as_deref().unwrap_or_default();
-    match report
-        .target
-        .branch
-        .as_deref()
-        .filter(|branch| *branch != primary)
-    {
-        Some(branch) if !session.is_empty() => format!("{session} / {branch}"),
-        Some(branch) => branch.to_owned(),
-        None => session.to_owned(),
-    }
+fn repo_label(report: &AgentReportState) -> String {
+    clean_label(report.target.repo_name.as_deref())
+        .or_else(|| path_label(report.target.repo_path.as_deref()))
+        .or_else(|| path_label(report.target.directory.as_deref()))
+        .or_else(|| path_label(report.target.worktree_path.as_deref()))
+        .or_else(|| clean_label(report.target.window_name.as_deref()))
+        .unwrap_or_else(|| report.key.id.clone())
+}
+
+fn branch_label(report: &AgentReportState, primary: &str) -> String {
+    clean_label(report.target.branch.as_deref())
+        .or_else(|| distinct_label(report.target.worktree_handle.as_deref(), primary))
+        .or_else(|| path_distinct_label(report.target.directory.as_deref(), primary))
+        .or_else(|| path_distinct_label(report.target.worktree_path.as_deref(), primary))
+        .or_else(|| distinct_label(report.target.window_name.as_deref(), primary))
+        .or_else(|| fallback_session_label(report, primary))
+        .unwrap_or_default()
+}
+
+fn clean_label(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
+    clean_label(value).filter(|value| value != primary)
+}
+
+fn path_label(value: Option<&str>) -> Option<String> {
+    clean_label(value).and_then(|value| {
+        Path::new(&value)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+    })
+}
+
+fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
+    path_label(value).filter(|value| value != primary)
+}
+
+fn fallback_session_label(report: &AgentReportState, primary: &str) -> Option<String> {
+    let session_id = report.session_id.as_deref().or_else(|| {
+        report
+            .target
+            .pane_id
+            .is_none()
+            .then_some(report.key.id.as_str())
+    })?;
+    let label = compact_session_id(session_id).to_owned();
+    (label != primary).then_some(label)
 }
 
 #[cfg(test)]
@@ -308,6 +345,8 @@ pub(super) fn report_state(
             window_name: Some("kmux-feature-sidebar".to_owned()),
             pane_title: Some("Implement sidebar".to_owned()),
             pane_current_command: Some("nvim".to_owned()),
+            repo_name: Some("kmux".to_owned()),
+            repo_path: Some("/repo".to_owned()),
             worktree_handle: Some("feature-sidebar".to_owned()),
             worktree_path: Some("/repo__worktrees/feature-sidebar".to_owned()),
             branch: Some("feature/sidebar".to_owned()),
@@ -332,7 +371,7 @@ mod tests {
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
     #[test]
-    fn row_model_prefers_worktree_and_marks_old_done_idle() {
+    fn row_model_uses_repo_and_branch_labels_and_marks_old_done_idle() {
         let reports = vec![report_state(AgentStatus::Done, 0, "@1", "%1")];
         let rows = build_rows(
             &reports,
@@ -340,8 +379,8 @@ mod tests {
             DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
         );
 
-        assert_eq!(rows[0].primary, "feature-sidebar");
-        assert_eq!(rows[0].secondary, "project / feature/sidebar");
+        assert_eq!(rows[0].primary, "kmux");
+        assert_eq!(rows[0].secondary, "feature/sidebar");
         assert_eq!(rows[0].title, "Implement sidebar");
         assert_eq!(rows[0].elapsed, "30m");
         assert_eq!(rows[0].icon, TEST_SLEEPING_ICON);
@@ -462,10 +501,25 @@ mod tests {
         let rows = build_rows(&[first, second], 300, 1_800);
 
         assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].primary, "feature-sidebar");
-        assert_eq!(rows[1].primary, "feature-sidebar");
+        assert_eq!(rows[0].primary, "kmux");
+        assert_eq!(rows[1].primary, "kmux");
+        assert_eq!(rows[0].secondary, "feature/sidebar");
+        assert_eq!(rows[1].secondary, "feature/sidebar");
         assert_eq!(rows[0].title, "Implement sidebar rows");
         assert_eq!(rows[1].title, "session ses_second");
         assert_ne!(rows[0].identity, rows[1].identity);
+    }
+
+    #[test]
+    fn row_model_falls_back_to_branch_worktree_and_window_without_tmux_session_label() {
+        let mut report = report_state(AgentStatus::Working, 120, "@1", "%1");
+        report.target.repo_name = None;
+        report.target.repo_path = None;
+        report.target.branch = None;
+
+        let rows = build_rows(&[report], 300, 1_800);
+
+        assert_eq!(rows[0].primary, "feature-sidebar");
+        assert_eq!(rows[0].secondary, "kmux-feature-sidebar");
     }
 }

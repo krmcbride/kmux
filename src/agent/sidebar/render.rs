@@ -346,7 +346,8 @@ mod tests {
 
         let buffer = terminal.backend().buffer();
         let text = buffer_text(buffer, 42, 5);
-        assert!(text.contains("feature-sidebar"));
+        assert!(text.contains("kmux"));
+        assert!(text.contains("feature/sidebar"));
         assert!(text.contains("3m"));
         assert!(text.contains("163.2K (41%)"));
         assert!(text.contains("Implement richer sidebar"));
@@ -403,7 +404,7 @@ mod tests {
     #[test]
     fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
-        agent.target.worktree_handle = Some("very-long-sidebar-worktree-name".to_owned());
+        agent.target.repo_name = Some("very-long-sidebar-repo-name".to_owned());
         let rows = vec![SidebarRow::from_agent(&agent, 300, TEST_SLEEPING_ICON)];
         let backend = TestBackend::new(18, 4);
         let mut terminal = Terminal::new(backend)?;
