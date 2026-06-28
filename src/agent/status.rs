@@ -18,42 +18,6 @@ use crate::tmux::Tmux;
 
 const KMUX_STATUS_OPTION: &str = "@kmux_status";
 
-#[derive(Debug, Clone, Serialize)]
-struct GitInfo {
-    has_staged: bool,
-    has_unstaged: bool,
-    has_unmerged_commits: bool,
-}
-
-#[derive(Debug, Serialize)]
-struct StatusEntry {
-    agent_kind: String,
-    session_id: String,
-    worktree: String,
-    branch: String,
-    status: String,
-    icon: String,
-    elapsed_secs: u64,
-    title: Option<String>,
-    context: Option<String>,
-    pane_id: String,
-    worktree_handle: Option<String>,
-    worktree_path: Option<String>,
-    session_name: String,
-    window_name: String,
-    window_id: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    git: Option<GitInfo>,
-}
-
-struct DisplayRow {
-    worktree: String,
-    status: String,
-    elapsed: String,
-    git: String,
-    title: String,
-}
-
 pub fn run(args: cli::StatusArgs) -> Result<()> {
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
@@ -132,6 +96,73 @@ pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
     store.upsert_observation(&state)?;
     let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
     Ok(())
+}
+
+pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
+    let views = session_views(store, tmux)?;
+    let mut by_window = HashMap::<String, StoredAgentStatus>::new();
+    for view in views {
+        let Some(window_id) = view.target.window_id else {
+            continue;
+        };
+        by_window
+            .entry(window_id)
+            .and_modify(|status| {
+                if status_rank(view.status) > status_rank(*status) {
+                    *status = view.status;
+                }
+            })
+            .or_insert(view.status);
+    }
+
+    for window in tmux.list_windows(None)? {
+        if let Some(status) = by_window.get(&window.window_id).copied() {
+            tmux.set_window_option(
+                &window.window_id,
+                KMUX_STATUS_OPTION,
+                status_icon(status, icons),
+            )?;
+        } else {
+            tmux.unset_window_option(&window.window_id, KMUX_STATUS_OPTION)?;
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct GitInfo {
+    has_staged: bool,
+    has_unstaged: bool,
+    has_unmerged_commits: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct StatusEntry {
+    agent_kind: String,
+    session_id: String,
+    worktree: String,
+    branch: String,
+    status: String,
+    icon: String,
+    elapsed_secs: u64,
+    title: Option<String>,
+    context: Option<String>,
+    pane_id: String,
+    worktree_handle: Option<String>,
+    worktree_path: Option<String>,
+    session_name: String,
+    window_name: String,
+    window_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git: Option<GitInfo>,
+}
+
+struct DisplayRow {
+    worktree: String,
+    status: String,
+    elapsed: String,
+    git: String,
+    title: String,
 }
 
 fn observation_key(args: &cli::SetAgentStatusArgs) -> Result<AgentObservationKey> {
@@ -370,37 +401,6 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
                 .unwrap_or(false)
         },
     }
-}
-
-pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
-    let views = session_views(store, tmux)?;
-    let mut by_window = HashMap::<String, StoredAgentStatus>::new();
-    for view in views {
-        let Some(window_id) = view.target.window_id else {
-            continue;
-        };
-        by_window
-            .entry(window_id)
-            .and_modify(|status| {
-                if status_rank(view.status) > status_rank(*status) {
-                    *status = view.status;
-                }
-            })
-            .or_insert(view.status);
-    }
-
-    for window in tmux.list_windows(None)? {
-        if let Some(status) = by_window.get(&window.window_id).copied() {
-            tmux.set_window_option(
-                &window.window_id,
-                KMUX_STATUS_OPTION,
-                status_icon(status, icons),
-            )?;
-        } else {
-            tmux.unset_window_option(&window.window_id, KMUX_STATUS_OPTION)?;
-        }
-    }
-    Ok(())
 }
 
 fn status_rank(status: StoredAgentStatus) -> u8 {

@@ -32,13 +32,6 @@ impl AgentSessionView {
     }
 }
 
-#[derive(Debug, Clone)]
-struct EnrichedObservation {
-    state: AgentObservationState,
-    resolved_target: Option<AgentLocationHints>,
-    location_rank: u8,
-}
-
 pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSessionView>> {
     let tmux_instance = tmux.instance_id();
     let observations = store
@@ -58,6 +51,13 @@ pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSession
         &windows,
         &tmux_instance,
     ))
+}
+
+#[derive(Debug, Clone)]
+struct EnrichedObservation {
+    state: AgentObservationState,
+    resolved_target: Option<AgentLocationHints>,
+    location_rank: u8,
 }
 
 fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_id: &str) -> bool {

@@ -77,22 +77,6 @@ impl Config {
     }
 }
 
-fn validate_file_entry(entry: &str) -> Result<()> {
-    let path = Path::new(entry);
-    if entry.trim().is_empty()
-        || path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::CurDir | Component::ParentDir | Component::Prefix(_)
-            )
-        })
-    {
-        bail!("configured file path must be relative and stay inside the repo: {entry}");
-    }
-    Ok(())
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
@@ -253,6 +237,22 @@ impl<'de> Deserialize<'de> for SidebarSize {
 
         deserializer.deserialize_any(Visitor)
     }
+}
+
+fn validate_file_entry(entry: &str) -> Result<()> {
+    let path = Path::new(entry);
+    if entry.trim().is_empty()
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::CurDir | Component::ParentDir | Component::Prefix(_)
+            )
+        })
+    {
+        bail!("configured file path must be relative and stay inside the repo: {entry}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]

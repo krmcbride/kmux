@@ -48,17 +48,6 @@ pub struct RemoteBranch {
     pub ref_name: String,
 }
 
-#[derive(Debug, Default)]
-struct WorktreeBuilder {
-    path: Option<PathBuf>,
-    head: Option<String>,
-    branch: Option<String>,
-    detached: bool,
-    bare: bool,
-    locked: Option<String>,
-    prunable: Option<String>,
-}
-
 impl Git {
     pub fn new(cwd: impl AsRef<Path>) -> Self {
         Self {
@@ -259,12 +248,6 @@ impl Git {
         Ok(non_empty_lines(&output))
     }
 
-    fn sorted_remotes_by_length(&self) -> Result<Vec<String>> {
-        let mut remotes = self.remotes()?;
-        remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
-        Ok(remotes)
-    }
-
     pub fn remote_tracking_branch_exists(&self, branch: &str) -> Result<bool> {
         let output = self.output(vec![
             OsString::from("show-ref"),
@@ -367,15 +350,6 @@ impl Git {
         }
     }
 
-    fn branch_upstream(&self, branch: &str) -> Result<Option<String>> {
-        let output = self.stdout(vec![
-            OsString::from("for-each-ref"),
-            OsString::from("--format=%(upstream:short)"),
-            OsString::from(format!("refs/heads/{branch}")),
-        ])?;
-        Ok(Some(output).filter(|upstream| !upstream.is_empty()))
-    }
-
     pub fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
         if !force && self.worktree_is_dirty(path)? {
             bail!("worktree {} has uncommitted changes", path.display());
@@ -407,6 +381,21 @@ impl Git {
         Ok(())
     }
 
+    fn sorted_remotes_by_length(&self) -> Result<Vec<String>> {
+        let mut remotes = self.remotes()?;
+        remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
+        Ok(remotes)
+    }
+
+    fn branch_upstream(&self, branch: &str) -> Result<Option<String>> {
+        let output = self.stdout(vec![
+            OsString::from("for-each-ref"),
+            OsString::from("--format=%(upstream:short)"),
+            OsString::from(format!("refs/heads/{branch}")),
+        ])?;
+        Ok(Some(output).filter(|upstream| !upstream.is_empty()))
+    }
+
     fn diff_has_changes<const N: usize>(&self, args: [&str; N]) -> Result<bool> {
         let output = self.output(args)?;
         if output.status.success() {
@@ -417,6 +406,49 @@ impl Git {
             bail_git(output)
         }
     }
+}
+
+pub fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
+    let mut worktrees = Vec::new();
+    let mut current = WorktreeBuilder::default();
+
+    for line in output.lines() {
+        if line.is_empty() {
+            push_worktree(&mut worktrees, &mut current);
+            continue;
+        }
+
+        if let Some(path) = line.strip_prefix("worktree ") {
+            push_worktree(&mut worktrees, &mut current);
+            current.path = Some(PathBuf::from(path));
+        } else if let Some(head) = line.strip_prefix("HEAD ") {
+            current.head = Some(head.to_owned());
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            current.branch = Some(local_branch_name(branch).to_owned());
+        } else if line == "detached" {
+            current.detached = true;
+        } else if line == "bare" {
+            current.bare = true;
+        } else if let Some(reason) = line.strip_prefix("locked") {
+            current.locked = Some(trim_porcelain_reason(reason));
+        } else if let Some(reason) = line.strip_prefix("prunable") {
+            current.prunable = Some(trim_porcelain_reason(reason));
+        }
+    }
+
+    push_worktree(&mut worktrees, &mut current);
+    Ok(worktrees)
+}
+
+#[derive(Debug, Default)]
+struct WorktreeBuilder {
+    path: Option<PathBuf>,
+    head: Option<String>,
+    branch: Option<String>,
+    detached: bool,
+    bare: bool,
+    locked: Option<String>,
+    prunable: Option<String>,
 }
 
 fn non_empty_lines(output: &str) -> Vec<String> {
@@ -470,38 +502,6 @@ fn checkoutable_branch_refs_from(
                     .is_none_or(|remote| !checked_out.contains(&remote.branch))
         })
         .collect()
-}
-
-pub fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
-    let mut worktrees = Vec::new();
-    let mut current = WorktreeBuilder::default();
-
-    for line in output.lines() {
-        if line.is_empty() {
-            push_worktree(&mut worktrees, &mut current);
-            continue;
-        }
-
-        if let Some(path) = line.strip_prefix("worktree ") {
-            push_worktree(&mut worktrees, &mut current);
-            current.path = Some(PathBuf::from(path));
-        } else if let Some(head) = line.strip_prefix("HEAD ") {
-            current.head = Some(head.to_owned());
-        } else if let Some(branch) = line.strip_prefix("branch ") {
-            current.branch = Some(local_branch_name(branch).to_owned());
-        } else if line == "detached" {
-            current.detached = true;
-        } else if line == "bare" {
-            current.bare = true;
-        } else if let Some(reason) = line.strip_prefix("locked") {
-            current.locked = Some(trim_porcelain_reason(reason));
-        } else if let Some(reason) = line.strip_prefix("prunable") {
-            current.prunable = Some(trim_porcelain_reason(reason));
-        }
-    }
-
-    push_worktree(&mut worktrees, &mut current);
-    Ok(worktrees)
 }
 
 fn push_worktree(worktrees: &mut Vec<WorktreeInfo>, current: &mut WorktreeBuilder) {

@@ -81,23 +81,6 @@ pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<ListItem>> {
     Ok(items)
 }
 
-fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<ListItem> {
-    let resolved = resolved_from_worktree(worktree)?;
-    let created_at = std::fs::metadata(&resolved.path)
-        .ok()
-        .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
-        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs());
-
-    Ok(ListItem {
-        handle: resolved.handle,
-        branch: resolved.branch,
-        path: resolved.path.display().to_string(),
-        is_main,
-        created_at,
-    })
-}
-
 pub(super) fn find_kmux_worktree_by_name(
     repo: &RepoContext,
     name: &str,
@@ -132,6 +115,23 @@ pub(super) fn find_kmux_worktree_by_handle(
                     .file_name()
                     .is_some_and(|file_name| file_name == handle)
         }))
+}
+
+fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<ListItem> {
+    let resolved = resolved_from_worktree(worktree)?;
+    let created_at = std::fs::metadata(&resolved.path)
+        .ok()
+        .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_secs());
+
+    Ok(ListItem {
+        handle: resolved.handle,
+        branch: resolved.branch,
+        path: resolved.path.display().to_string(),
+        is_main,
+        created_at,
+    })
 }
 
 fn name_candidates(config: &Config, name: &str) -> Vec<String> {

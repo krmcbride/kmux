@@ -30,17 +30,17 @@ pub(super) struct SidebarRowIdentity {
 }
 
 impl SidebarRowIdentity {
-    fn from_view(view: &AgentSessionView) -> Self {
-        Self {
-            agent_kind: view.key.agent_kind.clone(),
-            session_id: view.key.session_id.clone(),
-        }
-    }
-
     pub(super) fn session_key(&self) -> AgentSessionKey {
         AgentSessionKey {
             agent_kind: self.agent_kind.clone(),
             session_id: self.session_id.clone(),
+        }
+    }
+
+    fn from_view(view: &AgentSessionView) -> Self {
+        Self {
+            agent_kind: view.key.agent_kind.clone(),
+            session_id: view.key.session_id.clone(),
         }
     }
 }
@@ -160,54 +160,6 @@ impl SidebarRow {
     }
 }
 
-fn repo_label(view: &AgentSessionView) -> String {
-    clean_label(view.target.repo_name.as_deref())
-        .or_else(|| path_label(view.target.repo_path.as_deref()))
-        .or_else(|| path_label(view.target.directory.as_deref()))
-        .or_else(|| path_label(view.target.worktree_path.as_deref()))
-        .or_else(|| clean_label(view.target.window_name.as_deref()))
-        .unwrap_or_else(|| view.key.session_id.clone())
-}
-
-fn branch_label(view: &AgentSessionView, primary: &str) -> String {
-    clean_label(view.target.branch.as_deref())
-        .or_else(|| distinct_label(view.target.worktree_handle.as_deref(), primary))
-        .or_else(|| path_distinct_label(view.target.directory.as_deref(), primary))
-        .or_else(|| path_distinct_label(view.target.worktree_path.as_deref(), primary))
-        .or_else(|| distinct_label(view.target.window_name.as_deref(), primary))
-        .or_else(|| fallback_session_label(view, primary))
-        .unwrap_or_default()
-}
-
-fn clean_label(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
-    clean_label(value).filter(|value| value != primary)
-}
-
-fn path_label(value: Option<&str>) -> Option<String> {
-    clean_label(value).and_then(|value| {
-        Path::new(&value)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-    })
-}
-
-fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
-    path_label(value).filter(|value| value != primary)
-}
-
-fn fallback_session_label(view: &AgentSessionView, primary: &str) -> Option<String> {
-    let label = compact_session_id(&view.key.session_id).to_owned();
-    (label != primary).then_some(label)
-}
-
 pub(super) fn build_rows_with_working_icon(
     views: &[AgentSessionView],
     now: u64,
@@ -260,6 +212,54 @@ pub(super) fn row_index_by_identity(
 pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<usize> {
     rows.iter()
         .position(|row| row.pane_id.as_deref() == Some(pane_id))
+}
+
+fn repo_label(view: &AgentSessionView) -> String {
+    clean_label(view.target.repo_name.as_deref())
+        .or_else(|| path_label(view.target.repo_path.as_deref()))
+        .or_else(|| path_label(view.target.directory.as_deref()))
+        .or_else(|| path_label(view.target.worktree_path.as_deref()))
+        .or_else(|| clean_label(view.target.window_name.as_deref()))
+        .unwrap_or_else(|| view.key.session_id.clone())
+}
+
+fn branch_label(view: &AgentSessionView, primary: &str) -> String {
+    clean_label(view.target.branch.as_deref())
+        .or_else(|| distinct_label(view.target.worktree_handle.as_deref(), primary))
+        .or_else(|| path_distinct_label(view.target.directory.as_deref(), primary))
+        .or_else(|| path_distinct_label(view.target.worktree_path.as_deref(), primary))
+        .or_else(|| distinct_label(view.target.window_name.as_deref(), primary))
+        .or_else(|| fallback_session_label(view, primary))
+        .unwrap_or_default()
+}
+
+fn clean_label(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
+    clean_label(value).filter(|value| value != primary)
+}
+
+fn path_label(value: Option<&str>) -> Option<String> {
+    clean_label(value).and_then(|value| {
+        Path::new(&value)
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .filter(|name| !name.is_empty())
+    })
+}
+
+fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
+    path_label(value).filter(|value| value != primary)
+}
+
+fn fallback_session_label(view: &AgentSessionView, primary: &str) -> Option<String> {
+    let label = compact_session_id(&view.key.session_id).to_owned();
+    (label != primary).then_some(label)
 }
 
 fn compact_elapsed(seconds: u64) -> String {

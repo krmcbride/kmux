@@ -76,65 +76,9 @@ impl SidebarApp {
         }
     }
 
-    #[cfg(test)]
-    pub(super) fn test(host_window_id: Option<&str>, rows: Vec<SidebarRow>) -> Self {
-        let mut app = Self {
-            tmux: Tmux::new(),
-            store: crate::agent::sidebar::test_support::empty_state_store(),
-            status_icons: StatusIcons::default(),
-            icons: crate::agent::sidebar::test_support::test_icons(),
-            working_frames: Vec::new(),
-            idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
-            spinner_frame: 0,
-            rows,
-            list_state: ListState::default(),
-            sidebar_pane_id: None,
-            host_window_id: host_window_id.map(str::to_owned),
-            selection_mode: SelectionMode::FollowHost,
-            selected_identity: None,
-            selected_pane_id: None,
-            selected_window_id: None,
-            sidebar_has_focus: false,
-            window_visible: true,
-            last_error: None,
-            should_quit: false,
-            disable_requested: false,
-        };
-        app.sync_selection();
-        app
-    }
-
     pub(super) fn refresh_rows(&mut self) -> bool {
         let visibility = self.sidebar_visibility();
         self.refresh_rows_for_visibility(visibility)
-    }
-
-    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
-        self.window_visible = visibility.window_visible;
-        self.update_selection_mode_for_focus(visibility.pane_has_focus);
-        if !self.should_refresh_model(visibility) {
-            self.sync_selection();
-            return false;
-        }
-
-        match session_views(&self.store, &self.tmux) {
-            Ok(views) => {
-                let working_icon = self.working_icon().map(str::to_owned);
-                self.rows = build_rows_with_working_icon(
-                    &views,
-                    crate::state::now_unix_seconds(),
-                    &self.icons,
-                    working_icon.as_deref(),
-                    self.idle_after_seconds,
-                );
-                self.last_error = None;
-                self.sync_selection();
-            }
-            Err(error) => {
-                self.last_error = Some(error.to_string());
-            }
-        }
-        true
     }
 
     pub(super) fn request_disable(&mut self) {
@@ -270,6 +214,34 @@ impl SidebarApp {
         }
     }
 
+    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
+        self.window_visible = visibility.window_visible;
+        self.update_selection_mode_for_focus(visibility.pane_has_focus);
+        if !self.should_refresh_model(visibility) {
+            self.sync_selection();
+            return false;
+        }
+
+        match session_views(&self.store, &self.tmux) {
+            Ok(views) => {
+                let working_icon = self.working_icon().map(str::to_owned);
+                self.rows = build_rows_with_working_icon(
+                    &views,
+                    crate::state::now_unix_seconds(),
+                    &self.icons,
+                    working_icon.as_deref(),
+                    self.idle_after_seconds,
+                );
+                self.last_error = None;
+                self.sync_selection();
+            }
+            Err(error) => {
+                self.last_error = Some(error.to_string());
+            }
+        }
+        true
+    }
+
     fn should_refresh_model(&self, visibility: TmuxPaneVisibility) -> bool {
         visibility.window_visible || self.host_row().is_some_and(|row| !row.is_idle())
     }
@@ -398,6 +370,36 @@ impl SidebarApp {
         if !self.working_frames.is_empty() {
             self.spinner_frame = self.spinner_frame.wrapping_add(1);
         }
+    }
+}
+
+#[cfg(test)]
+impl SidebarApp {
+    pub(super) fn test(host_window_id: Option<&str>, rows: Vec<SidebarRow>) -> Self {
+        let mut app = Self {
+            tmux: Tmux::new(),
+            store: crate::agent::sidebar::test_support::empty_state_store(),
+            status_icons: StatusIcons::default(),
+            icons: crate::agent::sidebar::test_support::test_icons(),
+            working_frames: Vec::new(),
+            idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
+            spinner_frame: 0,
+            rows,
+            list_state: ListState::default(),
+            sidebar_pane_id: None,
+            host_window_id: host_window_id.map(str::to_owned),
+            selection_mode: SelectionMode::FollowHost,
+            selected_identity: None,
+            selected_pane_id: None,
+            selected_window_id: None,
+            sidebar_has_focus: false,
+            window_visible: true,
+            last_error: None,
+            should_quit: false,
+            disable_requested: false,
+        };
+        app.sync_selection();
+        app
     }
 }
 

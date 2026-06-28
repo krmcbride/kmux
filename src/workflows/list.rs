@@ -14,15 +14,6 @@ use super::context::load_repo_context;
 use super::resolve::{ListItem, list_items};
 use crate::paths::same_path;
 
-struct DisplayRow {
-    branch: String,
-    age: String,
-    agent: String,
-    mux: String,
-    unmerged: String,
-    path: String,
-}
-
 pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let items = list_items(&repo)?;
@@ -61,6 +52,15 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
 
     print_table(&rows);
     Ok(())
+}
+
+struct DisplayRow {
+    branch: String,
+    age: String,
+    agent: String,
+    mux: String,
+    unmerged: String,
+    path: String,
 }
 
 fn format_age(item: &ListItem, now: u64) -> String {

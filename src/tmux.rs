@@ -79,11 +79,11 @@ pub struct TmuxPaneVisibility {
     pub window_visible: bool,
 }
 
-const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
-
 pub const KMUX_WORKTREE_HANDLE_OPTION: &str = "@kmux_worktree_handle";
 pub const KMUX_WORKTREE_PATH_OPTION: &str = "@kmux_worktree_path";
 pub const KMUX_WORKTREE_BRANCH_OPTION: &str = "@kmux_worktree_branch";
+
+const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
 
 impl Tmux {
     pub fn new() -> Self {

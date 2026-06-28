@@ -12,6 +12,13 @@ pub struct RepoPaths {
     pub worktree_base_dir: PathBuf,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RepoMetadata {
+    pub repo_name: Option<String>,
+    pub repo_path: Option<String>,
+    pub branch: Option<String>,
+}
+
 impl RepoPaths {
     pub fn discover(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref();
@@ -88,13 +95,6 @@ pub fn same_path(left: &Path, right: &Path) -> bool {
         (Ok(left), Ok(right)) => left == right,
         _ => left == right,
     }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct RepoMetadata {
-    pub repo_name: Option<String>,
-    pub repo_path: Option<String>,
-    pub branch: Option<String>,
 }
 
 pub fn infer_repo_metadata_from_paths(paths: &[Option<&str>]) -> RepoMetadata {
