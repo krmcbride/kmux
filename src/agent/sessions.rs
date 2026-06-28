@@ -12,6 +12,7 @@ use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxWindow};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentSessionView {
     pub key: AgentSessionKey,
+    pub created_at: u64,
     pub status: AgentStatus,
     pub status_changed_at: u64,
     pub working_elapsed_secs: u64,
@@ -133,6 +134,11 @@ fn session_view_from_observations(
     let status_changed_at = status_observation.state.status_changed_at?;
     Some(AgentSessionView {
         key,
+        created_at: observations
+            .iter()
+            .map(|observation| observation.state.effective_created_at())
+            .min()
+            .unwrap_or(status_changed_at),
         status: status_observation.state.status?,
         status_changed_at,
         working_elapsed_secs: status_observation.state.working_elapsed_secs,
@@ -815,6 +821,7 @@ mod tests {
                 producer_kind: producer_kind.to_owned(),
                 producer_instance: producer_instance.to_owned(),
             },
+            created_at: observed_at,
             status,
             status_observed_at: status.map(|_| observed_at),
             status_changed_at,

@@ -85,6 +85,8 @@ pub struct AgentLocationHints {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentObservationState {
     pub key: AgentObservationKey,
+    #[serde(default)]
+    pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<AgentStatus>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -99,6 +101,24 @@ pub struct AgentObservationState {
     pub context: Option<String>,
     #[serde(default)]
     pub target: AgentLocationHints,
+}
+
+impl AgentObservationState {
+    pub fn effective_created_at(&self) -> u64 {
+        if self.created_at != 0 {
+            return self.created_at;
+        }
+
+        [
+            self.status_changed_at,
+            self.status_observed_at,
+            Some(self.observed_at),
+        ]
+        .into_iter()
+        .flatten()
+        .min()
+        .unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -363,6 +383,7 @@ mod tests {
         let key = test_observation_key("ses_123", "tui", "default/%1");
         let state = AgentObservationState {
             key: key.clone(),
+            created_at: 41,
             status: Some(AgentStatus::Working),
             status_observed_at: Some(42),
             status_changed_at: Some(42),
@@ -578,6 +599,16 @@ mod tests {
     }
 
     #[test]
+    fn effective_created_at_falls_back_for_old_observation_state() {
+        let mut observation = test_observation("tui", "default/%1", AgentStatus::Working, 300);
+        observation.created_at = 0;
+        observation.status_observed_at = Some(250);
+        observation.observed_at = 400;
+
+        assert_eq!(observation.effective_created_at(), 250);
+    }
+
+    #[test]
     fn timing_starts_and_ends_runs_cleanly() {
         let done = test_observation("tui", "default/%1", AgentStatus::Done, 100);
         let started = next_observation_timing(Some(&done), Some(AgentStatus::Working), 300);
@@ -613,6 +644,7 @@ mod tests {
     ) -> AgentObservationState {
         AgentObservationState {
             key: test_observation_key("ses_root", producer_kind, producer_instance),
+            created_at: status_changed_at,
             status: Some(status),
             status_observed_at: Some(status_changed_at),
             status_changed_at: Some(status_changed_at),

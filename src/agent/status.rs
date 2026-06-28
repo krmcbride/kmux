@@ -99,6 +99,7 @@ pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
     let timing = next_observation_timing(previous.as_ref(), status, now);
     let mut state = previous.unwrap_or_else(|| AgentObservationState {
         key: key.clone(),
+        created_at: now,
         status: None,
         status_observed_at: None,
         status_changed_at: None,
@@ -108,6 +109,9 @@ pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
         context: None,
         target: AgentLocationHints::default(),
     });
+    if state.created_at == 0 {
+        state.created_at = state.effective_created_at();
+    }
     state.key = key;
     if status_supplied {
         state.status = status;

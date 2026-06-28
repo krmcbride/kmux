@@ -77,6 +77,7 @@ impl SidebarRowState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
+    pub(super) created_at: u64,
     pub(super) status: AgentStatus,
     pub(super) state: SidebarRowState,
     pub(super) icon: String,
@@ -159,6 +160,7 @@ impl SidebarRow {
 
         Self {
             identity: SidebarRowIdentity::from_view(view),
+            created_at: view.created_at,
             status: view.status,
             state,
             icon,
@@ -239,7 +241,7 @@ pub(super) fn build_rows_with_working_icon(
     working_icon: Option<&str>,
     idle_after_seconds: u64,
 ) -> Vec<SidebarRow> {
-    views
+    let mut rows = views
         .iter()
         .map(|view| {
             SidebarRow::from_view_with_working_icon(
@@ -250,7 +252,24 @@ pub(super) fn build_rows_with_working_icon(
                 idle_after_seconds,
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        (
+            &left.primary,
+            &left.secondary,
+            left.created_at,
+            &left.identity.agent_kind,
+            &left.identity.session_id,
+        )
+            .cmp(&(
+                &right.primary,
+                &right.secondary,
+                right.created_at,
+                &right.identity.agent_kind,
+                &right.identity.session_id,
+            ))
+    });
+    rows
 }
 
 pub(super) fn row_index_by_window(rows: &[SidebarRow], window_id: &str) -> Option<usize> {
@@ -319,6 +338,7 @@ pub(super) fn report_state(
             agent_kind: "opencode".to_owned(),
             session_id: format!("ses_{pane_id}"),
         },
+        created_at: status_changed_at,
         status,
         status_changed_at,
         working_elapsed_secs: 0,
@@ -402,10 +422,10 @@ mod tests {
 
         let rows = build_rows(&reports, 300, 300);
 
-        assert_eq!(rows[0].state, SidebarRowState::Working);
-        assert_eq!(rows[1].state, SidebarRowState::Waiting);
-        assert_eq!(rows[2].state, SidebarRowState::Done);
-        assert_eq!(rows[3].state, SidebarRowState::Idle);
+        assert!(rows.iter().any(|row| row.state == SidebarRowState::Working));
+        assert!(rows.iter().any(|row| row.state == SidebarRowState::Waiting));
+        assert!(rows.iter().any(|row| row.state == SidebarRowState::Done));
+        assert!(rows.iter().any(|row| row.state == SidebarRowState::Idle));
     }
 
     #[test]
@@ -501,6 +521,42 @@ mod tests {
         assert_eq!(rows[0].title, "Implement sidebar rows");
         assert_eq!(rows[1].title, "session ses_second");
         assert_ne!(rows[0].identity, rows[1].identity);
+    }
+
+    #[test]
+    fn row_model_sorts_by_primary_secondary_and_creation_time() {
+        let mut kmux_old = report_state(AgentStatus::Working, 100, "@1", "%1");
+        kmux_old.key.session_id = "ses_kmux_old".to_owned();
+        kmux_old.target.repo_name = Some("kmux".to_owned());
+        kmux_old.target.branch = Some("master".to_owned());
+        kmux_old.title = Some("kmux old".to_owned());
+
+        let mut dotfiles = report_state(AgentStatus::Working, 200, "@2", "%2");
+        dotfiles.key.session_id = "ses_dotfiles".to_owned();
+        dotfiles.target.repo_name = Some(".dotfiles".to_owned());
+        dotfiles.target.branch = Some("master".to_owned());
+        dotfiles.title = Some("dotfiles".to_owned());
+
+        let mut kmux_feature = report_state(AgentStatus::Working, 50, "@3", "%3");
+        kmux_feature.key.session_id = "ses_kmux_feature".to_owned();
+        kmux_feature.target.repo_name = Some("kmux".to_owned());
+        kmux_feature.target.branch = Some("feature/sidebar".to_owned());
+        kmux_feature.title = Some("kmux feature".to_owned());
+
+        let mut kmux_new = report_state(AgentStatus::Working, 300, "@4", "%4");
+        kmux_new.key.session_id = "ses_kmux_new".to_owned();
+        kmux_new.target.repo_name = Some("kmux".to_owned());
+        kmux_new.target.branch = Some("master".to_owned());
+        kmux_new.title = Some("kmux new".to_owned());
+
+        let rows = build_rows(&[kmux_new, kmux_feature, dotfiles, kmux_old], 400, 1_800);
+
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.title.as_str())
+                .collect::<Vec<_>>(),
+            ["dotfiles", "kmux feature", "kmux old", "kmux new"]
+        );
     }
 
     #[test]
