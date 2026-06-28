@@ -3,6 +3,8 @@ mod lifecycle;
 mod model;
 mod render;
 mod runtime;
+#[cfg(test)]
+mod test_support;
 
 use anyhow::Result;
 

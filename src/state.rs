@@ -301,11 +301,6 @@ impl StateStore {
         Ok(migrated)
     }
 
-    #[cfg(test)]
-    pub fn test_with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
-        Self::with_path(base_path)
-    }
-
     fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path = base_path.into();
         fs::create_dir_all(base_path.join("agent-observations"))
@@ -369,6 +364,15 @@ fn delete_file_if_exists(path: &Path) -> Result<()> {
 
 fn filename_component(value: &str) -> String {
     value.bytes().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+pub mod test_support {
+    pub fn store_with_path(
+        base_path: impl Into<std::path::PathBuf>,
+    ) -> anyhow::Result<super::StateStore> {
+        super::StateStore::with_path(base_path)
+    }
 }
 
 #[cfg(test)]

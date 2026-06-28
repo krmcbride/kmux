@@ -2,8 +2,6 @@ use std::path::Path;
 
 use crate::agent::sessions::AgentSessionView;
 use crate::config::StatusIcons;
-#[cfg(test)]
-use crate::state::AgentLocationHints;
 use crate::state::{AgentSessionKey, AgentStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,11 +63,11 @@ impl SidebarRowState {
         }
     }
 
-    pub(super) fn is_working(self) -> bool {
+    fn is_working(self) -> bool {
         self == Self::Working
     }
 
-    pub(super) fn is_idle(self) -> bool {
+    fn is_idle(self) -> bool {
         self == Self::Idle
     }
 }
@@ -77,8 +75,7 @@ impl SidebarRowState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
-    pub(super) created_at: u64,
-    pub(super) status: AgentStatus,
+    created_at: u64,
     pub(super) state: SidebarRowState,
     pub(super) icon: String,
     pub(super) primary: String,
@@ -102,18 +99,6 @@ impl SidebarRow {
 }
 
 impl SidebarRow {
-    #[cfg(test)]
-    pub(super) fn from_view(view: &AgentSessionView, now: u64) -> Self {
-        let icons = test_icons();
-        Self::from_view_with_working_icon(
-            view,
-            now,
-            &icons,
-            None,
-            crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
-        )
-    }
-
     fn from_view_with_working_icon(
         view: &AgentSessionView,
         now: u64,
@@ -161,7 +146,6 @@ impl SidebarRow {
         Self {
             identity: SidebarRowIdentity::from_view(view),
             created_at: view.created_at,
-            status: view.status,
             state,
             icon,
             primary,
@@ -222,16 +206,6 @@ fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
 fn fallback_session_label(view: &AgentSessionView, primary: &str) -> Option<String> {
     let label = compact_session_id(&view.key.session_id).to_owned();
     (label != primary).then_some(label)
-}
-
-#[cfg(test)]
-pub(super) fn build_rows(
-    views: &[AgentSessionView],
-    now: u64,
-    idle_after_seconds: u64,
-) -> Vec<SidebarRow> {
-    let icons = test_icons();
-    build_rows_with_working_icon(views, now, &icons, None, idle_after_seconds)
 }
 
 pub(super) fn build_rows_with_working_icon(
@@ -314,70 +288,19 @@ fn compact_session_id(session_id: &str) -> &str {
 }
 
 #[cfg(test)]
-pub(super) const TEST_SLEEPING_ICON: &str = "z";
-
-#[cfg(test)]
-pub(super) fn test_icons() -> SidebarIcons {
-    SidebarIcons {
-        working: "?".to_owned(),
-        waiting: "?".to_owned(),
-        done: "?".to_owned(),
-        sleeping: TEST_SLEEPING_ICON.to_owned(),
-    }
-}
-
-#[cfg(test)]
-pub(super) fn report_state(
-    status: AgentStatus,
-    status_changed_at: u64,
-    window_id: &str,
-    pane_id: &str,
-) -> AgentSessionView {
-    AgentSessionView {
-        key: crate::state::AgentSessionKey {
-            agent_kind: "opencode".to_owned(),
-            session_id: format!("ses_{pane_id}"),
-        },
-        created_at: status_changed_at,
-        status,
-        status_changed_at,
-        working_elapsed_secs: 0,
-        observed_at: status_changed_at,
-        title: None,
-        context: None,
-        target: AgentLocationHints {
-            tmux_instance: Some("test".to_owned()),
-            pane_id: Some(pane_id.to_owned()),
-            window_id: Some(window_id.to_owned()),
-            session_name: Some("project".to_owned()),
-            window_name: Some("kmux-feature-sidebar".to_owned()),
-            pane_title: Some("Implement sidebar".to_owned()),
-            pane_current_command: Some("nvim".to_owned()),
-            pane_current_path: None,
-            repo_name: Some("kmux".to_owned()),
-            repo_path: Some("/repo".to_owned()),
-            worktree_handle: Some("feature-sidebar".to_owned()),
-            worktree_path: Some("/repo__worktrees/feature-sidebar".to_owned()),
-            branch: Some("feature/sidebar".to_owned()),
-            directory: None,
-        },
-    }
-}
-
-#[cfg(test)]
-pub(super) fn agent_state(
-    status: AgentStatus,
-    status_changed_at: u64,
-    window_id: &str,
-    pane_id: &str,
-) -> AgentSessionView {
-    report_state(status, status_changed_at, window_id, pane_id)
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::sidebar::test_support::{TEST_SLEEPING_ICON, report_state, test_icons};
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
+
+    fn build_rows(
+        views: &[AgentSessionView],
+        now: u64,
+        idle_after_seconds: u64,
+    ) -> Vec<SidebarRow> {
+        let icons = test_icons();
+        build_rows_with_working_icon(views, now, &icons, None, idle_after_seconds)
+    }
 
     #[test]
     fn row_model_uses_repo_and_branch_labels_and_marks_old_done_idle() {

@@ -326,7 +326,7 @@ fn display_width(value: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::model::agent_state;
+    use crate::agent::sidebar::test_support::{agent_state, row_from_view};
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
     use crate::state::AgentStatus;
     use ratatui::Terminal;
@@ -337,7 +337,7 @@ mod tests {
         let mut agent = agent_state(AgentStatus::Waiting, 120, "@1", "%1");
         agent.title = Some("Implement richer sidebar".to_owned());
         agent.context = Some("163.2K (41%)".to_owned());
-        let rows = vec![SidebarRow::from_view(&agent, 300)];
+        let rows = vec![row_from_view(&agent, 300)];
         let backend = TestBackend::new(42, 5);
         let mut terminal = Terminal::new(backend)?;
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -358,8 +358,8 @@ mod tests {
     #[test]
     fn ratatui_renderer_draws_cursor_over_active_tile() -> anyhow::Result<()> {
         let rows = vec![
-            SidebarRow::from_view(&agent_state(AgentStatus::Waiting, 120, "@1", "%1"), 300),
-            SidebarRow::from_view(&agent_state(AgentStatus::Working, 120, "@2", "%2"), 300),
+            row_from_view(&agent_state(AgentStatus::Waiting, 120, "@1", "%1"), 300),
+            row_from_view(&agent_state(AgentStatus::Working, 120, "@2", "%2"), 300),
         ];
         let backend = TestBackend::new(42, 8);
         let mut terminal = Terminal::new(backend)?;
@@ -376,7 +376,7 @@ mod tests {
 
     #[test]
     fn ratatui_renderer_draws_final_separator() -> anyhow::Result<()> {
-        let rows = vec![SidebarRow::from_view(
+        let rows = vec![row_from_view(
             &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
             300,
         )];
@@ -396,7 +396,7 @@ mod tests {
     fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
         agent.target.repo_name = Some("very-long-sidebar-repo-name".to_owned());
-        let rows = vec![SidebarRow::from_view(&agent, 300)];
+        let rows = vec![row_from_view(&agent, 300)];
         let backend = TestBackend::new(18, 4);
         let mut terminal = Terminal::new(backend)?;
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -412,7 +412,7 @@ mod tests {
 
     #[test]
     fn narrow_tile_lines_do_not_exceed_requested_width() {
-        let row = SidebarRow::from_view(&agent_state(AgentStatus::Done, 120, "@1", "%1"), 300);
+        let row = row_from_view(&agent_state(AgentStatus::Done, 120, "@1", "%1"), 300);
 
         for width in 0..6 {
             for kind in [LineKind::Primary, LineKind::Secondary, LineKind::Title] {
@@ -467,7 +467,7 @@ mod tests {
         now: u64,
         elapsed: &str,
     ) -> anyhow::Result<Color> {
-        let rows = vec![SidebarRow::from_view(
+        let rows = vec![row_from_view(
             &agent_state(status, status_changed_at, "@1", "%1"),
             now,
         )];
