@@ -4,7 +4,7 @@ use crate::agent::sessions::AgentSessionView;
 use crate::config::StatusIcons;
 #[cfg(test)]
 use crate::state::AgentLocationHints;
-use crate::state::AgentStatus;
+use crate::state::{AgentSessionKey, AgentStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarIcons {
@@ -36,6 +36,13 @@ impl SidebarRowIdentity {
         Self {
             agent_kind: view.key.agent_kind.clone(),
             session_id: view.key.session_id.clone(),
+        }
+    }
+
+    pub(super) fn session_key(&self) -> AgentSessionKey {
+        AgentSessionKey {
+            agent_kind: self.agent_kind.clone(),
+            session_id: self.session_id.clone(),
         }
     }
 }

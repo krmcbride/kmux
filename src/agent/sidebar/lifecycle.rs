@@ -97,6 +97,7 @@ pub(super) fn run_tui() -> Result<()> {
     let mut app = SidebarApp::new(
         tmux,
         store,
+        config.status_icons.clone(),
         icons,
         working_frames,
         config.sidebar.idle_after_seconds(),

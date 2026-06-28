@@ -141,6 +141,10 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
             KeyCode::Char('g') => app.select_first(),
             KeyCode::Char('G') => app.select_last(),
             KeyCode::Enter => app.jump_to_selected(),
+            KeyCode::Char('x') => {
+                app.delete_selected_session();
+                return EventOutcome::RedrawRequested;
+            }
             KeyCode::F(5) => {
                 app.refresh_rows();
                 return EventOutcome::RedrawRequested;
@@ -224,7 +228,7 @@ mod tests {
             &report_state(AgentStatus::Done, 100, "@1", "%1"),
             100,
         )];
-        let mut app = SidebarApp::test(None, rows);
+        let mut app = SidebarApp::test(Some("@1"), rows);
 
         let outcome = process_tui_event(
             Event::Key(crossterm::event::KeyEvent::new(
@@ -236,5 +240,27 @@ mod tests {
 
         assert_eq!(outcome, EventOutcome::RedrawRequested);
         assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn x_event_deletes_selected_row_and_reports_redraw_request() {
+        let rows = vec![SidebarRow::from_view(
+            &report_state(AgentStatus::Done, 100, "@1", "%1"),
+            100,
+        )];
+        let mut app = SidebarApp::test(None, rows);
+        app.next();
+
+        let outcome = process_tui_event(
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Char('x'),
+                KeyModifiers::NONE,
+            )),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::RedrawRequested);
+        assert!(!app.should_quit());
+        assert!(app.rows().is_empty());
     }
 }

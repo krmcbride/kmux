@@ -368,7 +368,7 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
     }
 }
 
-fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
+pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
     let views = session_views(store, tmux)?;
     let mut by_window = HashMap::<String, StoredAgentStatus>::new();
     for view in views {

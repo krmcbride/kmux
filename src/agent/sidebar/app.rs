@@ -6,6 +6,8 @@ use crate::agent::sidebar::model::{
     SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
     row_index_by_identity, row_index_by_pane, row_index_by_window,
 };
+use crate::agent::status::refresh_window_statuses;
+use crate::config::StatusIcons;
 use crate::state::StateStore;
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
@@ -18,6 +20,7 @@ enum SelectionMode {
 pub(super) struct SidebarApp {
     tmux: Tmux,
     store: StateStore,
+    status_icons: StatusIcons,
     icons: SidebarIcons,
     working_frames: Vec<String>,
     idle_after_seconds: u64,
@@ -41,6 +44,7 @@ impl SidebarApp {
     pub(super) fn new(
         tmux: Tmux,
         store: StateStore,
+        status_icons: StatusIcons,
         icons: SidebarIcons,
         working_frames: Vec<String>,
         idle_after_seconds: u64,
@@ -51,6 +55,7 @@ impl SidebarApp {
         Self {
             tmux,
             store,
+            status_icons,
             icons,
             working_frames,
             idle_after_seconds,
@@ -76,6 +81,7 @@ impl SidebarApp {
         let mut app = Self {
             tmux: Tmux::new(),
             store: test_state_store(),
+            status_icons: StatusIcons::default(),
             icons: crate::agent::sidebar::model::test_icons(),
             working_frames: Vec::new(),
             idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
@@ -176,6 +182,33 @@ impl SidebarApp {
             self.last_error = Some(format!("jump failed: {error}"));
         } else {
             self.reset_after_successful_jump(&row);
+        }
+    }
+
+    pub(super) fn delete_selected_session(&mut self) {
+        let Some(index) = self.list_state.selected() else {
+            return;
+        };
+        let Some(row) = self.rows.get(index).cloned() else {
+            return;
+        };
+
+        if let Err(error) = self.store.delete_session(&row.identity.session_key()) {
+            self.last_error = Some(format!("delete failed: {error}"));
+            return;
+        }
+        let _ = refresh_window_statuses(&self.store, &self.tmux, &self.status_icons);
+
+        self.rows
+            .retain(|candidate| candidate.identity != row.identity);
+        self.last_error = None;
+        if self.rows.is_empty() {
+            self.list_state.select(None);
+            self.selected_identity = None;
+            self.selected_pane_id = None;
+            self.selected_window_id = None;
+        } else {
+            self.select_index_manual(index.min(self.rows.len() - 1));
         }
     }
 
@@ -684,6 +717,21 @@ mod tests {
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
         );
+    }
+
+    #[test]
+    fn delete_selected_session_removes_row_without_quitting_sidebar() {
+        let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.next();
+
+        app.delete_selected_session();
+
+        assert!(!app.should_quit());
+        assert_eq!(app.rows().len(), 1);
+        assert_eq!(app.rows()[0].title, "First");
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(app.last_error(), None);
     }
 
     fn server_row(session_id: &str, title: &str) -> SidebarRow {
