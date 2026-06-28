@@ -1,0 +1,20 @@
+{
+  "name": "@kmux/opencode-integration",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "fmt": "biome check --write .",
+    "fmt:check": "biome check .",
+    "lint": "biome lint .",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "bundle:check": "mkdir -p /tmp/opencode/kmux-plugin-check && bun build kmux-status-server.ts --target bun --external @opencode-ai/plugin --external @opencode-ai/sdk --outfile /tmp/opencode/kmux-plugin-check/kmux-status-server-check.js && bun build kmux-status-tui.ts --target bun --external @opencode-ai/plugin/tui --outfile /tmp/opencode/kmux-plugin-check/kmux-status-tui-check.js",
+    "check": "bun run fmt:check && bun run lint && bun run typecheck && bun run bundle:check"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.1",
+    "@opencode-ai/plugin": "1.17.11",
+    "@opencode-ai/sdk": "1.17.11",
+    "@types/bun": "1.3.14",
+    "typescript": "6.0.3"
+  }
+}

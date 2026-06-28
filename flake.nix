@@ -30,6 +30,13 @@
                 --bash <($out/bin/kmux completions bash) \
                 --fish <($out/bin/kmux completions fish) \
                 --zsh <($out/bin/kmux completions zsh)
+
+              install -Dm0644 integrations/opencode/README.md \
+                $out/share/kmux/integrations/opencode/README.md
+              install -Dm0644 integrations/opencode/kmux-status-server.ts \
+                $out/share/kmux/integrations/opencode/kmux-status-server.ts
+              install -Dm0644 integrations/opencode/kmux-status-tui.ts \
+                $out/share/kmux/integrations/opencode/kmux-status-tui.ts
             '';
           };
         }
@@ -39,6 +46,7 @@
         _: pkgs: {
           default = pkgs.mkShell {
             packages = with pkgs; [
+              bun
               cargo
               clippy
               git
