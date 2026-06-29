@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 
-use crate::agent::query::{self, WorktreeMatchMode, WorktreeTarget};
+use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
 use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::cli;
 use crate::config::{Config, StatusIcons};
@@ -141,25 +141,25 @@ struct GitInfo {
 struct StatusEntry {
     agent_kind: String,
     session_id: String,
-    worktree: String,
-    branch: String,
+    workspace: String,
+    git_branch: String,
     status: String,
     icon: String,
     elapsed_secs: u64,
     title: Option<String>,
     context: Option<String>,
-    pane_id: String,
-    worktree_handle: Option<String>,
-    worktree_path: Option<String>,
-    session_name: String,
-    window_name: String,
-    window_id: String,
+    tmux_pane_id: String,
+    workspace_slug: Option<String>,
+    git_worktree_path: Option<String>,
+    tmux_session_name: String,
+    tmux_window_name: String,
+    tmux_window_id: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     git: Option<GitInfo>,
 }
 
 struct DisplayRow {
-    worktree: String,
+    workspace: String,
     status: String,
     elapsed: String,
     git: String,
@@ -280,11 +280,10 @@ fn current_repo_entries(
 
     let mut entries = Vec::new();
     for worktree in &worktrees {
-        let target = worktree_target(worktree);
-        for view in views
-            .iter()
-            .filter(|view| query::view_matches_worktree(view, &target, WorktreeMatchMode::Identity))
-        {
+        let target = workspace_target(worktree);
+        for view in views.iter().filter(|view| {
+            query::view_matches_workspace(view, &target, WorkspaceMatchMode::Identity)
+        }) {
             entries.push(entry_for_view(view, Some(worktree), now, show_git, icons));
         }
     }
@@ -298,24 +297,24 @@ fn entry_for_view(
     show_git: bool,
     icons: &StatusIcons,
 ) -> StatusEntry {
-    let worktree_path = worktree
+    let git_worktree_path = worktree
         .map(|worktree| worktree.path.display().to_string())
         .or_else(|| view.target.git_worktree_path.clone())
         .or_else(|| view.target.directory.clone());
-    let handle = worktree
+    let workspace_slug = worktree
         .and_then(|worktree| worktree.path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .or_else(|| view.target.kmux_worktree_handle.clone());
+        .or_else(|| view.target.kmux_workspace_slug.clone());
     let branch = worktree
         .and_then(|worktree| worktree.branch.clone())
         .or_else(|| view.target.git_branch.clone())
         .unwrap_or_else(|| "-".to_owned());
-    let worktree_name = handle
+    let workspace_name = workspace_slug
         .clone()
         .or_else(|| view.target.tmux_window_name.clone())
         .unwrap_or_else(|| view.key.session_id.clone());
     let git = if show_git {
-        worktree_path
+        git_worktree_path
             .as_deref()
             .map(Path::new)
             .map(|path| compute_git_info(path, &branch))
@@ -326,8 +325,8 @@ fn entry_for_view(
     StatusEntry {
         agent_kind: view.key.agent_kind.clone(),
         session_id: view.key.session_id.clone(),
-        worktree: worktree_name,
-        branch,
+        workspace: workspace_name,
+        git_branch: branch,
         status: view.status.as_str().to_owned(),
         icon: status_icon(view.status, icons).to_owned(),
         elapsed_secs: view.elapsed_secs(now),
@@ -336,12 +335,12 @@ fn entry_for_view(
             .clone()
             .or_else(|| view.target.tmux_pane_title.clone()),
         context: view.context.clone(),
-        pane_id: view.target.tmux_pane_id.clone().unwrap_or_default(),
-        worktree_handle: handle,
-        worktree_path,
-        session_name: view.target.tmux_session_name.clone().unwrap_or_default(),
-        window_name: view.target.tmux_window_name.clone().unwrap_or_default(),
-        window_id: view.target.tmux_window_id.clone().unwrap_or_default(),
+        tmux_pane_id: view.target.tmux_pane_id.clone().unwrap_or_default(),
+        workspace_slug,
+        git_worktree_path,
+        tmux_session_name: view.target.tmux_session_name.clone().unwrap_or_default(),
+        tmux_window_name: view.target.tmux_window_name.clone().unwrap_or_default(),
+        tmux_window_id: view.target.tmux_window_id.clone().unwrap_or_default(),
         git,
     }
 }
@@ -349,7 +348,7 @@ fn entry_for_view(
 fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
     view.key.agent_kind == filter
         || view.key.session_id == filter
-        || view.target.kmux_worktree_handle.as_deref() == Some(filter)
+        || view.target.kmux_workspace_slug.as_deref() == Some(filter)
         || view.target.git_branch.as_deref() == Some(filter)
         || view.target.tmux_window_name.as_deref() == Some(filter)
         || view.target.git_worktree_path.as_deref() == Some(filter)
@@ -357,8 +356,8 @@ fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
         || view.title.as_deref() == Some(filter)
 }
 
-fn worktree_target(worktree: &WorktreeInfo) -> WorktreeTarget<'_> {
-    WorktreeTarget::new(
+fn workspace_target(worktree: &WorktreeInfo) -> WorkspaceTarget<'_> {
+    WorkspaceTarget::new(
         worktree
             .path
             .file_name()
@@ -403,7 +402,7 @@ fn print_table(entries: &[StatusEntry], show_git: bool) {
     let rows = entries
         .iter()
         .map(|entry| DisplayRow {
-            worktree: format_worktree(entry),
+            workspace: format_workspace(entry),
             status: entry.status.clone(),
             elapsed: compact_elapsed(entry.elapsed_secs),
             git: git_label(&entry.git),
@@ -411,9 +410,9 @@ fn print_table(entries: &[StatusEntry], show_git: bool) {
         })
         .collect::<Vec<_>>();
     let headers = if show_git {
-        vec!["WORKTREE", "STATUS", "ELAPSED", "GIT", "TITLE"]
+        vec!["WORKSPACE", "STATUS", "ELAPSED", "GIT", "TITLE"]
     } else {
-        vec!["WORKTREE", "STATUS", "ELAPSED", "TITLE"]
+        vec!["WORKSPACE", "STATUS", "ELAPSED", "TITLE"]
     };
     let mut widths = headers
         .iter()
@@ -433,11 +432,11 @@ fn print_table(entries: &[StatusEntry], show_git: bool) {
     }
 }
 
-fn format_worktree(entry: &StatusEntry) -> String {
-    if entry.branch != "-" && entry.branch != entry.worktree {
-        format!("{} ({})", entry.worktree, entry.branch)
+fn format_workspace(entry: &StatusEntry) -> String {
+    if entry.git_branch != "-" && entry.git_branch != entry.workspace {
+        format!("{} ({})", entry.workspace, entry.git_branch)
     } else {
-        entry.worktree.clone()
+        entry.workspace.clone()
     }
 }
 
@@ -465,14 +464,14 @@ fn git_label(git: &Option<GitInfo>) -> String {
 fn row_values(row: &DisplayRow, show_git: bool) -> Vec<&str> {
     if show_git {
         vec![
-            &row.worktree,
+            &row.workspace,
             &row.status,
             &row.elapsed,
             &row.git,
             &row.title,
         ]
     } else {
-        vec![&row.worktree, &row.status, &row.elapsed, &row.title]
+        vec![&row.workspace, &row.status, &row.elapsed, &row.title]
     }
 }
 

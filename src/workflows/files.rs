@@ -51,15 +51,15 @@ pub(super) fn run_post_create(
     config: &Config,
     repo_root: &Path,
     worktree_path: &Path,
-    handle: &str,
+    workspace_slug: &str,
 ) -> Result<()> {
     for command in &config.post_create {
         let status = Command::new("sh")
             .arg("-c")
             .arg(command)
             .current_dir(worktree_path)
-            .env("KMUX_HANDLE", handle)
-            .env("KMUX_WORKTREE_PATH", worktree_path)
+            .env("KMUX_WORKSPACE_SLUG", workspace_slug)
+            .env("KMUX_WORKSPACE_PATH", worktree_path)
             .env("KMUX_PROJECT_ROOT", repo_root)
             .status()
             .with_context(|| format!("failed to run post_create command: {command}"))?;

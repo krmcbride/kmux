@@ -1,10 +1,10 @@
 
-# Dynamic worktree handle completion.
-_kmux_handles() {
-    local -a handles
-    handles=("${(@f)$(kmux _complete-handles 2>/dev/null)}")
-    handles=(${handles:#})
-    (( ${#handles} )) && compadd -a handles
+# Dynamic workspace completion.
+_kmux_workspaces() {
+    local -a workspaces
+    workspaces=("${(@f)$(kmux _complete-workspaces 2>/dev/null)}")
+    workspaces=(${workspaces:#})
+    (( ${#workspaces} )) && compadd -a workspaces
 }
 
 # Branch refs that are not already checked out in a worktree.
@@ -36,14 +36,7 @@ _kmux() {
     fi
 
     local -a arg_flags
-    case "$cmd" in
-        add)
-            arg_flags=(--name)
-            ;;
-        *)
-            arg_flags=()
-            ;;
-    esac
+    arg_flags=()
 
     if [[ "${words[CURRENT]}" == -* ]] || [[ -n "${arg_flags[(r)${words[CURRENT-1]}]}" ]]; then
         _kmux_base "$@"
@@ -51,8 +44,8 @@ _kmux() {
     fi
 
     case "$cmd" in
-        open|close|path|remove|rm|rename|status)
-            _kmux_handles
+        open|remove|rm|status)
+            _kmux_workspaces
             ;;
         add)
             _kmux_add_branches

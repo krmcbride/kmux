@@ -64,8 +64,8 @@ impl RepoPaths {
         })
     }
 
-    pub fn handle_path(&self, handle: &str) -> PathBuf {
-        self.worktree_base_dir.join(handle)
+    pub fn workspace_path(&self, workspace_slug: &str) -> PathBuf {
+        self.worktree_base_dir.join(workspace_slug)
     }
 }
 
@@ -202,7 +202,7 @@ mod tests {
         assert_eq!(paths.main_worktree, paths.current_worktree);
         assert_eq!(paths.worktree_base_dir, parent.join("project__worktrees"));
         assert_eq!(
-            paths.handle_path("feature-auth"),
+            paths.workspace_path("feature-auth"),
             paths.worktree_base_dir.join("feature-auth")
         );
         Ok(())

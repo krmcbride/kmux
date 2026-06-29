@@ -3,7 +3,7 @@ use anyhow::{Context, Result, bail};
 use crate::cli;
 
 use super::context::{load_repo_context, load_tmux_context};
-use super::resolve::{ResolvedWorktree, resolve_worktree, resolved_from_worktree};
+use super::resolve::{ResolvedWorkspace, resolve_workspace, resolved_from_kmux_worktree};
 use crate::paths::same_path;
 
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
@@ -17,16 +17,15 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
             resolved.path.display()
         );
     }
-    if resolved.branch.is_none() && !args.keep_branch {
-        bail!("worktree branch is unknown; use --keep-branch to remove only the worktree");
-    }
-    if !args.keep_branch
-        && !args.force
-        && let Some(branch) = &resolved.branch
-        && !repo.git.branch_is_safely_deletable(branch)?
-    {
+    let branch = resolved.branch.as_ref().ok_or_else(|| {
+        anyhow::anyhow!(
+            "workspace '{}' has no known git branch and cannot be removed by kmux",
+            resolved.workspace_slug
+        )
+    })?;
+    if !args.force && !repo.git.branch_is_safely_deletable(branch)? {
         bail!(
-            "branch '{}' is not safely merged; use --force to delete anyway or --keep-branch to remove only the worktree",
+            "branch '{}' is not safely merged; use --force to delete the workspace anyway",
             branch
         );
     }
@@ -38,13 +37,9 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         )
     })?;
     repo.git.remove_worktree(&resolved.path, args.force)?;
-    if !args.keep_branch
-        && let Some(branch) = &resolved.branch
-    {
-        repo.git.delete_local_branch(branch, true)?;
-    }
+    repo.git.delete_local_branch(branch, true)?;
 
-    let window_name = repo.config.window_name(&resolved.handle);
+    let window_name = repo.config.workspace_window_name(&resolved.workspace_slug);
     if tmux
         .tmux
         .window_exists_by_name(&tmux.session_name, &window_name)?
@@ -52,20 +47,20 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         tmux.tmux.kill_window(&tmux.session_name, &window_name)?;
     }
 
-    println!("removed {}", resolved.handle);
+    println!("removed {}", resolved.workspace_slug);
     Ok(())
 }
 
 fn resolve_remove_target(
     repo: &super::context::RepoContext,
     name: Option<&str>,
-) -> Result<ResolvedWorktree> {
+) -> Result<ResolvedWorkspace> {
     if let Some(name) = name {
-        return resolve_worktree(repo, name);
+        return resolve_workspace(repo, name);
     }
 
     if same_path(&repo.paths.current_worktree, &repo.paths.main_worktree) {
-        bail!("remove requires a worktree name when run from the main worktree");
+        bail!("remove requires a workspace name when run from the main worktree");
     }
 
     let is_current_kmux_worktree = repo
@@ -74,7 +69,7 @@ fn resolve_remove_target(
         .parent()
         .is_some_and(|parent| same_path(parent, &repo.paths.worktree_base_dir));
     if !is_current_kmux_worktree {
-        bail!("current worktree is not kmux-managed; pass a worktree name explicitly");
+        bail!("current worktree is not kmux-managed; pass a workspace name explicitly");
     }
 
     let current = repo
@@ -89,5 +84,5 @@ fn resolve_remove_target(
             )
         })?;
 
-    resolved_from_worktree(current)
+    resolved_from_kmux_worktree(repo, current)
 }

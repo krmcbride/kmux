@@ -303,14 +303,14 @@ fn pane_matches_target(
         target,
         [
             pane.current_path.as_deref(),
-            window.and_then(|window| window.kmux_worktree_path.as_deref()),
+            window.and_then(|window| window.kmux_workspace_path.as_deref()),
         ],
     )
 }
 
 fn window_matches_target(target: &AgentLocationHints, window: &TmuxWindow) -> bool {
     session_window_hints_match(target, &window.session_name, &window.window_name)
-        && path_hints_match(target, [window.kmux_worktree_path.as_deref(), None])
+        && path_hints_match(target, [window.kmux_workspace_path.as_deref(), None])
 }
 
 fn session_window_hints_match(
@@ -349,7 +349,7 @@ fn unique_window_by_worktree_metadata<'a>(
     unique_window(
         windows
             .iter()
-            .filter(|window| target_matches_path(target, window.kmux_worktree_path.as_deref())),
+            .filter(|window| target_matches_path(target, window.kmux_workspace_path.as_deref())),
     )
 }
 
@@ -419,14 +419,14 @@ fn enrich_target_from_window(
     target.tmux_window_id = Some(window.window_id.clone());
     target.tmux_session_name = Some(window.session_name.clone());
     target.tmux_window_name = Some(window.window_name.clone());
-    if window.kmux_worktree_handle.is_some() {
-        target.kmux_worktree_handle = window.kmux_worktree_handle.clone();
+    if window.kmux_workspace_slug.is_some() {
+        target.kmux_workspace_slug = window.kmux_workspace_slug.clone();
     }
-    if window.kmux_worktree_path.is_some() {
-        target.git_worktree_path = window.kmux_worktree_path.clone();
+    if window.kmux_workspace_path.is_some() {
+        target.git_worktree_path = window.kmux_workspace_path.clone();
     }
-    if window.kmux_worktree_branch.is_some() {
-        target.git_branch = window.kmux_worktree_branch.clone();
+    if window.kmux_workspace_branch.is_some() {
+        target.git_branch = window.kmux_workspace_branch.clone();
     }
 }
 
@@ -472,8 +472,8 @@ fn fill_missing_target_metadata(target: &mut AgentLocationHints, fallback: &Agen
     if target.git_repo_path.is_none() {
         target.git_repo_path = fallback.git_repo_path.clone();
     }
-    if target.kmux_worktree_handle.is_none() {
-        target.kmux_worktree_handle = fallback.kmux_worktree_handle.clone();
+    if target.kmux_workspace_slug.is_none() {
+        target.kmux_workspace_slug = fallback.kmux_workspace_slug.clone();
     }
     if target.git_worktree_path.is_none() {
         target.git_worktree_path = fallback.git_worktree_path.clone();
@@ -919,9 +919,9 @@ mod tests {
             window_index: "1".to_owned(),
             window_name: window_name.to_owned(),
             active: true,
-            kmux_worktree_handle: Some(window_name.to_owned()),
-            kmux_worktree_path: worktree_path.map(str::to_owned),
-            kmux_worktree_branch: Some(window_name.to_owned()),
+            kmux_workspace_slug: Some(window_name.to_owned()),
+            kmux_workspace_path: worktree_path.map(str::to_owned),
+            kmux_workspace_branch: Some(window_name.to_owned()),
         }
     }
 }

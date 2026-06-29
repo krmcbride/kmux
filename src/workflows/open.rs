@@ -1,17 +1,27 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 
 use crate::cli;
 
 use super::context::{load_repo_context, load_tmux_context};
-use super::resolve::resolve_worktree;
-use super::window::open_resolved;
+use super::resolve::resolve_workspace;
+use super::window::select_existing_resolved;
 
-pub(super) fn run(args: cli::NameArgs) -> Result<()> {
+pub(super) fn run(args: cli::WorkspaceNameArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let tmux = load_tmux_context()?;
-    let resolved = resolve_worktree(&repo, &args.name)?;
+    let resolved = resolve_workspace(&repo, &args.name)?;
+    if resolved.branch.is_none() {
+        bail!(
+            "workspace '{}' has no known git branch and cannot be opened by kmux",
+            resolved.workspace_slug
+        );
+    }
 
-    open_resolved(&repo, &tmux, &resolved, true)?;
-    println!("opened {}\t{}", resolved.handle, resolved.path.display());
+    select_existing_resolved(&repo, &tmux, &resolved)?;
+    println!(
+        "opened {}\t{}",
+        resolved.workspace_slug,
+        resolved.path.display()
+    );
     Ok(())
 }

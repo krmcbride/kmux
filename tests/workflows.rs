@@ -27,7 +27,6 @@ status_icons:
 "#,
     )?;
     let worktree = temp.path().join("project__worktrees/feature-auth");
-    let renamed_worktree = temp.path().join("project__worktrees/auth-v2");
 
     kmux(&repo, &config_home, &tmux)?
         .args(["add", "feature/auth"])
@@ -36,6 +35,14 @@ status_icons:
         .stdout(predicate::str::contains("created feature-auth"));
     assert!(worktree.is_dir());
     assert!(tmux.window_exists("kmux-feature-auth")?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/auth"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace for 'feature/auth' already exists",
+        ));
 
     kmux(&repo, &config_home, &tmux)?
         .args(["add", "feature/auth", "--open-if-exists"])
@@ -58,17 +65,14 @@ status_icons:
         .stdout(predicate::str::contains("project__worktrees/feature-auth"));
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["path", "feature/auth"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains(worktree.display().to_string()));
-
-    kmux(&repo, &config_home, &tmux)?
         .args(["list", "--json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"handle\": \"feature-auth\""))
-        .stdout(predicate::str::contains("\"branch\": \"feature/auth\""));
+        .stdout(predicate::str::contains(
+            "\"workspace_slug\": \"feature-auth\"",
+        ))
+        .stdout(predicate::str::contains("\"git_branch\": \"feature/auth\""))
+        .stdout(predicate::str::contains("\"git_worktree_path\""));
 
     let worktree_pane = tmux.pane_for_window("kmux-feature-auth")?;
     let worktree_window_id = tmux.pane_format(&worktree_pane, "#{window_id}")?;
@@ -102,24 +106,44 @@ status_icons:
         .success()
         .stdout(predicate::str::contains("\"status\": \"working\""))
         .stdout(predicate::str::contains(
-            "\"worktree_handle\": \"feature-auth\"",
+            "\"workspace_slug\": \"feature-auth\"",
         ));
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["rename", "feature-auth", "auth-v2"])
+        .args(["add", "feature/auth", "-o"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("renamed feature-auth"));
-    assert!(!worktree.exists());
-    assert!(renamed_worktree.is_dir());
-    assert!(!tmux.window_exists("kmux-feature-auth")?);
-    assert!(tmux.window_exists("kmux-auth-v2")?);
+        .stdout(predicate::str::contains("opened feature-auth"));
+
+    for option in [
+        "@kmux_workspace_slug",
+        "@kmux_workspace_path",
+        "@kmux_workspace_branch",
+    ] {
+        tmux.tmux_output(&["set-option", "-uw", "-t", "kmux-feature-auth", option])?;
+    }
+    assert_eq!(
+        tmux.window_option("kmux-feature-auth", "@kmux_workspace_path")?,
+        None
+    );
+
     kmux(&repo, &config_home, &tmux)?
-        .args(["status", "--json"])
+        .args(["open", "feature-auth"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"status\": \"working\""))
-        .stdout(predicate::str::contains("\"worktree_handle\": \"auth-v2\""));
+        .stdout(predicate::str::contains("opened feature-auth"));
+    assert_eq!(
+        tmux.window_option("kmux-feature-auth", "@kmux_workspace_slug")?,
+        Some("feature-auth".to_owned())
+    );
+    assert_eq!(
+        tmux.window_option("kmux-feature-auth", "@kmux_workspace_path")?,
+        Some(worktree.display().to_string())
+    );
+    assert_eq!(
+        tmux.window_option("kmux-feature-auth", "@kmux_workspace_branch")?,
+        Some("feature/auth".to_owned())
+    );
 
     kmux_with_pane(&repo, &config_home, &tmux, &worktree_pane)?
         .args(delete_opencode_agent_observation_args(
@@ -136,57 +160,28 @@ status_icons:
         .success()
         .stdout(predicate::str::contains("[]"));
 
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-auth"])?;
+    assert!(!tmux.window_exists("kmux-feature-auth")?);
     kmux(&repo, &config_home, &tmux)?
-        .args(["close", "auth-v2"])
+        .args(["open", "feature-auth"])
         .assert()
-        .success()
-        .stdout(predicate::str::contains("closed auth-v2"));
-    assert!(!tmux.window_exists("kmux-auth-v2")?);
-    assert!(renamed_worktree.is_dir());
+        .failure()
+        .stderr(predicate::str::contains("does not exist for workspace"));
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "auth-v2"])
+        .args(["add", "feature/auth", "-o"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("opened auth-v2"));
-    assert!(tmux.window_exists("kmux-auth-v2")?);
-    for option in [
-        "@kmux_worktree_handle",
-        "@kmux_worktree_path",
-        "@kmux_worktree_branch",
-    ] {
-        tmux.tmux_output(&["set-option", "-uw", "-t", "kmux-auth-v2", option])?;
-    }
-    assert_eq!(
-        tmux.window_option("kmux-auth-v2", "@kmux_worktree_path")?,
-        None
-    );
+        .stdout(predicate::str::contains("opened feature-auth"));
+    assert!(tmux.window_exists("kmux-feature-auth")?);
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "auth-v2"])
+        .args(["rm", "feature-auth"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("opened auth-v2"));
-    assert_eq!(
-        tmux.window_option("kmux-auth-v2", "@kmux_worktree_handle")?,
-        Some("auth-v2".to_owned())
-    );
-    assert_eq!(
-        tmux.window_option("kmux-auth-v2", "@kmux_worktree_path")?,
-        Some(renamed_worktree.display().to_string())
-    );
-    assert_eq!(
-        tmux.window_option("kmux-auth-v2", "@kmux_worktree_branch")?,
-        Some("feature/auth".to_owned())
-    );
-
-    kmux(&repo, &config_home, &tmux)?
-        .args(["rm", "auth-v2"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("removed auth-v2"));
-    assert!(!renamed_worktree.exists());
-    assert!(!tmux.window_exists("kmux-auth-v2")?);
+        .stdout(predicate::str::contains("removed feature-auth"));
+    assert!(!worktree.exists());
+    assert!(!tmux.window_exists("kmux-feature-auth")?);
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/auth"]).is_err());
 
     Ok(())
@@ -284,7 +279,72 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
 }
 
 #[test]
-fn remove_without_name_targets_current_kmux_worktree() -> Result<()> {
+fn add_is_create_only_unless_open_if_exists_is_supplied() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-existing");
+    git(&repo, &["branch", "feature/existing"])?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/existing"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "branch 'feature/existing' already exists",
+        ));
+    assert!(!worktree.exists());
+    assert!(!tmux.window_exists("kmux-feature-existing")?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/existing", "-o"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created feature-existing"));
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists("kmux-feature-existing")?);
+
+    Ok(())
+}
+
+#[test]
+fn add_open_if_exists_rejects_window_only_partial_workspace() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-window-only");
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "kmux-feature-window-only",
+    ])?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/window-only"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "tmux window 'kmux-feature-window-only' already exists",
+        ));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/window-only", "-o"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no matching worktree"));
+    assert!(!worktree.exists());
+
+    Ok(())
+}
+
+#[test]
+fn remove_without_name_targets_current_kmux_workspace() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -304,7 +364,7 @@ fn remove_without_name_targets_current_kmux_worktree() -> Result<()> {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "requires a worktree name when run from the main worktree",
+            "requires a workspace name when run from the main worktree",
         ));
 
     let worktree_pane = tmux.pane_for_window("kmux-feature-current")?;
@@ -345,14 +405,14 @@ fn commands_reject_external_worktrees_with_matching_branch() -> Result<()> {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "worktree 'feature/external' not found",
+            "workspace 'feature/external' not found",
         ));
     kmux(&repo, &config_home, &tmux)?
         .args(["remove", "feature/external", "--force"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "worktree 'feature/external' not found",
+            "workspace 'feature/external' not found",
         ));
 
     assert!(external.is_dir());
@@ -370,13 +430,89 @@ fn commands_reject_external_worktrees_with_matching_branch() -> Result<()> {
         .args(["open", "nested-auth"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("worktree 'nested-auth' not found"));
+        .stderr(predicate::str::contains(
+            "workspace 'nested-auth' not found",
+        ));
     kmux(&repo, &config_home, &tmux)?
         .args(["add", "feature/nested", "--open-if-exists"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already checked out outside kmux"));
     assert!(nested.is_dir());
+    Ok(())
+}
+
+#[test]
+fn commands_reject_non_branch_derived_kmux_worktree_paths() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree_base = temp.path().join("project__worktrees");
+    let legacy = worktree_base.join("custom-auth");
+    fs::create_dir(&worktree_base)?;
+    let legacy_arg = legacy.display().to_string();
+    git(
+        &repo,
+        &["worktree", "add", "-b", "feature/legacy-auth", &legacy_arg],
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/legacy-auth", "-o"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("non-derived kmux workspace path"))
+        .stderr(predicate::str::contains("expected 'feature-legacy-auth'"));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["open", "custom-auth"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("non-derived kmux workspace path"));
+    kmux_with_pane(&legacy, &config_home, &tmux, &tmux.pane_id)?
+        .arg("rm")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("non-derived kmux workspace path"));
+
+    let list = kmux(&repo, &config_home, &tmux)?
+        .args(["ls", "--json"])
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&list.get_output().stdout);
+    assert!(!stdout.contains("custom-auth"));
+
+    Ok(())
+}
+
+#[test]
+fn commands_reject_branchless_kmux_worktrees() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree_base = temp.path().join("project__worktrees");
+    let detached = worktree_base.join("detached");
+    fs::create_dir(&worktree_base)?;
+    let detached_arg = detached.display().to_string();
+    git(
+        &repo,
+        &["worktree", "add", "--detach", &detached_arg, "HEAD"],
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["open", "detached"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no known git branch"));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "detached", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has no known git branch"));
+    assert!(detached.is_dir());
+
     Ok(())
 }
 

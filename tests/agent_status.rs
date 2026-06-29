@@ -115,7 +115,7 @@ status_icons:
         .assert()
         .success();
     let stdout = String::from_utf8_lossy(&status.get_output().stdout);
-    assert!(stdout.contains("WORKTREE"));
+    assert!(stdout.contains("WORKSPACE"));
     assert!(stdout.contains("STATUS"));
     assert!(stdout.contains("ELAPSED"));
     assert!(stdout.contains("TITLE"));
@@ -137,9 +137,9 @@ status_icons:
         .args(["status", "--json"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("\"worktree\": \"project\""))
+        .stdout(predicate::str::contains("\"workspace\": \"project\""))
         .stdout(predicate::str::contains(
-            "\"worktree_handle\": \"feature-status\"",
+            "\"workspace_slug\": \"feature-status\"",
         ));
 
     Ok(())
@@ -634,7 +634,7 @@ fn explicit_set_agent_status_ignores_stale_tmux_environment() -> Result<()> {
 }
 
 #[test]
-fn non_pane_agent_observation_resolves_to_matching_tmux_worktree_window() -> Result<()> {
+fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -647,7 +647,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_worktree_window() -> Res
         "-w",
         "-t",
         &tmux.pane_id,
-        "@kmux_worktree_handle",
+        "@kmux_workspace_slug",
         "project",
     ])?;
     tmux.tmux_output(&[
@@ -655,7 +655,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_worktree_window() -> Res
         "-w",
         "-t",
         &tmux.pane_id,
-        "@kmux_worktree_path",
+        "@kmux_workspace_path",
         &repo_path,
     ])?;
     tmux.tmux_output(&[
@@ -663,7 +663,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_worktree_window() -> Res
         "-w",
         "-t",
         &tmux.pane_id,
-        "@kmux_worktree_branch",
+        "@kmux_workspace_branch",
         "main",
     ])?;
 

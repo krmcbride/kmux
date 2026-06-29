@@ -4,43 +4,47 @@ use crate::agent::sessions::AgentSessionView;
 use crate::paths::same_path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorktreeMatchMode {
-    /// Match the worktree identified by a status view without falling back from
-    /// conflicting path hints to looser branch or handle metadata.
+pub(crate) enum WorkspaceMatchMode {
+    /// Match the workspace identified by a status view without falling back from
+    /// conflicting path hints to looser branch or slug metadata.
     Identity,
-    /// Match any worktree hint supplied by an agent view for summary badges.
+    /// Match any workspace hint supplied by an agent view for summary badges.
     AnyHint,
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorktreeTarget<'a> {
-    handle: Option<String>,
+pub(crate) struct WorkspaceTarget<'a> {
+    workspace_slug: Option<String>,
     branch: Option<String>,
     path: &'a Path,
 }
 
-impl<'a> WorktreeTarget<'a> {
-    pub(crate) fn new(handle: Option<String>, branch: Option<String>, path: &'a Path) -> Self {
+impl<'a> WorkspaceTarget<'a> {
+    pub(crate) fn new(
+        workspace_slug: Option<String>,
+        branch: Option<String>,
+        path: &'a Path,
+    ) -> Self {
         Self {
-            handle,
+            workspace_slug,
             branch,
             path,
         }
     }
 }
 
-pub(crate) fn view_matches_worktree(
+pub(crate) fn view_matches_workspace(
     view: &AgentSessionView,
-    target: &WorktreeTarget<'_>,
-    mode: WorktreeMatchMode,
+    target: &WorkspaceTarget<'_>,
+    mode: WorkspaceMatchMode,
 ) -> bool {
     match mode {
-        WorktreeMatchMode::Identity => view_matches_worktree_identity(view, target),
-        WorktreeMatchMode::AnyHint => view_has_any_worktree_hint(view, target),
+        WorkspaceMatchMode::Identity => view_matches_workspace_identity(view, target),
+        WorkspaceMatchMode::AnyHint => view_has_any_workspace_hint(view, target),
     }
 }
 
-fn view_matches_worktree_identity(view: &AgentSessionView, target: &WorktreeTarget<'_>) -> bool {
+fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
     let report_path = view
         .target
         .git_worktree_path
@@ -52,16 +56,16 @@ fn view_matches_worktree_identity(view: &AgentSessionView, target: &WorktreeTarg
 
     view.target.git_branch.as_deref() == target.branch.as_deref()
         && target
-            .handle
+            .workspace_slug
             .as_deref()
-            .is_some_and(|handle| view.target.kmux_worktree_handle.as_deref() == Some(handle))
+            .is_some_and(|slug| view.target.kmux_workspace_slug.as_deref() == Some(slug))
 }
 
-fn view_has_any_worktree_hint(view: &AgentSessionView, target: &WorktreeTarget<'_>) -> bool {
+fn view_has_any_workspace_hint(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
     target
-        .handle
+        .workspace_slug
         .as_deref()
-        .is_some_and(|handle| view.target.kmux_worktree_handle.as_deref() == Some(handle))
+        .is_some_and(|slug| view.target.kmux_workspace_slug.as_deref() == Some(slug))
         || view.target.git_branch.as_deref() == target.branch.as_deref()
         || view
             .target
@@ -87,96 +91,96 @@ mod tests {
     #[test]
     fn identity_match_uses_path_when_path_hint_exists() {
         let mut view = view_with_target(AgentLocationHints {
-            kmux_worktree_handle: Some("feature".to_owned()),
+            kmux_workspace_slug: Some("feature".to_owned()),
             git_branch: Some("feature".to_owned()),
             git_worktree_path: Some("/repo/project__worktrees/old".to_owned()),
             ..AgentLocationHints::default()
         });
         let target = target("feature", "feature", "/repo/project__worktrees/new");
 
-        assert!(!view_matches_worktree(
+        assert!(!view_matches_workspace(
             &view,
             &target,
-            WorktreeMatchMode::Identity
+            WorkspaceMatchMode::Identity
         ));
 
         view.target.git_worktree_path = Some("/repo/project__worktrees/new".to_owned());
-        assert!(view_matches_worktree(
+        assert!(view_matches_workspace(
             &view,
             &target,
-            WorktreeMatchMode::Identity
+            WorkspaceMatchMode::Identity
         ));
     }
 
     #[test]
-    fn identity_match_requires_branch_and_handle_without_path_hint() {
+    fn identity_match_requires_branch_and_slug_without_path_hint() {
         let target = target(
             "feature",
             "feature/auth",
             "/repo/project__worktrees/feature",
         );
         let matching = view_with_target(AgentLocationHints {
-            kmux_worktree_handle: Some("feature".to_owned()),
+            kmux_workspace_slug: Some("feature".to_owned()),
             git_branch: Some("feature/auth".to_owned()),
             ..AgentLocationHints::default()
         });
-        let handle_only = view_with_target(AgentLocationHints {
-            kmux_worktree_handle: Some("feature".to_owned()),
+        let slug_only = view_with_target(AgentLocationHints {
+            kmux_workspace_slug: Some("feature".to_owned()),
             git_branch: Some("other".to_owned()),
             ..AgentLocationHints::default()
         });
         let branch_only = view_with_target(AgentLocationHints {
-            kmux_worktree_handle: Some("other".to_owned()),
+            kmux_workspace_slug: Some("other".to_owned()),
             git_branch: Some("feature/auth".to_owned()),
             ..AgentLocationHints::default()
         });
 
-        assert!(view_matches_worktree(
+        assert!(view_matches_workspace(
             &matching,
             &target,
-            WorktreeMatchMode::Identity
+            WorkspaceMatchMode::Identity
         ));
-        assert!(!view_matches_worktree(
-            &handle_only,
+        assert!(!view_matches_workspace(
+            &slug_only,
             &target,
-            WorktreeMatchMode::Identity
+            WorkspaceMatchMode::Identity
         ));
-        assert!(!view_matches_worktree(
+        assert!(!view_matches_workspace(
             &branch_only,
             &target,
-            WorktreeMatchMode::Identity
+            WorkspaceMatchMode::Identity
         ));
     }
 
     #[test]
-    fn identity_match_preserves_branchless_handle_matching() {
-        let target = WorktreeTarget::new(
+    fn identity_match_preserves_branchless_slug_matching() {
+        let target = WorkspaceTarget::new(
             Some("detached".to_owned()),
             None,
             Path::new("/repo/project__worktrees/detached"),
         );
         let view = view_with_target(AgentLocationHints {
-            kmux_worktree_handle: Some("detached".to_owned()),
+            kmux_workspace_slug: Some("detached".to_owned()),
             git_branch: None,
             ..AgentLocationHints::default()
         });
 
-        assert!(view_matches_worktree(
+        assert!(view_matches_workspace(
             &view,
             &target,
-            WorktreeMatchMode::Identity
+            WorkspaceMatchMode::Identity
         ));
     }
 
     #[test]
-    fn any_hint_match_accepts_handle_branch_worktree_path_or_directory() {
+    fn any_hint_match_accepts_slug_branch_worktree_path_or_directory() {
         let target = target(
             "feature",
             "feature/auth",
             "/repo/project__worktrees/feature",
         );
-        let handle = view_with_target(AgentLocationHints {
-            kmux_worktree_handle: Some("feature".to_owned()),
+        let slug = view_with_target(AgentLocationHints {
+            kmux_workspace_slug: Some("feature".to_owned()),
             ..AgentLocationHints::default()
         });
         let branch = view_with_target(AgentLocationHints {
@@ -192,30 +196,30 @@ mod tests {
             ..AgentLocationHints::default()
         });
 
-        for view in [&handle, &branch, &worktree_path, &directory] {
-            assert!(view_matches_worktree(
+        for view in [&slug, &branch, &worktree_path, &directory] {
+            assert!(view_matches_workspace(
                 view,
                 &target,
-                WorktreeMatchMode::AnyHint
+                WorkspaceMatchMode::AnyHint
             ));
         }
     }
 
     #[test]
     fn any_hint_match_preserves_branchless_branch_matching() {
-        let target = WorktreeTarget::new(None, None, Path::new("/repo/project"));
+        let target = WorkspaceTarget::new(None, None, Path::new("/repo/project"));
         let view = view_with_target(AgentLocationHints::default());
 
-        assert!(view_matches_worktree(
+        assert!(view_matches_workspace(
             &view,
             &target,
-            WorktreeMatchMode::AnyHint
+            WorkspaceMatchMode::AnyHint
         ));
     }
 
-    fn target<'a>(handle: &str, branch: &str, path: &'a str) -> WorktreeTarget<'a> {
-        WorktreeTarget::new(
-            Some(handle.to_owned()),
+    fn target<'a>(workspace_slug: &str, branch: &str, path: &'a str) -> WorkspaceTarget<'a> {
+        WorkspaceTarget::new(
+            Some(workspace_slug.to_owned()),
             Some(branch.to_owned()),
             Path::new(path),
         )

@@ -56,7 +56,7 @@ pub(super) fn report_state(
             tmux_pane_current_path: None,
             git_repo_name: Some("kmux".to_owned()),
             git_repo_path: Some("/repo".to_owned()),
-            kmux_worktree_handle: Some("feature-sidebar".to_owned()),
+            kmux_workspace_slug: Some("feature-sidebar".to_owned()),
             git_worktree_path: Some("/repo__worktrees/feature-sidebar".to_owned()),
             git_branch: Some("feature/sidebar".to_owned()),
             directory: None,

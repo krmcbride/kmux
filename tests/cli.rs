@@ -17,9 +17,35 @@ fn help_shows_core_commands() {
         .success()
         .stdout(predicate::str::contains("add"))
         .stdout(predicate::str::contains("open"))
+        .stdout(predicate::str::contains("remove"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("set-agent-status"))
-        .stdout(predicate::str::contains("completions"));
+        .stdout(predicate::str::contains("completions"))
+        .stdout(predicate::str::contains("close").not())
+        .stdout(predicate::str::contains("path").not())
+        .stdout(predicate::str::contains("rename").not());
+}
+
+#[test]
+fn add_help_has_no_workspace_slug_override() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["add", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--open-if-exists"))
+        .stdout(predicate::str::contains("--name").not());
+}
+
+#[test]
+fn remove_help_has_no_partial_branch_retention_flag() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["remove", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--force"))
+        .stdout(predicate::str::contains("--keep-branch").not());
 }
 
 #[test]
@@ -64,7 +90,8 @@ fn completions_command_emits_shell_completion() {
         .assert()
         .success()
         .stdout(predicate::str::contains("_kmux"))
-        .stdout(predicate::str::contains("_kmux_handles"))
+        .stdout(predicate::str::contains("_kmux_workspaces"))
+        .stdout(predicate::str::contains("_complete-workspaces"))
         .stdout(predicate::str::contains("_complete-add-branches"));
 }
 
@@ -91,9 +118,9 @@ fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
         &["worktree", "add", "-b", "feature/active", &active_arg],
     )?;
 
-    let handles = kmux_stdout(&repo, &["_complete-handles"])?;
-    assert!(handles.lines().any(|line| line == "feature-active"));
-    assert!(!handles.lines().any(|line| line == "project"));
+    let workspaces = kmux_stdout(&repo, &["_complete-workspaces"])?;
+    assert!(workspaces.lines().any(|line| line == "feature-active"));
+    assert!(!workspaces.lines().any(|line| line == "project"));
 
     let add_branches = kmux_stdout(&repo, &["_complete-add-branches"])?;
     assert!(add_branches.lines().any(|line| line == "feature/addable"));

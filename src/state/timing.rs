@@ -138,7 +138,7 @@ mod tests {
             title: None,
             context: None,
             target: AgentLocationHints {
-                kmux_worktree_handle: Some("feature".to_owned()),
+                kmux_workspace_slug: Some("feature".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature".to_owned()),
                 git_branch: Some("feature".to_owned()),
                 ..AgentLocationHints::default()

@@ -225,7 +225,7 @@ fn repo_label(view: &AgentSessionView) -> String {
 
 fn branch_label(view: &AgentSessionView, primary: &str) -> String {
     clean_label(view.target.git_branch.as_deref())
-        .or_else(|| distinct_label(view.target.kmux_worktree_handle.as_deref(), primary))
+        .or_else(|| distinct_label(view.target.kmux_workspace_slug.as_deref(), primary))
         .or_else(|| path_distinct_label(view.target.directory.as_deref(), primary))
         .or_else(|| path_distinct_label(view.target.git_worktree_path.as_deref(), primary))
         .or_else(|| distinct_label(view.target.tmux_window_name.as_deref(), primary))

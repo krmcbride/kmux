@@ -96,47 +96,6 @@ impl StateStore {
         Ok(())
     }
 
-    pub fn migrate_worktree(
-        &self,
-        old_handle: &str,
-        new_handle: &str,
-        old_path: &Path,
-        new_path: &Path,
-        old_window_name: &str,
-        new_window_name: &str,
-    ) -> Result<usize> {
-        let mut migrated = 0;
-        for mut observation in self.list_observations()? {
-            let matches_handle =
-                observation.target.kmux_worktree_handle.as_deref() == Some(old_handle);
-            let matches_path = observation
-                .target
-                .git_worktree_path
-                .as_deref()
-                .is_some_and(|path| Path::new(path) == old_path);
-            let matches_directory = observation
-                .target
-                .directory
-                .as_deref()
-                .is_some_and(|path| Path::new(path) == old_path);
-            let matches_window =
-                observation.target.tmux_window_name.as_deref() == Some(old_window_name);
-
-            if matches_handle || matches_path || matches_directory || matches_window {
-                observation.target.kmux_worktree_handle = Some(new_handle.to_owned());
-                observation.target.git_worktree_path = Some(new_path.display().to_string());
-                if matches_directory {
-                    observation.target.directory = Some(new_path.display().to_string());
-                }
-                observation.target.tmux_window_name = Some(new_window_name.to_owned());
-                observation.observed_at = now_unix_seconds();
-                self.upsert_observation(&observation)?;
-                migrated += 1;
-            }
-        }
-        Ok(migrated)
-    }
-
     pub(super) fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path = base_path.into();
         fs::create_dir_all(base_path.join("agent-observations"))
@@ -244,7 +203,7 @@ mod tests {
                 tmux_pane_current_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 git_repo_name: Some("repo".to_owned()),
                 git_repo_path: Some("/repo".to_owned()),
-                kmux_worktree_handle: Some("feature-auth".to_owned()),
+                kmux_workspace_slug: Some("feature-auth".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 git_branch: Some("feature/auth".to_owned()),
                 directory: Some("/repo__worktrees/feature-auth".to_owned()),
@@ -366,52 +325,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn migrates_matching_worktree_observation_state() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let mut state = test_observation("tui", "default/%1", AgentStatus::Done, 42);
-        state.target.kmux_worktree_handle = Some("old".to_owned());
-        state.target.git_worktree_path = Some("/repo__worktrees/old".to_owned());
-        state.target.directory = Some("/repo__worktrees/old".to_owned());
-        state.target.tmux_window_name = Some("kmux-old".to_owned());
-        store.upsert_observation(&state)?;
-        let before = now_unix_seconds();
-
-        assert_eq!(
-            store.migrate_worktree(
-                "old",
-                "new",
-                Path::new("/repo__worktrees/old"),
-                Path::new("/repo__worktrees/new"),
-                "kmux-old",
-                "kmux-new"
-            )?,
-            1
-        );
-
-        let observations = store.list_observations()?;
-        assert_eq!(
-            observations[0].target.kmux_worktree_handle.as_deref(),
-            Some("new")
-        );
-        assert_eq!(
-            observations[0].target.git_worktree_path.as_deref(),
-            Some("/repo__worktrees/new")
-        );
-        assert_eq!(
-            observations[0].target.directory.as_deref(),
-            Some("/repo__worktrees/new")
-        );
-        assert_eq!(
-            observations[0].target.tmux_window_name.as_deref(),
-            Some("kmux-new")
-        );
-        assert_eq!(observations[0].status_changed_at, Some(42));
-        assert!(observations[0].observed_at >= before);
-        Ok(())
-    }
-
     fn test_observation(
         producer_kind: &str,
         producer_instance: &str,
@@ -429,7 +342,7 @@ mod tests {
             title: None,
             context: None,
             target: AgentLocationHints {
-                kmux_worktree_handle: Some("feature".to_owned()),
+                kmux_workspace_slug: Some("feature".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature".to_owned()),
                 git_branch: Some("feature".to_owned()),
                 ..AgentLocationHints::default()

@@ -1,7 +1,7 @@
 
-# Dynamic worktree handle completion.
-_kmux_handles() {
-    kmux _complete-handles 2>/dev/null
+# Dynamic workspace completion.
+_kmux_workspaces() {
+    kmux _complete-workspaces 2>/dev/null
 }
 
 # Branch refs that are not already checked out in a worktree.
@@ -30,9 +30,9 @@ _kmux_dynamic() {
     if [[ ${cword} -ge 2 ]]; then
         local cmd="${words[1]}"
         case "$cmd" in
-            open|close|path|remove|rm|rename|status)
+            open|remove|rm|status)
                 if [[ "$cur" != -* ]]; then
-                    COMPREPLY=($(compgen -W "$(_kmux_handles)" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     return
                 fi
                 ;;
@@ -40,10 +40,6 @@ _kmux_dynamic() {
                 case "$prev" in
                     --base)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
-                        return
-                        ;;
-                    --name)
-                        _kmux "$@"
                         return
                         ;;
                 esac

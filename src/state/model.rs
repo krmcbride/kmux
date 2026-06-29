@@ -54,7 +54,7 @@ pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_repo_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kmux_worktree_handle: Option<String>,
+    pub kmux_workspace_slug: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

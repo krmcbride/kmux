@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::agent::query::{WorktreeMatchMode, WorktreeTarget, view_matches_worktree};
+use crate::agent::query::{WorkspaceMatchMode, WorkspaceTarget, view_matches_workspace};
 use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::cli;
 use crate::config::StatusIcons;
@@ -12,7 +12,7 @@ use crate::state::{AgentStatus, StateStore};
 use crate::tmux::Tmux;
 
 use super::context::load_repo_context;
-use super::resolve::{ListItem, list_items};
+use super::resolve::{WorkspaceListItem, list_items};
 use crate::paths::same_path;
 
 pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
@@ -42,12 +42,12 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
     let rows = items
         .iter()
         .map(|item| DisplayRow {
-            branch: item.branch.as_deref().unwrap_or("-").to_owned(),
+            branch: item.git_branch.as_deref().unwrap_or("-").to_owned(),
             age: format_age(item, now),
             agent: format_agent(item, &agents, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
             unmerged: format_unmerged(item, &repo.git),
-            path: format_path(Path::new(&item.path), &current_dir),
+            path: format_path(Path::new(&item.git_worktree_path), &current_dir),
         })
         .collect::<Vec<_>>();
 
@@ -64,7 +64,7 @@ struct DisplayRow {
     path: String,
 }
 
-fn format_age(item: &ListItem, now: u64) -> String {
+fn format_age(item: &WorkspaceListItem, now: u64) -> String {
     if item.is_main {
         return "-".to_owned();
     }
@@ -88,11 +88,15 @@ fn compact_age(seconds: u64) -> String {
     }
 }
 
-fn format_agent(item: &ListItem, agents: &[AgentSessionView], icons: &StatusIcons) -> String {
-    let target = worktree_target(item);
+fn format_agent(
+    item: &WorkspaceListItem,
+    agents: &[AgentSessionView],
+    icons: &StatusIcons,
+) -> String {
+    let target = workspace_target(item);
     let matching = agents
         .iter()
-        .filter(|agent| view_matches_worktree(agent, &target, WorktreeMatchMode::AnyHint))
+        .filter(|agent| view_matches_workspace(agent, &target, WorkspaceMatchMode::AnyHint))
         .collect::<Vec<_>>();
     if matching.is_empty() {
         return "-".to_owned();
@@ -115,11 +119,11 @@ fn format_agent(item: &ListItem, agents: &[AgentSessionView], icons: &StatusIcon
         .join(" ")
 }
 
-fn worktree_target(item: &ListItem) -> WorktreeTarget<'_> {
-    WorktreeTarget::new(
-        Some(item.handle.clone()),
-        item.branch.clone(),
-        Path::new(&item.path),
+fn workspace_target(item: &WorkspaceListItem) -> WorkspaceTarget<'_> {
+    WorkspaceTarget::new(
+        Some(item.workspace_slug.clone()),
+        item.git_branch.clone(),
+        Path::new(&item.git_worktree_path),
     )
 }
 
@@ -132,7 +136,7 @@ fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {
 }
 
 fn format_mux(
-    item: &ListItem,
+    item: &WorkspaceListItem,
     config: &crate::config::Config,
     tmux: &Tmux,
     session_name: Option<&str>,
@@ -144,19 +148,19 @@ fn format_mux(
         return "-".to_owned();
     }
 
-    let window_name = config.window_name(&item.handle);
+    let window_name = config.workspace_window_name(&item.workspace_slug);
     match tmux.window_exists_by_name(session_name, &window_name) {
         Ok(true) => "yes".to_owned(),
         Ok(false) | Err(_) => "-".to_owned(),
     }
 }
 
-fn format_unmerged(item: &ListItem, git: &crate::git::Git) -> String {
+fn format_unmerged(item: &WorkspaceListItem, git: &crate::git::Git) -> String {
     if item.is_main {
         return "-".to_owned();
     }
 
-    let Some(branch) = item.branch.as_deref() else {
+    let Some(branch) = item.git_branch.as_deref() else {
         return "-".to_owned();
     };
 

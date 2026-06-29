@@ -72,8 +72,8 @@ impl Config {
         }
     }
 
-    pub fn window_name(&self, handle: &str) -> String {
-        format!("{}{}", self.window_prefix(), handle)
+    pub fn workspace_window_name(&self, workspace_slug: &str) -> String {
+        format!("{}{}", self.window_prefix(), workspace_slug)
     }
 }
 
@@ -270,7 +270,10 @@ mod tests {
         let config = Config::default();
 
         assert_eq!(config.window_prefix(), DEFAULT_WINDOW_PREFIX);
-        assert_eq!(config.window_name("feature-auth"), "kmux-feature-auth");
+        assert_eq!(
+            config.workspace_window_name("feature-auth"),
+            "kmux-feature-auth"
+        );
         assert_eq!(
             config.sidebar.idle_after_seconds(),
             DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS
@@ -284,7 +287,10 @@ mod tests {
             ..Config::default()
         };
 
-        assert_eq!(config.window_name("feature-auth"), "km-feature-auth");
+        assert_eq!(
+            config.workspace_window_name("feature-auth"),
+            "km-feature-auth"
+        );
     }
 
     #[test]

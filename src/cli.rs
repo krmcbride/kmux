@@ -10,22 +10,16 @@ pub struct Cli {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Create a git worktree and tmux window.
+    /// Create a git branch worktree and tmux window workspace.
     Add(AddArgs),
-    /// Open a tmux window for an existing worktree.
-    Open(NameArgs),
-    /// Close a worktree's tmux window without removing the worktree.
-    Close(NameArgs),
-    /// List known worktrees.
+    /// Select the tmux window for an existing complete workspace.
+    Open(WorkspaceNameArgs),
+    /// List known workspaces.
     #[command(visible_alias = "ls")]
     List(JsonArgs),
-    /// Print the filesystem path for a worktree.
-    Path(NameArgs),
-    /// Remove a worktree and its tmux window.
+    /// Remove a workspace.
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
-    /// Rename a worktree handle and tmux window.
-    Rename(RenameArgs),
     /// Show tracked external tool status.
     Status(StatusArgs),
     /// Toggle the tmux sidebar.
@@ -35,9 +29,9 @@ pub enum Command {
         #[arg(value_enum)]
         shell: clap_complete::Shell,
     },
-    /// Output kmux worktree handles for shell completion.
-    #[command(name = "_complete-handles", hide = true)]
-    CompleteHandles,
+    /// Output kmux workspace slugs for shell completion.
+    #[command(name = "_complete-workspaces", hide = true)]
+    CompleteWorkspaces,
     /// Output checkoutable git branch refs for shell completion.
     #[command(name = "_complete-add-branches", hide = true)]
     CompleteAddBranches,
@@ -54,29 +48,25 @@ pub enum Command {
 
 #[derive(Debug, Args)]
 pub struct AddArgs {
-    /// Branch to create or open as a worktree.
+    /// Branch to create as a workspace.
     pub branch: String,
 
     /// Base branch, tag, or commit for a new branch.
     #[arg(long)]
     pub base: Option<String>,
 
-    /// Override the worktree handle and tmux window name.
-    #[arg(long)]
-    pub name: Option<String>,
-
     /// Create the tmux window without switching to it.
     #[arg(short, long)]
     pub background: bool,
 
-    /// Open an existing worktree/window instead of failing.
+    /// Open or repair an existing workspace instead of failing.
     #[arg(short = 'o', long)]
     pub open_if_exists: bool,
 }
 
 #[derive(Debug, Args)]
-pub struct NameArgs {
-    /// Worktree handle, branch, or window name.
+pub struct WorkspaceNameArgs {
+    /// Workspace slug, branch, or window name.
     pub name: String,
 }
 
@@ -89,30 +79,17 @@ pub struct JsonArgs {
 
 #[derive(Debug, Args)]
 pub struct RemoveArgs {
-    /// Worktree handle, branch, or window name. Defaults to the current kmux worktree.
+    /// Workspace slug, branch, or window name. Defaults to the current kmux workspace.
     pub name: Option<String>,
 
     /// Remove even when safety checks would normally stop the command.
     #[arg(short, long)]
     pub force: bool,
-
-    /// Keep the git branch after removing the worktree.
-    #[arg(long)]
-    pub keep_branch: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct RenameArgs {
-    /// Existing worktree handle, branch, or window name.
-    pub old: String,
-
-    /// New worktree handle and tmux window name.
-    pub new: String,
 }
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
-    /// Optional worktree, branch, or handle filters.
+    /// Optional workspace, branch, or agent filters.
     pub filters: Vec<String>,
 
     /// Emit JSON instead of human-readable output.

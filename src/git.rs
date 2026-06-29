@@ -364,17 +364,6 @@ impl Git {
         Ok(())
     }
 
-    pub fn move_worktree(&self, old_path: &Path, new_path: &Path) -> Result<()> {
-        self.ensure_available_worktree_path(new_path)?;
-        self.stdout(vec![
-            OsString::from("worktree"),
-            OsString::from("move"),
-            old_path.as_os_str().to_os_string(),
-            new_path.as_os_str().to_os_string(),
-        ])?;
-        Ok(())
-    }
-
     pub fn delete_local_branch(&self, branch: &str, force: bool) -> Result<()> {
         let flag = if force { "-D" } else { "-d" };
         self.stdout(["branch", flag, branch])?;
