@@ -115,11 +115,11 @@ impl SidebarRow {
             .filter(|title| *title != primary && *title != secondary)
             .or_else(|| {
                 target
-                    .pane_title
+                    .tmux_pane_title
                     .as_deref()
                     .filter(|title| *title != primary && *title != secondary)
             })
-            .or(target.pane_current_command.as_deref())
+            .or(target.tmux_pane_current_command.as_deref())
             .map(str::to_owned)
             .or_else(|| fallback_session_title(view, &primary, &secondary))
             .unwrap_or_default();
@@ -153,9 +153,9 @@ impl SidebarRow {
             secondary_right,
             title,
             elapsed: compact_elapsed(elapsed),
-            session_name: target.session_name.clone().unwrap_or_default(),
-            window_id: target.window_id.clone().unwrap_or_default(),
-            pane_id: target.pane_id.clone(),
+            session_name: target.tmux_session_name.clone().unwrap_or_default(),
+            window_id: target.tmux_window_id.clone().unwrap_or_default(),
+            pane_id: target.tmux_pane_id.clone(),
         }
     }
 }
@@ -215,20 +215,20 @@ pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<us
 }
 
 fn repo_label(view: &AgentSessionView) -> String {
-    clean_label(view.target.repo_name.as_deref())
-        .or_else(|| path_label(view.target.repo_path.as_deref()))
+    clean_label(view.target.git_repo_name.as_deref())
+        .or_else(|| path_label(view.target.git_repo_path.as_deref()))
         .or_else(|| path_label(view.target.directory.as_deref()))
-        .or_else(|| path_label(view.target.worktree_path.as_deref()))
-        .or_else(|| clean_label(view.target.window_name.as_deref()))
+        .or_else(|| path_label(view.target.git_worktree_path.as_deref()))
+        .or_else(|| clean_label(view.target.tmux_window_name.as_deref()))
         .unwrap_or_else(|| view.key.session_id.clone())
 }
 
 fn branch_label(view: &AgentSessionView, primary: &str) -> String {
-    clean_label(view.target.branch.as_deref())
-        .or_else(|| distinct_label(view.target.worktree_handle.as_deref(), primary))
+    clean_label(view.target.git_branch.as_deref())
+        .or_else(|| distinct_label(view.target.kmux_worktree_handle.as_deref(), primary))
         .or_else(|| path_distinct_label(view.target.directory.as_deref(), primary))
-        .or_else(|| path_distinct_label(view.target.worktree_path.as_deref(), primary))
-        .or_else(|| distinct_label(view.target.window_name.as_deref(), primary))
+        .or_else(|| path_distinct_label(view.target.git_worktree_path.as_deref(), primary))
+        .or_else(|| distinct_label(view.target.tmux_window_name.as_deref(), primary))
         .or_else(|| fallback_session_label(view, primary))
         .unwrap_or_default()
 }
@@ -421,7 +421,7 @@ mod tests {
             agent_kind: "opencode".to_owned(),
             session_id: "ses_first".to_owned(),
         };
-        first.target.pane_id = None;
+        first.target.tmux_pane_id = None;
         first.title = Some("Implement sidebar rows".to_owned());
 
         let mut second = report_state(AgentStatus::Waiting, 120, "@1", "%2");
@@ -429,10 +429,10 @@ mod tests {
             agent_kind: "opencode".to_owned(),
             session_id: "ses_second".to_owned(),
         };
-        second.target.pane_id = None;
+        second.target.tmux_pane_id = None;
         second.title = None;
-        second.target.pane_title = None;
-        second.target.pane_current_command = None;
+        second.target.tmux_pane_title = None;
+        second.target.tmux_pane_current_command = None;
 
         let rows = build_rows(&[first, second], 300, 1_800);
 
@@ -450,26 +450,26 @@ mod tests {
     fn row_model_sorts_by_primary_secondary_and_creation_time() {
         let mut kmux_old = report_state(AgentStatus::Working, 100, "@1", "%1");
         kmux_old.key.session_id = "ses_kmux_old".to_owned();
-        kmux_old.target.repo_name = Some("kmux".to_owned());
-        kmux_old.target.branch = Some("master".to_owned());
+        kmux_old.target.git_repo_name = Some("kmux".to_owned());
+        kmux_old.target.git_branch = Some("master".to_owned());
         kmux_old.title = Some("kmux old".to_owned());
 
         let mut dotfiles = report_state(AgentStatus::Working, 200, "@2", "%2");
         dotfiles.key.session_id = "ses_dotfiles".to_owned();
-        dotfiles.target.repo_name = Some(".dotfiles".to_owned());
-        dotfiles.target.branch = Some("master".to_owned());
+        dotfiles.target.git_repo_name = Some(".dotfiles".to_owned());
+        dotfiles.target.git_branch = Some("master".to_owned());
         dotfiles.title = Some("dotfiles".to_owned());
 
         let mut kmux_feature = report_state(AgentStatus::Working, 50, "@3", "%3");
         kmux_feature.key.session_id = "ses_kmux_feature".to_owned();
-        kmux_feature.target.repo_name = Some("kmux".to_owned());
-        kmux_feature.target.branch = Some("feature/sidebar".to_owned());
+        kmux_feature.target.git_repo_name = Some("kmux".to_owned());
+        kmux_feature.target.git_branch = Some("feature/sidebar".to_owned());
         kmux_feature.title = Some("kmux feature".to_owned());
 
         let mut kmux_new = report_state(AgentStatus::Working, 300, "@4", "%4");
         kmux_new.key.session_id = "ses_kmux_new".to_owned();
-        kmux_new.target.repo_name = Some("kmux".to_owned());
-        kmux_new.target.branch = Some("master".to_owned());
+        kmux_new.target.git_repo_name = Some("kmux".to_owned());
+        kmux_new.target.git_branch = Some("master".to_owned());
         kmux_new.title = Some("kmux new".to_owned());
 
         let rows = build_rows(&[kmux_new, kmux_feature, dotfiles, kmux_old], 400, 1_800);
@@ -485,9 +485,9 @@ mod tests {
     #[test]
     fn row_model_falls_back_to_branch_worktree_and_window_without_tmux_session_label() {
         let mut report = report_state(AgentStatus::Working, 120, "@1", "%1");
-        report.target.repo_name = None;
-        report.target.repo_path = None;
-        report.target.branch = None;
+        report.target.git_repo_name = None;
+        report.target.git_repo_path = None;
+        report.target.git_branch = None;
 
         let rows = build_rows(&[report], 300, 1_800);
 

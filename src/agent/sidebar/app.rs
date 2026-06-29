@@ -731,7 +731,7 @@ mod tests {
             session_id: session_id.to_owned(),
         };
         report.title = Some(title.to_owned());
-        report.target.pane_id = None;
+        report.target.tmux_pane_id = None;
         row_from_view(&report, 100)
     }
 }

@@ -194,7 +194,7 @@ fn resolve_observation_target(
     windows: &[TmuxWindow],
     tmux_instance: &str,
 ) -> (Option<AgentLocationHints>, u8) {
-    if let Some(pane_id) = observation.target.pane_id.as_deref()
+    if let Some(pane_id) = observation.target.tmux_pane_id.as_deref()
         && let Some(pane) = pane_by_id.get(pane_id)
         && !is_sidebar_pane(pane)
         && pane_matches_target(
@@ -212,7 +212,7 @@ fn resolve_observation_target(
         return (Some(target), 5);
     }
 
-    if let Some(window_id) = observation.target.window_id.as_deref()
+    if let Some(window_id) = observation.target.tmux_window_id.as_deref()
         && let Some(window) = window_by_id.get(window_id)
         && window_matches_target(&observation.target, window)
     {
@@ -289,7 +289,7 @@ fn pane_matches_target(
     window: Option<&TmuxWindow>,
 ) -> bool {
     if target
-        .window_id
+        .tmux_window_id
         .as_deref()
         .is_some_and(|window_id| window_id != pane.window_id)
     {
@@ -319,11 +319,11 @@ fn session_window_hints_match(
     window_name: &str,
 ) -> bool {
     target
-        .session_name
+        .tmux_session_name
         .as_deref()
         .is_none_or(|target_session| target_session == session_name)
         && target
-            .window_name
+            .tmux_window_name
             .as_deref()
             .is_none_or(|target_window| target_window == window_name)
 }
@@ -332,7 +332,7 @@ fn path_hints_match<const N: usize>(
     target: &AgentLocationHints,
     candidates: [Option<&str>; N],
 ) -> bool {
-    if target.directory.is_none() && target.worktree_path.is_none() {
+    if target.directory.is_none() && target.git_worktree_path.is_none() {
         return true;
     }
 
@@ -357,10 +357,13 @@ fn target_matches_path(target: &AgentLocationHints, candidate: Option<&str>) -> 
     let Some(candidate) = candidate else {
         return false;
     };
-    [target.directory.as_deref(), target.worktree_path.as_deref()]
-        .into_iter()
-        .flatten()
-        .any(|path| same_path(Path::new(path), Path::new(candidate)))
+    [
+        target.directory.as_deref(),
+        target.git_worktree_path.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|path| same_path(Path::new(path), Path::new(candidate)))
 }
 
 fn window_by_session_and_name<'a>(
@@ -368,8 +371,8 @@ fn window_by_session_and_name<'a>(
     windows: &'a [TmuxWindow],
 ) -> Option<&'a TmuxWindow> {
     let (Some(session_name), Some(window_name)) = (
-        target.session_name.as_deref(),
-        target.window_name.as_deref(),
+        target.tmux_session_name.as_deref(),
+        target.tmux_window_name.as_deref(),
     ) else {
         return None;
     };
@@ -392,18 +395,18 @@ fn enrich_target_from_pane(
     tmux_instance: &str,
 ) {
     target.tmux_instance = Some(tmux_instance.to_owned());
-    target.pane_id = Some(pane.pane_id.clone());
-    target.window_id = Some(pane.window_id.clone());
-    target.session_name = Some(pane.session_name.clone());
-    target.window_name = Some(pane.window_name.clone());
+    target.tmux_pane_id = Some(pane.pane_id.clone());
+    target.tmux_window_id = Some(pane.window_id.clone());
+    target.tmux_session_name = Some(pane.session_name.clone());
+    target.tmux_window_name = Some(pane.window_name.clone());
     if pane.title.is_some() {
-        target.pane_title = pane.title.clone();
+        target.tmux_pane_title = pane.title.clone();
     }
     if pane.current_command.is_some() {
-        target.pane_current_command = pane.current_command.clone();
+        target.tmux_pane_current_command = pane.current_command.clone();
     }
     if pane.current_path.is_some() {
-        target.pane_current_path = pane.current_path.clone();
+        target.tmux_pane_current_path = pane.current_path.clone();
     }
 }
 
@@ -413,17 +416,17 @@ fn enrich_target_from_window(
     tmux_instance: &str,
 ) {
     target.tmux_instance = Some(tmux_instance.to_owned());
-    target.window_id = Some(window.window_id.clone());
-    target.session_name = Some(window.session_name.clone());
-    target.window_name = Some(window.window_name.clone());
+    target.tmux_window_id = Some(window.window_id.clone());
+    target.tmux_session_name = Some(window.session_name.clone());
+    target.tmux_window_name = Some(window.window_name.clone());
     if window.kmux_worktree_handle.is_some() {
-        target.worktree_handle = window.kmux_worktree_handle.clone();
+        target.kmux_worktree_handle = window.kmux_worktree_handle.clone();
     }
     if window.kmux_worktree_path.is_some() {
-        target.worktree_path = window.kmux_worktree_path.clone();
+        target.git_worktree_path = window.kmux_worktree_path.clone();
     }
     if window.kmux_worktree_branch.is_some() {
-        target.branch = window.kmux_worktree_branch.clone();
+        target.git_branch = window.kmux_worktree_branch.clone();
     }
 }
 
@@ -442,41 +445,41 @@ fn fill_missing_target_metadata(target: &mut AgentLocationHints, fallback: &Agen
     if target.tmux_instance.is_none() {
         target.tmux_instance = fallback.tmux_instance.clone();
     }
-    if target.pane_id.is_none() {
-        target.pane_id = fallback.pane_id.clone();
+    if target.tmux_pane_id.is_none() {
+        target.tmux_pane_id = fallback.tmux_pane_id.clone();
     }
-    if target.window_id.is_none() {
-        target.window_id = fallback.window_id.clone();
+    if target.tmux_window_id.is_none() {
+        target.tmux_window_id = fallback.tmux_window_id.clone();
     }
-    if target.session_name.is_none() {
-        target.session_name = fallback.session_name.clone();
+    if target.tmux_session_name.is_none() {
+        target.tmux_session_name = fallback.tmux_session_name.clone();
     }
-    if target.window_name.is_none() {
-        target.window_name = fallback.window_name.clone();
+    if target.tmux_window_name.is_none() {
+        target.tmux_window_name = fallback.tmux_window_name.clone();
     }
-    if target.pane_title.is_none() {
-        target.pane_title = fallback.pane_title.clone();
+    if target.tmux_pane_title.is_none() {
+        target.tmux_pane_title = fallback.tmux_pane_title.clone();
     }
-    if target.pane_current_command.is_none() {
-        target.pane_current_command = fallback.pane_current_command.clone();
+    if target.tmux_pane_current_command.is_none() {
+        target.tmux_pane_current_command = fallback.tmux_pane_current_command.clone();
     }
-    if target.pane_current_path.is_none() {
-        target.pane_current_path = fallback.pane_current_path.clone();
+    if target.tmux_pane_current_path.is_none() {
+        target.tmux_pane_current_path = fallback.tmux_pane_current_path.clone();
     }
-    if target.repo_name.is_none() {
-        target.repo_name = fallback.repo_name.clone();
+    if target.git_repo_name.is_none() {
+        target.git_repo_name = fallback.git_repo_name.clone();
     }
-    if target.repo_path.is_none() {
-        target.repo_path = fallback.repo_path.clone();
+    if target.git_repo_path.is_none() {
+        target.git_repo_path = fallback.git_repo_path.clone();
     }
-    if target.worktree_handle.is_none() {
-        target.worktree_handle = fallback.worktree_handle.clone();
+    if target.kmux_worktree_handle.is_none() {
+        target.kmux_worktree_handle = fallback.kmux_worktree_handle.clone();
     }
-    if target.worktree_path.is_none() {
-        target.worktree_path = fallback.worktree_path.clone();
+    if target.git_worktree_path.is_none() {
+        target.git_worktree_path = fallback.git_worktree_path.clone();
     }
-    if target.branch.is_none() {
-        target.branch = fallback.branch.clone();
+    if target.git_branch.is_none() {
+        target.git_branch = fallback.git_branch.clone();
     }
     if target.directory.is_none() {
         target.directory = fallback.directory.clone();
@@ -484,23 +487,26 @@ fn fill_missing_target_metadata(target: &mut AgentLocationHints, fallback: &Agen
 }
 
 fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
-    if target.repo_name.is_some() && target.repo_path.is_some() && target.branch.is_some() {
+    if target.git_repo_name.is_some()
+        && target.git_repo_path.is_some()
+        && target.git_branch.is_some()
+    {
         return;
     }
 
     let metadata = infer_repo_metadata_from_paths(&[
         target.directory.as_deref(),
-        target.worktree_path.as_deref(),
-        target.pane_current_path.as_deref(),
+        target.git_worktree_path.as_deref(),
+        target.tmux_pane_current_path.as_deref(),
     ]);
-    if target.repo_name.is_none() {
-        target.repo_name = metadata.repo_name;
+    if target.git_repo_name.is_none() {
+        target.git_repo_name = metadata.repo_name;
     }
-    if target.repo_path.is_none() {
-        target.repo_path = metadata.repo_path;
+    if target.git_repo_path.is_none() {
+        target.git_repo_path = metadata.repo_path;
     }
-    if target.branch.is_none() {
-        target.branch = metadata.branch;
+    if target.git_branch.is_none() {
+        target.git_branch = metadata.branch;
     }
 }
 
@@ -530,8 +536,8 @@ mod tests {
             Some("Server title"),
         );
         server.context = Some("55.2K".to_owned());
-        server.target.pane_id = None;
-        server.target.window_id = None;
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
 
         let views = reconcile_session_views(
             vec![tui, server],
@@ -544,8 +550,8 @@ mod tests {
         assert_eq!(views[0].status, AgentStatus::Waiting);
         assert_eq!(views[0].title.as_deref(), Some("Server title"));
         assert_eq!(views[0].context.as_deref(), Some("55.2K"));
-        assert_eq!(views[0].target.pane_id.as_deref(), Some("%1"));
-        assert_eq!(views[0].target.window_id.as_deref(), Some("@1"));
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
@@ -602,14 +608,14 @@ mod tests {
         assert_eq!(
             views
                 .iter()
-                .filter(|view| view.target.window_id.as_deref() == Some("@1"))
+                .filter(|view| view.target.tmux_window_id.as_deref() == Some("@1"))
                 .count(),
             2
         );
         assert_eq!(
             views
                 .iter()
-                .filter(|view| view.target.window_id.as_deref() == Some("@2"))
+                .filter(|view| view.target.tmux_window_id.as_deref() == Some("@2"))
                 .count(),
             2
         );
@@ -624,10 +630,10 @@ mod tests {
             100,
             Some("Server only"),
         );
-        server.target.pane_id = None;
-        server.target.window_id = None;
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
         server.target.directory = Some("/repo/project__worktrees/feature".to_owned());
-        server.target.worktree_path = None;
+        server.target.git_worktree_path = None;
 
         let views = reconcile_session_views(
             vec![server],
@@ -640,8 +646,8 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].target.pane_id.as_deref(), Some("%2"));
-        assert_eq!(views[0].target.window_id.as_deref(), Some("@1"));
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%2"));
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
@@ -653,12 +659,12 @@ mod tests {
             100,
             Some("Server only"),
         );
-        server.target.pane_id = None;
-        server.target.window_id = None;
-        server.target.session_name = None;
-        server.target.window_name = None;
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
+        server.target.tmux_session_name = None;
+        server.target.tmux_window_name = None;
         server.target.directory = Some("/repo/project".to_owned());
-        server.target.worktree_path = None;
+        server.target.git_worktree_path = None;
         let mut inactive = pane_snapshot("%2", "@1", "/repo/project", None);
         inactive.pane_active = false;
         let active = pane_snapshot("%3", "@1", "/repo/project", None);
@@ -671,8 +677,8 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].target.pane_id.as_deref(), Some("%3"));
-        assert_eq!(views[0].target.window_id.as_deref(), Some("@1"));
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%3"));
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
@@ -684,10 +690,10 @@ mod tests {
             100,
             Some("Stale pane"),
         );
-        stale.target.session_name = None;
-        stale.target.window_name = None;
+        stale.target.tmux_session_name = None;
+        stale.target.tmux_window_name = None;
         stale.target.directory = Some("/repo/old".to_owned());
-        stale.target.worktree_path = Some("/repo/old".to_owned());
+        stale.target.git_worktree_path = Some("/repo/old".to_owned());
 
         let views = reconcile_session_views(
             vec![stale],
@@ -708,10 +714,10 @@ mod tests {
             100,
             Some("Stale window"),
         );
-        stale.target.pane_id = None;
-        stale.target.window_id = None;
+        stale.target.tmux_pane_id = None;
+        stale.target.tmux_window_id = None;
         stale.target.directory = Some("/repo/old".to_owned());
-        stale.target.worktree_path = Some("/repo/old".to_owned());
+        stale.target.git_worktree_path = Some("/repo/old".to_owned());
 
         let views = reconcile_session_views(
             vec![stale],
@@ -732,12 +738,12 @@ mod tests {
             100,
             Some("Server only"),
         );
-        server.target.pane_id = None;
-        server.target.window_id = None;
-        server.target.session_name = None;
-        server.target.window_name = None;
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
+        server.target.tmux_session_name = None;
+        server.target.tmux_window_name = None;
         server.target.directory = Some("/repo/missing".to_owned());
-        server.target.worktree_path = None;
+        server.target.git_worktree_path = None;
 
         let views = reconcile_session_views(
             vec![server],
@@ -759,8 +765,8 @@ mod tests {
             Some("Old"),
         );
         let mut metadata = observation("server", "server", None, 200, Some("Renamed"));
-        metadata.target.pane_id = None;
-        metadata.target.window_id = None;
+        metadata.target.tmux_pane_id = None;
+        metadata.target.tmux_window_id = None;
 
         let views = reconcile_session_views(
             vec![status, metadata],
@@ -831,12 +837,12 @@ mod tests {
             context: None,
             target: AgentLocationHints {
                 tmux_instance: Some("default".to_owned()),
-                pane_id: Some("%1".to_owned()),
-                window_id: Some("@1".to_owned()),
-                session_name: Some("project".to_owned()),
-                window_name: Some("project".to_owned()),
+                tmux_pane_id: Some("%1".to_owned()),
+                tmux_window_id: Some("@1".to_owned()),
+                tmux_session_name: Some("project".to_owned()),
+                tmux_window_name: Some("project".to_owned()),
                 directory: Some("/repo/project".to_owned()),
-                worktree_path: Some("/repo/project".to_owned()),
+                git_worktree_path: Some("/repo/project".to_owned()),
                 ..AgentLocationHints::default()
             },
         }
@@ -858,15 +864,15 @@ mod tests {
         );
         observation.key.session.session_id = session_id.to_owned();
         observation.target.directory = Some(directory.to_owned());
-        observation.target.worktree_path = Some(directory.to_owned());
+        observation.target.git_worktree_path = Some(directory.to_owned());
         if directory.contains("feature") {
-            observation.target.pane_id = Some("%2".to_owned());
-            observation.target.window_id = Some("@2".to_owned());
-            observation.target.window_name = Some("feature".to_owned());
+            observation.target.tmux_pane_id = Some("%2".to_owned());
+            observation.target.tmux_window_id = Some("@2".to_owned());
+            observation.target.tmux_window_name = Some("feature".to_owned());
         }
         if producer_kind == "server" {
-            observation.target.pane_id = None;
-            observation.target.window_id = None;
+            observation.target.tmux_pane_id = None;
+            observation.target.tmux_window_id = None;
         }
         observation
     }

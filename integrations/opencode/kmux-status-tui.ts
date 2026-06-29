@@ -316,9 +316,9 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     pushArg(cmd, "--title", title);
     pushArg(cmd, "--context", context);
     pushArg(cmd, "--tmux-instance", tmuxInstance);
-    pushArg(cmd, "--pane-id", paneID);
+    pushArg(cmd, "--tmux-pane-id", paneID);
     pushArg(cmd, "--directory", directory);
-    pushArg(cmd, "--worktree-path", directory);
+    pushArg(cmd, "--git-worktree-path", directory);
   }
 
   spawnKmux(cmd);

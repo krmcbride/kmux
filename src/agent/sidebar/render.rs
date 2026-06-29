@@ -395,7 +395,7 @@ mod tests {
     #[test]
     fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
-        agent.target.repo_name = Some("very-long-sidebar-repo-name".to_owned());
+        agent.target.git_repo_name = Some("very-long-sidebar-repo-name".to_owned());
         let rows = vec![row_from_view(&agent, 300)];
         let backend = TestBackend::new(18, 4);
         let mut terminal = Terminal::new(backend)?;

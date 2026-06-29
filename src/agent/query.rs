@@ -43,29 +43,29 @@ pub(crate) fn view_matches_worktree(
 fn view_matches_worktree_identity(view: &AgentSessionView, target: &WorktreeTarget<'_>) -> bool {
     let report_path = view
         .target
-        .worktree_path
+        .git_worktree_path
         .as_deref()
         .or(view.target.directory.as_deref());
     if let Some(report_path) = report_path {
         return path_matches(report_path, target.path);
     }
 
-    view.target.branch.as_deref() == target.branch.as_deref()
+    view.target.git_branch.as_deref() == target.branch.as_deref()
         && target
             .handle
             .as_deref()
-            .is_some_and(|handle| view.target.worktree_handle.as_deref() == Some(handle))
+            .is_some_and(|handle| view.target.kmux_worktree_handle.as_deref() == Some(handle))
 }
 
 fn view_has_any_worktree_hint(view: &AgentSessionView, target: &WorktreeTarget<'_>) -> bool {
     target
         .handle
         .as_deref()
-        .is_some_and(|handle| view.target.worktree_handle.as_deref() == Some(handle))
-        || view.target.branch.as_deref() == target.branch.as_deref()
+        .is_some_and(|handle| view.target.kmux_worktree_handle.as_deref() == Some(handle))
+        || view.target.git_branch.as_deref() == target.branch.as_deref()
         || view
             .target
-            .worktree_path
+            .git_worktree_path
             .as_deref()
             .is_some_and(|path| path_matches(path, target.path))
         || view
@@ -87,9 +87,9 @@ mod tests {
     #[test]
     fn identity_match_uses_path_when_path_hint_exists() {
         let mut view = view_with_target(AgentLocationHints {
-            worktree_handle: Some("feature".to_owned()),
-            branch: Some("feature".to_owned()),
-            worktree_path: Some("/repo/project__worktrees/old".to_owned()),
+            kmux_worktree_handle: Some("feature".to_owned()),
+            git_branch: Some("feature".to_owned()),
+            git_worktree_path: Some("/repo/project__worktrees/old".to_owned()),
             ..AgentLocationHints::default()
         });
         let target = target("feature", "feature", "/repo/project__worktrees/new");
@@ -100,7 +100,7 @@ mod tests {
             WorktreeMatchMode::Identity
         ));
 
-        view.target.worktree_path = Some("/repo/project__worktrees/new".to_owned());
+        view.target.git_worktree_path = Some("/repo/project__worktrees/new".to_owned());
         assert!(view_matches_worktree(
             &view,
             &target,
@@ -116,18 +116,18 @@ mod tests {
             "/repo/project__worktrees/feature",
         );
         let matching = view_with_target(AgentLocationHints {
-            worktree_handle: Some("feature".to_owned()),
-            branch: Some("feature/auth".to_owned()),
+            kmux_worktree_handle: Some("feature".to_owned()),
+            git_branch: Some("feature/auth".to_owned()),
             ..AgentLocationHints::default()
         });
         let handle_only = view_with_target(AgentLocationHints {
-            worktree_handle: Some("feature".to_owned()),
-            branch: Some("other".to_owned()),
+            kmux_worktree_handle: Some("feature".to_owned()),
+            git_branch: Some("other".to_owned()),
             ..AgentLocationHints::default()
         });
         let branch_only = view_with_target(AgentLocationHints {
-            worktree_handle: Some("other".to_owned()),
-            branch: Some("feature/auth".to_owned()),
+            kmux_worktree_handle: Some("other".to_owned()),
+            git_branch: Some("feature/auth".to_owned()),
             ..AgentLocationHints::default()
         });
 
@@ -156,8 +156,8 @@ mod tests {
             Path::new("/repo/project__worktrees/detached"),
         );
         let view = view_with_target(AgentLocationHints {
-            worktree_handle: Some("detached".to_owned()),
-            branch: None,
+            kmux_worktree_handle: Some("detached".to_owned()),
+            git_branch: None,
             ..AgentLocationHints::default()
         });
 
@@ -176,15 +176,15 @@ mod tests {
             "/repo/project__worktrees/feature",
         );
         let handle = view_with_target(AgentLocationHints {
-            worktree_handle: Some("feature".to_owned()),
+            kmux_worktree_handle: Some("feature".to_owned()),
             ..AgentLocationHints::default()
         });
         let branch = view_with_target(AgentLocationHints {
-            branch: Some("feature/auth".to_owned()),
+            git_branch: Some("feature/auth".to_owned()),
             ..AgentLocationHints::default()
         });
         let worktree_path = view_with_target(AgentLocationHints {
-            worktree_path: Some("/repo/project__worktrees/feature".to_owned()),
+            git_worktree_path: Some("/repo/project__worktrees/feature".to_owned()),
             ..AgentLocationHints::default()
         });
         let directory = view_with_target(AgentLocationHints {

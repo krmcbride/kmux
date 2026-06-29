@@ -46,16 +46,13 @@ status_icons:
             "tui",
             &main_producer,
             &[
-                ("--pane-id", &tmux.pane_id),
-                ("--window-id", &main_window_id),
-                ("--session-name", "project"),
-                ("--window-name", "project"),
-                ("--repo-name", "project"),
-                ("--repo-path", &repo_path),
+                ("--tmux-pane-id", &tmux.pane_id),
+                ("--tmux-window-id", &main_window_id),
+                ("--git-repo-name", "project"),
+                ("--git-repo-path", &repo_path),
                 ("--directory", &repo_path),
-                ("--worktree-path", &repo_path),
-                ("--worktree-handle", "project"),
-                ("--branch", "main"),
+                ("--git-worktree-path", &repo_path),
+                ("--git-branch", "main"),
             ],
         ))
         .assert()
@@ -76,16 +73,13 @@ status_icons:
             "tui",
             &feature_producer,
             &[
-                ("--pane-id", &worktree_pane),
-                ("--window-id", &worktree_window_id),
-                ("--session-name", "project"),
-                ("--window-name", "kmux-feature-status"),
-                ("--repo-name", "project"),
-                ("--repo-path", &repo_path),
+                ("--tmux-pane-id", &worktree_pane),
+                ("--tmux-window-id", &worktree_window_id),
+                ("--git-repo-name", "project"),
+                ("--git-repo-path", &repo_path),
                 ("--directory", &worktree_path),
-                ("--worktree-path", &worktree_path),
-                ("--worktree-handle", "feature-status"),
-                ("--branch", "feature/status"),
+                ("--git-worktree-path", &worktree_path),
+                ("--git-branch", "feature/status"),
             ],
         ))
         .assert()
@@ -93,19 +87,19 @@ status_icons:
     let feature_report = agent_observation_for_pane(&config_home, &worktree_pane)?;
     assert_eq!(
         feature_report
-            .pointer("/target/repo_name")
+            .pointer("/target/git_repo_name")
             .and_then(serde_json::Value::as_str),
         Some("project")
     );
     assert_eq!(
         feature_report
-            .pointer("/target/repo_path")
+            .pointer("/target/git_repo_path")
             .and_then(serde_json::Value::as_str),
         Some(repo_path.as_str())
     );
     assert_eq!(
         feature_report
-            .pointer("/target/branch")
+            .pointer("/target/git_branch")
             .and_then(serde_json::Value::as_str),
         Some("feature/status")
     );
@@ -167,7 +161,6 @@ status_icons:
 "#,
     )?;
     let window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
-    let window_name = tmux.pane_format(&tmux.pane_id, "#{window_name}")?;
     let producer_instance = format!("default/{}", tmux.pane_id);
 
     kmux(&repo, &config_home, &tmux)?
@@ -177,10 +170,8 @@ status_icons:
             "tui",
             &producer_instance,
             &[
-                ("--pane-id", &tmux.pane_id),
-                ("--window-id", &window_id),
-                ("--session-name", "project"),
-                ("--window-name", &window_name),
+                ("--tmux-pane-id", &tmux.pane_id),
+                ("--tmux-window-id", &window_id),
                 ("--title", "Implement richer sidebar"),
                 ("--context", "163.2K (41%)"),
             ],
@@ -213,10 +204,8 @@ status_icons:
             "tui",
             &producer_instance,
             &[
-                ("--pane-id", &tmux.pane_id),
-                ("--window-id", &window_id),
-                ("--session-name", "project"),
-                ("--window-name", &window_name),
+                ("--tmux-pane-id", &tmux.pane_id),
+                ("--tmux-window-id", &window_id),
                 ("--title", "Implement richer sidebar"),
                 ("--context", "170.0K (43%)"),
             ],
@@ -242,10 +231,8 @@ status_icons:
             "tui",
             &producer_instance,
             &[
-                ("--pane-id", &tmux.pane_id),
-                ("--window-id", &window_id),
-                ("--session-name", "project"),
-                ("--window-name", &window_name),
+                ("--tmux-pane-id", &tmux.pane_id),
+                ("--tmux-window-id", &window_id),
             ],
         ))
         .assert()
@@ -282,11 +269,11 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
             &[
                 ("--title", "Implement producer"),
                 ("--context", "12.3K (6%)"),
-                ("--repo-name", "project"),
-                ("--repo-path", "/repo/project"),
+                ("--git-repo-name", "project"),
+                ("--git-repo-path", "/repo/project"),
                 ("--directory", "/repo/project"),
-                ("--worktree-path", "/repo/project"),
-                ("--branch", "main"),
+                ("--git-worktree-path", "/repo/project"),
+                ("--git-branch", "main"),
             ],
         ))
         .assert()
@@ -310,19 +297,19 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
     );
     assert_eq!(
         report
-            .pointer("/target/repo_name")
+            .pointer("/target/git_repo_name")
             .and_then(serde_json::Value::as_str),
         Some("project")
     );
     assert_eq!(
         report
-            .pointer("/target/repo_path")
+            .pointer("/target/git_repo_path")
             .and_then(serde_json::Value::as_str),
         Some("/repo/project")
     );
     assert_eq!(
         report
-            .pointer("/target/worktree_path")
+            .pointer("/target/git_worktree_path")
             .and_then(serde_json::Value::as_str),
         Some("/repo/project")
     );
@@ -463,10 +450,10 @@ fn explicit_set_agent_status_does_not_inherit_current_tmux_pane() -> Result<()> 
         "http://127.0.0.1:4096",
     )?;
     assert_eq!(report.pointer("/target/tmux_instance"), None);
-    assert_eq!(report.pointer("/target/pane_id"), None);
-    assert_eq!(report.pointer("/target/window_id"), None);
-    assert_eq!(report.pointer("/target/session_name"), None);
-    assert_eq!(report.pointer("/target/window_name"), None);
+    assert_eq!(report.pointer("/target/tmux_pane_id"), None);
+    assert_eq!(report.pointer("/target/tmux_window_id"), None);
+    assert_eq!(report.pointer("/target/tmux_session_name"), None);
+    assert_eq!(report.pointer("/target/tmux_window_name"), None);
     assert_eq!(tmux.window_option(&tmux.pane_id, "@kmux_status")?, None);
     Ok(())
 }
@@ -489,7 +476,7 @@ fn explicit_set_agent_status_preserves_timing_when_target_window_changes() -> Re
             "ses_parent",
             "server",
             "http://127.0.0.1:4096",
-            &[("--window-id", "@old")],
+            &[("--tmux-window-id", "@old")],
         ))
         .assert()
         .success();
@@ -514,7 +501,7 @@ fn explicit_set_agent_status_preserves_timing_when_target_window_changes() -> Re
             "ses_parent",
             "server",
             "http://127.0.0.1:4096",
-            &[("--window-id", "@new")],
+            &[("--tmux-window-id", "@new")],
         ))
         .assert()
         .success();
@@ -531,7 +518,7 @@ fn explicit_set_agent_status_preserves_timing_when_target_window_changes() -> Re
     assert_eq!(state_u64(&second, "working_elapsed_secs")?, 0);
     assert_eq!(
         second
-            .pointer("/target/window_id")
+            .pointer("/target/tmux_window_id")
             .and_then(serde_json::Value::as_str),
         Some("@new")
     );
@@ -695,7 +682,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_worktree_window() -> Res
             "http://127.0.0.1:4096",
             &[
                 ("--title", "Implement producer"),
-                ("--worktree-path", &repo_path),
+                ("--git-worktree-path", &repo_path),
             ],
         ))
         .assert()
@@ -710,19 +697,19 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_worktree_window() -> Res
     )?;
     assert_eq!(
         report
-            .pointer("/target/repo_name")
+            .pointer("/target/git_repo_name")
             .and_then(serde_json::Value::as_str),
         Some("project")
     );
     assert_eq!(
         report
-            .pointer("/target/repo_path")
+            .pointer("/target/git_repo_path")
             .and_then(serde_json::Value::as_str),
         Some(repo_path.as_str())
     );
     assert_eq!(
         report
-            .pointer("/target/branch")
+            .pointer("/target/git_branch")
             .and_then(serde_json::Value::as_str),
         Some("main")
     );
@@ -756,7 +743,7 @@ fn explicit_set_agent_status_infers_repo_metadata_from_directory_fallback() -> R
             "server",
             "default",
             &[
-                ("--worktree-path", "/tmp/does-not-exist/kmux-worktree"),
+                ("--git-worktree-path", "/tmp/does-not-exist/kmux-worktree"),
                 ("--directory", &repo_path),
             ],
         ))
@@ -767,25 +754,25 @@ fn explicit_set_agent_status_infers_repo_metadata_from_directory_fallback() -> R
         agent_observation_for_key(&config_home, "opencode", "ses_parent", "server", "default")?;
     assert_eq!(
         report
-            .pointer("/target/repo_name")
+            .pointer("/target/git_repo_name")
             .and_then(serde_json::Value::as_str),
         Some("project")
     );
     assert_eq!(
         report
-            .pointer("/target/repo_path")
+            .pointer("/target/git_repo_path")
             .and_then(serde_json::Value::as_str),
         Some(repo_path.as_str())
     );
     assert_eq!(
         report
-            .pointer("/target/branch")
+            .pointer("/target/git_branch")
             .and_then(serde_json::Value::as_str),
         Some("main")
     );
     assert_eq!(
         report
-            .pointer("/target/worktree_path")
+            .pointer("/target/git_worktree_path")
             .and_then(serde_json::Value::as_str),
         Some("/tmp/does-not-exist/kmux-worktree")
     );

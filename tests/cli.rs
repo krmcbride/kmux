@@ -39,9 +39,21 @@ fn set_agent_status_help_documents_integration_contract() {
         .stdout(predicate::str::contains("waiting"))
         .stdout(predicate::str::contains("done"))
         .stdout(predicate::str::contains(
-            "Delete only this producer's observation",
+            "Delete the observation identified by this session and producer key",
         ))
-        .stdout(predicate::str::contains("Delete all producer observations"));
+        .stdout(predicate::str::contains("Delete all producer observations"))
+        .stdout(predicate::str::contains("--tmux-pane-id"))
+        .stdout(predicate::str::contains("--tmux-window-id"))
+        .stdout(predicate::str::contains("--git-repo-name"))
+        .stdout(predicate::str::contains("--git-worktree-path"))
+        .stdout(predicate::str::contains("--pane-id").not())
+        .stdout(predicate::str::contains("--window-id").not())
+        .stdout(predicate::str::contains("--repo-name").not())
+        .stdout(predicate::str::contains("--worktree-handle").not())
+        .stdout(predicate::str::contains("--worktree-path").not())
+        .stdout(predicate::str::contains("--branch").not())
+        .stdout(predicate::str::contains("--session-name").not())
+        .stdout(predicate::str::contains("--window-name").not());
 }
 
 #[test]

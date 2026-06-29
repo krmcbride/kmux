@@ -458,7 +458,7 @@ class KmuxServerReporter {
     if (title) cmd.push("--title", title);
     if (context) cmd.push("--context", context);
     if (directory) cmd.push("--directory", directory);
-    if (worktreePath) cmd.push("--worktree-path", worktreePath);
+    if (worktreePath) cmd.push("--git-worktree-path", worktreePath);
 
     this.spawnKmux(cmd);
   }

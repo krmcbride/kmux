@@ -425,7 +425,7 @@ pub fn delete_opencode_agent_session_args(
 pub fn agent_observation_for_pane(config_home: &Path, pane_id: &str) -> Result<serde_json::Value> {
     find_agent_observation(config_home, |value| {
         value
-            .pointer("/target/pane_id")
+            .pointer("/target/tmux_pane_id")
             .and_then(serde_json::Value::as_str)
             == Some(pane_id)
     })?

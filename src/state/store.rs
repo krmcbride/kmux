@@ -107,10 +107,11 @@ impl StateStore {
     ) -> Result<usize> {
         let mut migrated = 0;
         for mut observation in self.list_observations()? {
-            let matches_handle = observation.target.worktree_handle.as_deref() == Some(old_handle);
+            let matches_handle =
+                observation.target.kmux_worktree_handle.as_deref() == Some(old_handle);
             let matches_path = observation
                 .target
-                .worktree_path
+                .git_worktree_path
                 .as_deref()
                 .is_some_and(|path| Path::new(path) == old_path);
             let matches_directory = observation
@@ -118,15 +119,16 @@ impl StateStore {
                 .directory
                 .as_deref()
                 .is_some_and(|path| Path::new(path) == old_path);
-            let matches_window = observation.target.window_name.as_deref() == Some(old_window_name);
+            let matches_window =
+                observation.target.tmux_window_name.as_deref() == Some(old_window_name);
 
             if matches_handle || matches_path || matches_directory || matches_window {
-                observation.target.worktree_handle = Some(new_handle.to_owned());
-                observation.target.worktree_path = Some(new_path.display().to_string());
+                observation.target.kmux_worktree_handle = Some(new_handle.to_owned());
+                observation.target.git_worktree_path = Some(new_path.display().to_string());
                 if matches_directory {
                     observation.target.directory = Some(new_path.display().to_string());
                 }
-                observation.target.window_name = Some(new_window_name.to_owned());
+                observation.target.tmux_window_name = Some(new_window_name.to_owned());
                 observation.observed_at = now_unix_seconds();
                 self.upsert_observation(&observation)?;
                 migrated += 1;
@@ -233,18 +235,18 @@ mod tests {
             context: Some("163.2K (41%)".to_owned()),
             target: AgentLocationHints {
                 tmux_instance: Some("test".to_owned()),
-                pane_id: Some("%1".to_owned()),
-                window_id: Some("@1".to_owned()),
-                session_name: Some("project".to_owned()),
-                window_name: Some("kmux-feature-auth".to_owned()),
-                pane_title: Some("Agent title".to_owned()),
-                pane_current_command: Some("opencode".to_owned()),
-                pane_current_path: Some("/repo__worktrees/feature-auth".to_owned()),
-                repo_name: Some("repo".to_owned()),
-                repo_path: Some("/repo".to_owned()),
-                worktree_handle: Some("feature-auth".to_owned()),
-                worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
-                branch: Some("feature/auth".to_owned()),
+                tmux_pane_id: Some("%1".to_owned()),
+                tmux_window_id: Some("@1".to_owned()),
+                tmux_session_name: Some("project".to_owned()),
+                tmux_window_name: Some("kmux-feature-auth".to_owned()),
+                tmux_pane_title: Some("Agent title".to_owned()),
+                tmux_pane_current_command: Some("opencode".to_owned()),
+                tmux_pane_current_path: Some("/repo__worktrees/feature-auth".to_owned()),
+                git_repo_name: Some("repo".to_owned()),
+                git_repo_path: Some("/repo".to_owned()),
+                kmux_worktree_handle: Some("feature-auth".to_owned()),
+                git_worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
+                git_branch: Some("feature/auth".to_owned()),
                 directory: Some("/repo__worktrees/feature-auth".to_owned()),
             },
         };
@@ -369,10 +371,10 @@ mod tests {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
         let mut state = test_observation("tui", "default/%1", AgentStatus::Done, 42);
-        state.target.worktree_handle = Some("old".to_owned());
-        state.target.worktree_path = Some("/repo__worktrees/old".to_owned());
+        state.target.kmux_worktree_handle = Some("old".to_owned());
+        state.target.git_worktree_path = Some("/repo__worktrees/old".to_owned());
         state.target.directory = Some("/repo__worktrees/old".to_owned());
-        state.target.window_name = Some("kmux-old".to_owned());
+        state.target.tmux_window_name = Some("kmux-old".to_owned());
         store.upsert_observation(&state)?;
         let before = now_unix_seconds();
 
@@ -390,11 +392,11 @@ mod tests {
 
         let observations = store.list_observations()?;
         assert_eq!(
-            observations[0].target.worktree_handle.as_deref(),
+            observations[0].target.kmux_worktree_handle.as_deref(),
             Some("new")
         );
         assert_eq!(
-            observations[0].target.worktree_path.as_deref(),
+            observations[0].target.git_worktree_path.as_deref(),
             Some("/repo__worktrees/new")
         );
         assert_eq!(
@@ -402,7 +404,7 @@ mod tests {
             Some("/repo__worktrees/new")
         );
         assert_eq!(
-            observations[0].target.window_name.as_deref(),
+            observations[0].target.tmux_window_name.as_deref(),
             Some("kmux-new")
         );
         assert_eq!(observations[0].status_changed_at, Some(42));
@@ -427,9 +429,9 @@ mod tests {
             title: None,
             context: None,
             target: AgentLocationHints {
-                worktree_handle: Some("feature".to_owned()),
-                worktree_path: Some("/repo__worktrees/feature".to_owned()),
-                branch: Some("feature".to_owned()),
+                kmux_worktree_handle: Some("feature".to_owned()),
+                git_worktree_path: Some("/repo__worktrees/feature".to_owned()),
+                git_branch: Some("feature".to_owned()),
                 ..AgentLocationHints::default()
             },
         }

@@ -126,83 +126,71 @@ pub struct StatusArgs {
 
 #[derive(Debug, Args)]
 pub struct SetAgentStatusArgs {
-    /// New agent status. Omit when updating only metadata or target hints.
+    /// New kmux status. Must be one of the listed values; omit when updating only metadata or target hints.
     #[arg(value_enum)]
     pub status: Option<AgentStatus>,
 
-    /// Agent implementation/domain, such as opencode or codex.
+    /// Stable integration namespace for the agent implementation, such as opencode or codex.
     #[arg(long)]
     pub agent_kind: String,
 
-    /// External agent session identifier.
+    /// Stable integration-defined ID for one agent session; combined with --agent-kind to identify the session.
     #[arg(long)]
     pub session_id: String,
 
-    /// Producer kind, such as tui or server.
+    /// Stable integration-defined source category for this observation, such as tui or server.
     #[arg(long)]
     pub producer_kind: String,
 
-    /// Producer instance label, such as a tmux pane or server URL.
+    /// Stable ID for this producer instance, such as a tmux pane id or server URL.
     #[arg(long)]
     pub producer_instance: String,
 
-    /// Delete only this producer's observation for the agent session.
+    /// Delete the observation identified by this session and producer key.
     #[arg(long)]
     pub delete: bool,
 
-    /// Delete all producer observations for the agent session.
+    /// Delete all producer observations for the session identified by --agent-kind and --session-id.
     #[arg(long)]
     pub delete_session: bool,
 
-    /// Human-readable agent/session title supplied by an external integration.
+    /// Optional display title supplied by the integration; arbitrary text shown in status output.
     #[arg(long)]
     pub title: Option<String>,
 
-    /// Compact context/usage label supplied by an external integration.
+    /// Optional compact display context supplied by the integration, such as usage or current activity.
     #[arg(long)]
     pub context: Option<String>,
 
-    /// Target tmux instance for reports that know it.
+    /// Optional tmux instance hint for reports that know which tmux server they observed.
     #[arg(long)]
     pub tmux_instance: Option<String>,
 
-    /// Target tmux pane id.
+    /// Optional tmux pane id hint, such as %3.
     #[arg(long)]
-    pub pane_id: Option<String>,
+    pub tmux_pane_id: Option<String>,
 
-    /// Target tmux window id.
+    /// Optional tmux window id hint, such as @7.
     #[arg(long)]
-    pub window_id: Option<String>,
+    pub tmux_window_id: Option<String>,
 
-    /// Target tmux session name.
+    /// Optional Git repository/project display hint; arbitrary text supplied by the integration.
     #[arg(long)]
-    pub session_name: Option<String>,
+    pub git_repo_name: Option<String>,
 
-    /// Target tmux window name.
+    /// Optional filesystem path to the main Git repository.
     #[arg(long)]
-    pub window_name: Option<String>,
+    pub git_repo_path: Option<String>,
 
-    /// Repository/project name target hint.
+    /// Optional filesystem path to the target Git worktree; preferred when available.
     #[arg(long)]
-    pub repo_name: Option<String>,
+    pub git_worktree_path: Option<String>,
 
-    /// Main repository path target hint.
+    /// Optional Git branch name hint.
     #[arg(long)]
-    pub repo_path: Option<String>,
+    pub git_branch: Option<String>,
 
-    /// Worktree handle target hint.
-    #[arg(long)]
-    pub worktree_handle: Option<String>,
-
-    /// Worktree path target hint.
-    #[arg(long)]
-    pub worktree_path: Option<String>,
-
-    /// Branch target hint.
-    #[arg(long)]
-    pub branch: Option<String>,
-
-    /// Directory target hint.
+    /// Optional current working directory hint; kmux may infer repository metadata from it.
     #[arg(long)]
     pub directory: Option<String>,
 }

@@ -103,7 +103,7 @@ pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIc
     let views = session_views(store, tmux)?;
     let mut by_window = HashMap::<String, StoredAgentStatus>::new();
     for view in views {
-        let Some(window_id) = view.target.window_id else {
+        let Some(window_id) = view.target.tmux_window_id else {
             continue;
         };
         by_window
@@ -187,15 +187,12 @@ fn stored_status(status: cli::AgentStatus) -> StoredAgentStatus {
 
 fn apply_location_args(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
     apply_optional(&mut target.tmux_instance, &args.tmux_instance);
-    apply_optional(&mut target.pane_id, &args.pane_id);
-    apply_optional(&mut target.window_id, &args.window_id);
-    apply_optional(&mut target.session_name, &args.session_name);
-    apply_optional(&mut target.window_name, &args.window_name);
-    apply_optional(&mut target.repo_name, &args.repo_name);
-    apply_optional(&mut target.repo_path, &args.repo_path);
-    apply_optional(&mut target.worktree_handle, &args.worktree_handle);
-    apply_optional(&mut target.worktree_path, &args.worktree_path);
-    apply_optional(&mut target.branch, &args.branch);
+    apply_optional(&mut target.tmux_pane_id, &args.tmux_pane_id);
+    apply_optional(&mut target.tmux_window_id, &args.tmux_window_id);
+    apply_optional(&mut target.git_repo_name, &args.git_repo_name);
+    apply_optional(&mut target.git_repo_path, &args.git_repo_path);
+    apply_optional(&mut target.git_worktree_path, &args.git_worktree_path);
+    apply_optional(&mut target.git_branch, &args.git_branch);
     apply_optional(&mut target.directory, &args.directory);
 }
 
@@ -223,20 +220,20 @@ fn clean_str(value: &str) -> Option<&str> {
 fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
     let metadata = infer_repo_metadata_from_paths(&[
         target.directory.as_deref(),
-        target.worktree_path.as_deref(),
+        target.git_worktree_path.as_deref(),
     ]);
-    if target.repo_path.is_none() {
-        target.repo_path = metadata.repo_path.clone();
+    if target.git_repo_path.is_none() {
+        target.git_repo_path = metadata.repo_path.clone();
     }
-    if target.repo_name.is_none() {
-        target.repo_name = target
-            .repo_path
+    if target.git_repo_name.is_none() {
+        target.git_repo_name = target
+            .git_repo_path
             .as_deref()
             .and_then(path_basename)
             .or(metadata.repo_name);
     }
-    if target.branch.is_none() {
-        target.branch = metadata.branch;
+    if target.git_branch.is_none() {
+        target.git_branch = metadata.branch;
     }
 }
 
@@ -303,19 +300,19 @@ fn entry_for_view(
 ) -> StatusEntry {
     let worktree_path = worktree
         .map(|worktree| worktree.path.display().to_string())
-        .or_else(|| view.target.worktree_path.clone())
+        .or_else(|| view.target.git_worktree_path.clone())
         .or_else(|| view.target.directory.clone());
     let handle = worktree
         .and_then(|worktree| worktree.path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .or_else(|| view.target.worktree_handle.clone());
+        .or_else(|| view.target.kmux_worktree_handle.clone());
     let branch = worktree
         .and_then(|worktree| worktree.branch.clone())
-        .or_else(|| view.target.branch.clone())
+        .or_else(|| view.target.git_branch.clone())
         .unwrap_or_else(|| "-".to_owned());
     let worktree_name = handle
         .clone()
-        .or_else(|| view.target.window_name.clone())
+        .or_else(|| view.target.tmux_window_name.clone())
         .unwrap_or_else(|| view.key.session_id.clone());
     let git = if show_git {
         worktree_path
@@ -337,14 +334,14 @@ fn entry_for_view(
         title: view
             .title
             .clone()
-            .or_else(|| view.target.pane_title.clone()),
+            .or_else(|| view.target.tmux_pane_title.clone()),
         context: view.context.clone(),
-        pane_id: view.target.pane_id.clone().unwrap_or_default(),
+        pane_id: view.target.tmux_pane_id.clone().unwrap_or_default(),
         worktree_handle: handle,
         worktree_path,
-        session_name: view.target.session_name.clone().unwrap_or_default(),
-        window_name: view.target.window_name.clone().unwrap_or_default(),
-        window_id: view.target.window_id.clone().unwrap_or_default(),
+        session_name: view.target.tmux_session_name.clone().unwrap_or_default(),
+        window_name: view.target.tmux_window_name.clone().unwrap_or_default(),
+        window_id: view.target.tmux_window_id.clone().unwrap_or_default(),
         git,
     }
 }
@@ -352,10 +349,10 @@ fn entry_for_view(
 fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
     view.key.agent_kind == filter
         || view.key.session_id == filter
-        || view.target.worktree_handle.as_deref() == Some(filter)
-        || view.target.branch.as_deref() == Some(filter)
-        || view.target.window_name.as_deref() == Some(filter)
-        || view.target.worktree_path.as_deref() == Some(filter)
+        || view.target.kmux_worktree_handle.as_deref() == Some(filter)
+        || view.target.git_branch.as_deref() == Some(filter)
+        || view.target.tmux_window_name.as_deref() == Some(filter)
+        || view.target.git_worktree_path.as_deref() == Some(filter)
         || view.target.directory.as_deref() == Some(filter)
         || view.title.as_deref() == Some(filter)
 }

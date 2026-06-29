@@ -82,14 +82,11 @@ status_icons:
             &producer_instance,
             &[
                 ("--tmux-instance", &tmux.socket_name),
-                ("--pane-id", &worktree_pane),
-                ("--window-id", &worktree_window_id),
-                ("--session-name", "project"),
-                ("--window-name", "kmux-feature-auth"),
+                ("--tmux-pane-id", &worktree_pane),
+                ("--tmux-window-id", &worktree_window_id),
                 ("--directory", &worktree_path),
-                ("--worktree-path", &worktree_path),
-                ("--worktree-handle", "feature-auth"),
-                ("--branch", "feature/auth"),
+                ("--git-worktree-path", &worktree_path),
+                ("--git-branch", "feature/auth"),
             ],
         ))
         .assert()

@@ -36,29 +36,29 @@ pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_instance: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_id: Option<String>,
+    pub tmux_pane_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_id: Option<String>,
+    pub tmux_window_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub session_name: Option<String>,
+    pub tmux_session_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub window_name: Option<String>,
+    pub tmux_window_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_title: Option<String>,
+    pub tmux_pane_title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_current_command: Option<String>,
+    pub tmux_pane_current_command: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pane_current_path: Option<String>,
+    pub tmux_pane_current_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repo_name: Option<String>,
+    pub git_repo_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub repo_path: Option<String>,
+    pub git_repo_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_handle: Option<String>,
+    pub kmux_worktree_handle: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub worktree_path: Option<String>,
+    pub git_worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub branch: Option<String>,
+    pub git_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
 }
