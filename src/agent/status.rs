@@ -5,11 +5,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 
+use crate::agent::query::{self, WorktreeMatchMode, WorktreeTarget};
 use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::cli;
 use crate::config::{Config, StatusIcons};
 use crate::git::{Git, WorktreeInfo};
-use crate::paths::{RepoPaths, infer_repo_metadata_from_paths, path_basename, same_path};
+use crate::paths::{RepoPaths, infer_repo_metadata_from_paths, path_basename};
 use crate::state::{
     AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
     AgentStatus as StoredAgentStatus, StateStore, next_observation_timing, now_unix_seconds,
@@ -282,9 +283,10 @@ fn current_repo_entries(
 
     let mut entries = Vec::new();
     for worktree in &worktrees {
+        let target = worktree_target(worktree);
         for view in views
             .iter()
-            .filter(|view| view_matches_worktree(view, worktree))
+            .filter(|view| query::view_matches_worktree(view, &target, WorktreeMatchMode::Identity))
         {
             entries.push(entry_for_view(view, Some(worktree), now, show_git, icons));
         }
@@ -358,26 +360,15 @@ fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
         || view.title.as_deref() == Some(filter)
 }
 
-fn view_matches_worktree(view: &AgentSessionView, worktree: &WorktreeInfo) -> bool {
-    let report_path = view
-        .target
-        .worktree_path
-        .as_deref()
-        .or(view.target.directory.as_deref())
-        .map(Path::new);
-    if let Some(report_path) = report_path
-        && same_path(report_path, &worktree.path)
-    {
-        return true;
-    }
-
-    let handle = worktree.path.file_name().map(|name| name.to_string_lossy());
-    let branch_matches = view.target.branch.as_deref() == worktree.branch.as_deref();
-    let handle_matches = handle
-        .as_deref()
-        .is_some_and(|handle| view.target.worktree_handle.as_deref() == Some(handle));
-
-    report_path.is_none() && branch_matches && handle_matches
+fn worktree_target(worktree: &WorktreeInfo) -> WorktreeTarget<'_> {
+    WorktreeTarget::new(
+        worktree
+            .path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned()),
+        worktree.branch.clone(),
+        &worktree.path,
+    )
 }
 
 fn status_icon(status: StoredAgentStatus, icons: &StatusIcons) -> &str {

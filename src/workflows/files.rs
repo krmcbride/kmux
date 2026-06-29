@@ -1,10 +1,10 @@
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::Config;
+use crate::config::{Config, file_entry_relative_path};
 
 pub(super) fn startup_command(config: &Config) -> Option<&str> {
     let panes = config.panes.as_deref()?;
@@ -21,7 +21,7 @@ pub(super) fn apply_file_operations(
     worktree_path: &Path,
 ) -> Result<()> {
     for entry in config.files.copy_entries() {
-        let relative = config_relative_path(entry)?;
+        let relative = file_entry_relative_path(entry)?;
         let source = repo_root.join(&relative);
         if source.symlink_metadata().is_err() {
             warn_missing_source("copy", &source);
@@ -33,7 +33,7 @@ pub(super) fn apply_file_operations(
     }
 
     for entry in config.files.symlink_entries() {
-        let relative = config_relative_path(entry)?;
+        let relative = file_entry_relative_path(entry)?;
         let source = repo_root.join(&relative);
         if source.symlink_metadata().is_err() {
             warn_missing_source("symlink", &source);
@@ -69,22 +69,6 @@ pub(super) fn run_post_create(
         }
     }
     Ok(())
-}
-
-fn config_relative_path(entry: &str) -> Result<PathBuf> {
-    let path = Path::new(entry);
-    if entry.trim().is_empty()
-        || path.is_absolute()
-        || path.components().any(|component| {
-            matches!(
-                component,
-                Component::CurDir | Component::ParentDir | Component::Prefix(_)
-            )
-        })
-    {
-        bail!("configured file path must be relative and stay inside the repo: {entry}");
-    }
-    Ok(path.to_path_buf())
 }
 
 fn warn_missing_source(operation: &str, source: &Path) {
@@ -160,4 +144,19 @@ fn remove_destination(destination: &Path) -> Result<()> {
         fs::remove_file(destination)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_operations_reject_invalid_config_relative_paths() {
+        for entry in ["", ".", "./.envrc", "foo/./bar", "../secret", "/tmp/secret"] {
+            let error = file_entry_relative_path(entry)
+                .expect_err("invalid config file entry should fail before file operations");
+
+            assert!(error.to_string().contains("configured file path"));
+        }
+    }
 }

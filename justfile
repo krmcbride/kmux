@@ -28,4 +28,4 @@ opencode-plugin-check:
     repo="$PWD"; scratch=/tmp/opencode/kmux-plugin-check; mkdir -p "$scratch"; cd "$scratch" && bun build "$repo/integrations/opencode/kmux-status-server.ts" --target bun --external "@opencode-ai/plugin" --external "@opencode-ai/sdk" --outfile "$scratch/kmux-status-server-check.js"
     repo="$PWD"; scratch=/tmp/opencode/kmux-plugin-check; mkdir -p "$scratch"; cd "$scratch" && bun build "$repo/integrations/opencode/kmux-status-tui.ts" --target bun --external "@opencode-ai/plugin/tui" --outfile "$scratch/kmux-status-tui-check.js"
 
-check: fmt-check clippy test
+check: fmt-check clippy test opencode-plugin-check

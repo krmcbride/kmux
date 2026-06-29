@@ -532,9 +532,9 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         window_name: fields[3].to_owned(),
         pane_id: fields[4].to_owned(),
         pane_index: fields[5].to_owned(),
-        pane_left: fields[6].parse().unwrap_or_default(),
-        pane_width: fields[7].parse().unwrap_or_default(),
-        window_width: fields[8].parse().unwrap_or_default(),
+        pane_left: parse_pane_snapshot_u16(line, "pane_left", fields[6])?,
+        pane_width: parse_pane_snapshot_u16(line, "pane_width", fields[7])?,
+        window_width: parse_pane_snapshot_u16(line, "window_width", fields[8])?,
         title: non_empty_string(fields[9]),
         current_command: non_empty_string(fields[10]),
         current_path: non_empty_string(fields[11]),
@@ -542,6 +542,12 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         window_active: tmux_bool(fields[13]),
         session_attached: tmux_attached(fields[14]),
         kmux_role: non_empty_string(fields[15]),
+    })
+}
+
+fn parse_pane_snapshot_u16(line: &str, field_name: &str, value: &str) -> Result<u16> {
+    value.parse::<u16>().with_context(|| {
+        format!("invalid tmux pane snapshot {field_name} value {value:?} in line: {line:?}")
     })
 }
 
@@ -726,6 +732,22 @@ mod tests {
         assert!(!panes[1].session_attached);
         assert_eq!(panes[1].kmux_role, None);
         Ok(())
+    }
+
+    #[test]
+    fn malformed_pane_snapshot_geometry_reports_field_context() {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let output = format!(
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar"
+        );
+
+        let error = parse_pane_snapshots(&output)
+            .expect_err("malformed numeric geometry should fail parsing");
+        let message = error.to_string();
+
+        assert!(message.contains("pane_width"));
+        assert!(message.contains("wide"));
+        assert!(message.contains("tmux pane snapshot"));
     }
 
     #[test]

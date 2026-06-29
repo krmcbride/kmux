@@ -4,6 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
+use crate::agent::query::{WorktreeMatchMode, WorktreeTarget, view_matches_worktree};
 use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::cli;
 use crate::config::StatusIcons;
@@ -88,9 +89,10 @@ fn compact_age(seconds: u64) -> String {
 }
 
 fn format_agent(item: &ListItem, agents: &[AgentSessionView], icons: &StatusIcons) -> String {
+    let target = worktree_target(item);
     let matching = agents
         .iter()
-        .filter(|agent| agent_matches_item(agent, item))
+        .filter(|agent| view_matches_worktree(agent, &target, WorktreeMatchMode::AnyHint))
         .collect::<Vec<_>>();
     if matching.is_empty() {
         return "-".to_owned();
@@ -113,15 +115,12 @@ fn format_agent(item: &ListItem, agents: &[AgentSessionView], icons: &StatusIcon
         .join(" ")
 }
 
-fn agent_matches_item(agent: &AgentSessionView, item: &ListItem) -> bool {
-    agent.target.worktree_handle.as_deref() == Some(item.handle.as_str())
-        || agent.target.branch.as_deref() == item.branch.as_deref()
-        || path_matches_item(agent.target.worktree_path.as_deref(), item)
-        || path_matches_item(agent.target.directory.as_deref(), item)
-}
-
-fn path_matches_item(path: Option<&str>, item: &ListItem) -> bool {
-    path.is_some_and(|path| same_path(Path::new(path), Path::new(&item.path)))
+fn worktree_target(item: &ListItem) -> WorktreeTarget<'_> {
+    WorktreeTarget::new(
+        Some(item.handle.clone()),
+        item.branch.clone(),
+        Path::new(&item.path),
+    )
 }
 
 fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {

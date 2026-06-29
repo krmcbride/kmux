@@ -44,8 +44,11 @@ pub enum Command {
     /// Output git branch refs for shell completion.
     #[command(name = "_complete-git-branches", hide = true)]
     CompleteGitBranches,
-    /// Push agent session state from an external integration.
-    #[command(name = "set-agent-status", hide = true)]
+    /// Record agent session state from an external integration.
+    #[command(
+        name = "set-agent-status",
+        long_about = "Record agent session state from an external integration. This CLI command is the supported integration surface; persisted kmux state files are internal."
+    )]
     SetAgentStatus(Box<SetAgentStatusArgs>),
 }
 
@@ -123,7 +126,7 @@ pub struct StatusArgs {
 
 #[derive(Debug, Args)]
 pub struct SetAgentStatusArgs {
-    /// Optional agent status. Omit for metadata-only updates.
+    /// New agent status. Omit when updating only metadata or target hints.
     #[arg(value_enum)]
     pub status: Option<AgentStatus>,
 
@@ -143,11 +146,11 @@ pub struct SetAgentStatusArgs {
     #[arg(long)]
     pub producer_instance: String,
 
-    /// Delete this producer observation.
+    /// Delete only this producer's observation for the agent session.
     #[arg(long)]
     pub delete: bool,
 
-    /// Delete all producer observations for this agent session.
+    /// Delete all producer observations for the agent session.
     #[arg(long)]
     pub delete_session: bool,
 

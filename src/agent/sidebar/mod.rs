@@ -1,4 +1,6 @@
 mod app;
+mod candidates;
+mod commands;
 mod lifecycle;
 mod model;
 mod render;

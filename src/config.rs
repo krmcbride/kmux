@@ -58,7 +58,7 @@ impl Config {
             .iter()
             .chain(self.files.symlink_entries())
         {
-            validate_file_entry(entry)?;
+            file_entry_relative_path(entry)?;
         }
 
         Ok(())
@@ -239,10 +239,11 @@ impl<'de> Deserialize<'de> for SidebarSize {
     }
 }
 
-fn validate_file_entry(entry: &str) -> Result<()> {
+pub(crate) fn file_entry_relative_path(entry: &str) -> Result<PathBuf> {
     let path = Path::new(entry);
     if entry.trim().is_empty()
         || path.is_absolute()
+        || contains_current_dir_segment(entry)
         || path.components().any(|component| {
             matches!(
                 component,
@@ -252,7 +253,12 @@ fn validate_file_entry(entry: &str) -> Result<()> {
     {
         bail!("configured file path must be relative and stay inside the repo: {entry}");
     }
-    Ok(())
+    Ok(path.to_path_buf())
+}
+
+fn contains_current_dir_segment(entry: &str) -> bool {
+    entry.split('/').any(|segment| segment == ".")
+        || (cfg!(windows) && entry.split('\\').any(|segment| segment == "."))
 }
 
 #[cfg(test)]
@@ -349,7 +355,7 @@ panes:
 
     #[test]
     fn rejects_file_entries_that_target_repo_or_escape() {
-        for entry in ["", ".", "./.envrc", "../secret", "/tmp/secret"] {
+        for entry in ["", ".", "./.envrc", "foo/./bar", "../secret", "/tmp/secret"] {
             let yaml = format!("files: {{copy: ['{entry}']}}\n");
             let error = Config::from_yaml_str(&yaml).expect_err("file entry should fail");
 

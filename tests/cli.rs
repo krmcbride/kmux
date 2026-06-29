@@ -18,7 +18,30 @@ fn help_shows_core_commands() {
         .stdout(predicate::str::contains("add"))
         .stdout(predicate::str::contains("open"))
         .stdout(predicate::str::contains("status"))
+        .stdout(predicate::str::contains("set-agent-status"))
         .stdout(predicate::str::contains("completions"));
+}
+
+#[test]
+fn set_agent_status_help_documents_integration_contract() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["set-agent-status", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("supported integration surface"))
+        .stdout(predicate::str::contains("--agent-kind"))
+        .stdout(predicate::str::contains("--session-id"))
+        .stdout(predicate::str::contains("--producer-kind"))
+        .stdout(predicate::str::contains("--producer-instance"))
+        .stdout(predicate::str::contains("metadata or target hints"))
+        .stdout(predicate::str::contains("working"))
+        .stdout(predicate::str::contains("waiting"))
+        .stdout(predicate::str::contains("done"))
+        .stdout(predicate::str::contains(
+            "Delete only this producer's observation",
+        ))
+        .stdout(predicate::str::contains("Delete all producer observations"));
 }
 
 #[test]
