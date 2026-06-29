@@ -92,6 +92,27 @@ pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceListItem>> {
     Ok(items)
 }
 
+pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<ResolvedWorkspace>> {
+    let mut workspaces = Vec::new();
+    for worktree in repo.git.worktrees()? {
+        if !is_kmux_worktree(repo, &worktree.path) {
+            continue;
+        }
+
+        let resolved = resolved_from_kmux_worktree(repo, worktree)?;
+        if resolved.branch.is_none() {
+            bail!(
+                "workspace '{}' has no known git branch and cannot be restored by kmux",
+                resolved.workspace_slug
+            );
+        }
+        workspaces.push(resolved);
+    }
+
+    workspaces.sort_by(|left, right| left.workspace_slug.cmp(&right.workspace_slug));
+    Ok(workspaces)
+}
+
 pub(super) fn find_kmux_workspace_by_name(
     repo: &RepoContext,
     name: &str,

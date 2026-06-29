@@ -9,7 +9,7 @@ use super::resolve::{
     ResolvedWorkspace, find_kmux_workspace_by_name, find_kmux_workspace_by_slug,
     resolved_from_kmux_worktree,
 };
-use super::window::open_or_create_resolved;
+use super::window::create_resolved;
 
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let repo = load_repo_context()?;
@@ -21,14 +21,12 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
 
     if let Some(existing) = find_kmux_workspace_by_name(&repo, &target.branch)? {
         let resolved = resolved_from_kmux_worktree(&repo, existing)?;
-        open_existing_workspace(&repo, &tmux, &args, &target.branch, resolved)?;
-        return Ok(());
+        bail_existing_workspace(&target.branch, resolved)?;
     }
 
     if let Some(existing) = find_kmux_workspace_by_slug(&repo, &workspace_slug)? {
         let resolved = resolved_from_kmux_worktree(&repo, existing)?;
-        open_existing_workspace(&repo, &tmux, &args, &target.branch, resolved)?;
-        return Ok(());
+        bail_existing_workspace(&target.branch, resolved)?;
     }
 
     if let Some(existing) = repo.git.find_worktree_by_branch(&target.branch)? {
@@ -42,30 +40,22 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
         .tmux
         .window_exists_by_name(&tmux.session_name, &window_name)?
     {
-        if args.open_if_exists {
-            bail!(
-                "tmux window '{}' exists, but kmux workspace '{}' has no matching worktree at {}; remove the window or restore the worktree before repairing",
-                window_name,
-                workspace_slug,
-                worktree_path.display()
-            );
-        }
         bail!(
-            "tmux window '{}' already exists for workspace '{}'; use -o to repair an existing workspace",
+            "tmux window '{}' already exists for workspace '{}'; remove it before creating the workspace",
             window_name,
             workspace_slug
         );
     }
-    if !args.open_if_exists && worktree_path.exists() {
+    if worktree_path.exists() {
         bail!(
-            "workspace path {} already exists for '{}'; use -o to repair an existing workspace",
+            "workspace path {} already exists for '{}'",
             worktree_path.display(),
             workspace_slug
         );
     }
-    if !args.open_if_exists && repo.git.local_branch_exists(&target.branch)? {
+    if repo.git.local_branch_exists(&target.branch)? {
         bail!(
-            "branch '{}' already exists; use -o to create or open the corresponding workspace",
+            "branch '{}' already exists; kmux add creates new branch workspaces only",
             target.branch
         );
     }
@@ -87,7 +77,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
         path: worktree_path,
         branch: Some(target.branch),
     };
-    open_or_create_resolved(&repo, &tmux, &resolved, !args.background)?;
+    create_resolved(&repo, &tmux, &resolved, !args.background)?;
     println!(
         "created {}\t{}",
         resolved.workspace_slug,
@@ -96,13 +86,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     Ok(())
 }
 
-fn open_existing_workspace(
-    repo: &super::context::RepoContext,
-    tmux: &super::context::TmuxContext,
-    args: &cli::AddArgs,
-    expected_branch: &str,
-    resolved: ResolvedWorkspace,
-) -> Result<()> {
+fn bail_existing_workspace(expected_branch: &str, resolved: ResolvedWorkspace) -> Result<()> {
     if resolved.branch.as_deref() != Some(expected_branch) {
         bail!(
             "workspace slug '{}' already exists at {} for branch '{}', not '{}'",
@@ -112,21 +96,11 @@ fn open_existing_workspace(
             expected_branch
         );
     }
-    if !args.open_if_exists {
-        bail!(
-            "workspace for '{}' already exists at {}; use -o to open or repair it",
-            expected_branch,
-            resolved.path.display()
-        );
-    }
-
-    open_or_create_resolved(repo, tmux, &resolved, !args.background)?;
-    println!(
-        "opened {}\t{}",
-        resolved.workspace_slug,
+    bail!(
+        "workspace for '{}' already exists at {}; use 'kmux restore' to restore tmux windows",
+        expected_branch,
         resolved.path.display()
     );
-    Ok(())
 }
 
 struct AddTarget {

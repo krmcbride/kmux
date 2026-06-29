@@ -44,7 +44,7 @@ _kmux() {
     fi
 
     case "$cmd" in
-        open|remove|rm|status)
+        remove|rm|status)
             _kmux_workspaces
             ;;
         add)

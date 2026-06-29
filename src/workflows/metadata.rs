@@ -14,20 +14,24 @@ pub(super) fn set_workspace_metadata(
     resolved: &ResolvedWorkspace,
 ) -> Result<()> {
     let target = window_target(session_name, window_name);
+    set_workspace_metadata_target(tmux, &target, resolved)
+}
+
+pub(super) fn set_workspace_metadata_target(
+    tmux: &Tmux,
+    target: &str,
+    resolved: &ResolvedWorkspace,
+) -> Result<()> {
+    tmux.set_window_option(target, KMUX_WORKSPACE_SLUG_OPTION, &resolved.workspace_slug)?;
     tmux.set_window_option(
-        &target,
-        KMUX_WORKSPACE_SLUG_OPTION,
-        &resolved.workspace_slug,
-    )?;
-    tmux.set_window_option(
-        &target,
+        target,
         KMUX_WORKSPACE_PATH_OPTION,
         &resolved.path.display().to_string(),
     )?;
     if let Some(branch) = &resolved.branch {
-        tmux.set_window_option(&target, KMUX_WORKSPACE_BRANCH_OPTION, branch)?;
+        tmux.set_window_option(target, KMUX_WORKSPACE_BRANCH_OPTION, branch)?;
     } else {
-        tmux.unset_window_option(&target, KMUX_WORKSPACE_BRANCH_OPTION)?;
+        tmux.unset_window_option(target, KMUX_WORKSPACE_BRANCH_OPTION)?;
     }
     Ok(())
 }

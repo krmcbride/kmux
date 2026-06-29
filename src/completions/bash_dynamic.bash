@@ -30,7 +30,7 @@ _kmux_dynamic() {
     if [[ ${cword} -ge 2 ]]; then
         local cmd="${words[1]}"
         case "$cmd" in
-            open|remove|rm|status)
+            remove|rm|status)
                 if [[ "$cur" != -* ]]; then
                     COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     return

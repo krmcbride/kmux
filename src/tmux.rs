@@ -242,6 +242,11 @@ impl Tmux {
         Ok(())
     }
 
+    pub fn rename_window(&self, target: &str, window_name: &str) -> Result<()> {
+        self.stdout(["rename-window", "-t", target, window_name])?;
+        Ok(())
+    }
+
     pub fn select_pane(&self, pane_id: &str) -> Result<()> {
         self.stdout(["select-pane", "-t", pane_id])?;
         Ok(())

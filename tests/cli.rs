@@ -16,11 +16,12 @@ fn help_shows_core_commands() {
         .assert()
         .success()
         .stdout(predicate::str::contains("add"))
-        .stdout(predicate::str::contains("open"))
+        .stdout(predicate::str::contains("restore"))
         .stdout(predicate::str::contains("remove"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("set-agent-status"))
         .stdout(predicate::str::contains("completions"))
+        .stdout(predicate::str::contains("open").not())
         .stdout(predicate::str::contains("close").not())
         .stdout(predicate::str::contains("path").not())
         .stdout(predicate::str::contains("rename").not());
@@ -33,7 +34,8 @@ fn add_help_has_no_workspace_slug_override() {
         .args(["add", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--open-if-exists"))
+        .stdout(predicate::str::contains("--open-if-exists").not())
+        .stdout(predicate::str::contains("-o").not())
         .stdout(predicate::str::contains("--name").not());
 }
 
@@ -92,7 +94,9 @@ fn completions_command_emits_shell_completion() {
         .stdout(predicate::str::contains("_kmux"))
         .stdout(predicate::str::contains("_kmux_workspaces"))
         .stdout(predicate::str::contains("_complete-workspaces"))
-        .stdout(predicate::str::contains("_complete-add-branches"));
+        .stdout(predicate::str::contains("_complete-add-branches"))
+        .stdout(predicate::str::contains("--open-if-exists").not())
+        .stdout(predicate::str::contains("open").not());
 }
 
 #[test]
@@ -156,4 +160,24 @@ fn unknown_commands_fail_clearly() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unrecognized subcommand"));
+}
+
+#[test]
+fn removed_open_command_fails_clearly() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .arg("open")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unrecognized subcommand"));
+}
+
+#[test]
+fn removed_add_open_if_exists_flag_fails_clearly() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["add", "feature/example", "-o"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
 }

@@ -45,10 +45,10 @@ status_icons:
         ));
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/auth", "--open-if-exists"])
+        .arg("restore")
         .assert()
         .success()
-        .stdout(predicate::str::contains("opened feature-auth"));
+        .stdout(predicate::str::contains("restored feature-auth"));
 
     kmux(&repo, &config_home, &tmux)?
         .arg("ls")
@@ -109,12 +109,6 @@ status_icons:
             "\"workspace_slug\": \"feature-auth\"",
         ));
 
-    kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/auth", "-o"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("opened feature-auth"));
-
     for option in [
         "@kmux_workspace_slug",
         "@kmux_workspace_path",
@@ -127,11 +121,13 @@ status_icons:
         None
     );
 
+    let active_window_before_restore = tmux.current_window_id()?;
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "feature-auth"])
+        .arg("restore")
         .assert()
         .success()
-        .stdout(predicate::str::contains("opened feature-auth"));
+        .stdout(predicate::str::contains("restored feature-auth"));
+    assert_eq!(tmux.current_window_id()?, active_window_before_restore);
     assert_eq!(
         tmux.window_option("kmux-feature-auth", "@kmux_workspace_slug")?,
         Some("feature-auth".to_owned())
@@ -163,17 +159,18 @@ status_icons:
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-auth"])?;
     assert!(!tmux.window_exists("kmux-feature-auth")?);
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "feature-auth"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("does not exist for workspace"));
-
-    kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/auth", "-o"])
+        .arg("restore")
         .assert()
         .success()
-        .stdout(predicate::str::contains("opened feature-auth"));
+        .stdout(predicate::str::contains("restored feature-auth"));
     assert!(tmux.window_exists("kmux-feature-auth")?);
+    let window_count = tmux.unique_window_count()?;
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored feature-auth"));
+    assert_eq!(tmux.unique_window_count()?, window_count);
 
     kmux(&repo, &config_home, &tmux)?
         .args(["rm", "feature-auth"])
@@ -279,7 +276,7 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
 }
 
 #[test]
-fn add_is_create_only_unless_open_if_exists_is_supplied() -> Result<()> {
+fn add_is_create_only_when_branch_already_exists() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -299,18 +296,18 @@ fn add_is_create_only_unless_open_if_exists_is_supplied() -> Result<()> {
     assert!(!tmux.window_exists("kmux-feature-existing")?);
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/existing", "-o"])
+        .arg("restore")
         .assert()
         .success()
-        .stdout(predicate::str::contains("created feature-existing"));
-    assert!(worktree.is_dir());
-    assert!(tmux.window_exists("kmux-feature-existing")?);
+        .stdout(predicate::str::contains("restored 0 workspaces"));
+    assert!(!worktree.exists());
+    assert!(!tmux.window_exists("kmux-feature-existing")?);
 
     Ok(())
 }
 
 #[test]
-fn add_open_if_exists_rejects_window_only_partial_workspace() -> Result<()> {
+fn add_rejects_window_only_partial_workspace() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -334,11 +331,153 @@ fn add_open_if_exists_rejects_window_only_partial_workspace() -> Result<()> {
             "tmux window 'kmux-feature-window-only' already exists",
         ));
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/window-only", "-o"])
+        .arg("restore")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored 0 workspaces"));
+    assert!(!worktree.exists());
+
+    Ok(())
+}
+
+#[test]
+fn restore_recreates_all_workspace_windows_without_duplicates() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/one", "--background"])
+        .assert()
+        .success();
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/two", "--background"])
+        .assert()
+        .success();
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-one"])?;
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-two"])?;
+    assert!(!tmux.window_exists("kmux-feature-one")?);
+    assert!(!tmux.window_exists("kmux-feature-two")?);
+    let active_window_before_restore = tmux.current_window_id()?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored feature-one"))
+        .stdout(predicate::str::contains("restored feature-two"));
+    assert_eq!(tmux.current_window_id()?, active_window_before_restore);
+    assert!(tmux.window_exists("kmux-feature-one")?);
+    assert!(tmux.window_exists("kmux-feature-two")?);
+
+    let window_count = tmux.unique_window_count()?;
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success();
+    assert_eq!(tmux.unique_window_count()?, window_count);
+
+    Ok(())
+}
+
+#[test]
+fn restore_reuses_resurrected_window_with_workspace_metadata() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-resurrected");
+    let worktree_path = worktree.display().to_string();
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/resurrected", "--background"])
+        .assert()
+        .success();
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-resurrected"])?;
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "resurrected-feature",
+        "-c",
+        worktree_path.as_str(),
+    ])?;
+    for (option, value) in [
+        ("@kmux_workspace_slug", "feature-resurrected"),
+        ("@kmux_workspace_path", worktree_path.as_str()),
+        ("@kmux_workspace_branch", "feature/resurrected"),
+    ] {
+        tmux.tmux_output(&[
+            "set-option",
+            "-w",
+            "-t",
+            "resurrected-feature",
+            option,
+            value,
+        ])?;
+    }
+    let active_window_before_restore = tmux.current_window_id()?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored feature-resurrected"));
+    assert_eq!(tmux.current_window_id()?, active_window_before_restore);
+    assert!(tmux.window_exists("kmux-feature-resurrected")?);
+    assert!(!tmux.window_exists("resurrected-feature")?);
+    assert_eq!(
+        tmux.window_option("kmux-feature-resurrected", "@kmux_workspace_branch")?,
+        Some("feature/resurrected".to_owned())
+    );
+
+    Ok(())
+}
+
+#[test]
+fn restore_rejects_duplicate_workspace_metadata() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-duplicate");
+    let worktree_path = worktree.display().to_string();
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/duplicate", "--background"])
+        .assert()
+        .success();
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "duplicate-feature",
+        "-c",
+        worktree_path.as_str(),
+    ])?;
+    for (option, value) in [
+        ("@kmux_workspace_slug", "feature-duplicate"),
+        ("@kmux_workspace_path", worktree_path.as_str()),
+        ("@kmux_workspace_branch", "feature/duplicate"),
+    ] {
+        tmux.tmux_output(&["set-option", "-w", "-t", "duplicate-feature", option, value])?;
+    }
+
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
         .assert()
         .failure()
-        .stderr(predicate::str::contains("has no matching worktree"));
-    assert!(!worktree.exists());
+        .stderr(predicate::str::contains(
+            "multiple tmux windows match workspace 'feature-duplicate'",
+        ));
 
     Ok(())
 }
@@ -396,17 +535,15 @@ fn commands_reject_external_worktrees_with_matching_branch() -> Result<()> {
     )?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/external", "--open-if-exists"])
+        .args(["add", "feature/external"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already checked out outside kmux"));
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "feature/external"])
+        .arg("restore")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "workspace 'feature/external' not found",
-        ));
+        .success()
+        .stdout(predicate::str::contains("restored 0 workspaces"));
     kmux(&repo, &config_home, &tmux)?
         .args(["remove", "feature/external", "--force"])
         .assert()
@@ -427,14 +564,12 @@ fn commands_reject_external_worktrees_with_matching_branch() -> Result<()> {
         &["worktree", "add", "-b", "feature/nested", &nested_arg],
     )?;
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "nested-auth"])
+        .arg("restore")
         .assert()
-        .failure()
-        .stderr(predicate::str::contains(
-            "workspace 'nested-auth' not found",
-        ));
+        .success()
+        .stdout(predicate::str::contains("restored 0 workspaces"));
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/nested", "--open-if-exists"])
+        .args(["add", "feature/nested"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("already checked out outside kmux"));
@@ -459,13 +594,13 @@ fn commands_reject_non_branch_derived_kmux_worktree_paths() -> Result<()> {
     )?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/legacy-auth", "-o"])
+        .args(["add", "feature/legacy-auth"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("non-derived kmux workspace path"))
         .stderr(predicate::str::contains("expected 'feature-legacy-auth'"));
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "custom-auth"])
+        .arg("restore")
         .assert()
         .failure()
         .stderr(predicate::str::contains("non-derived kmux workspace path"));
@@ -502,7 +637,7 @@ fn commands_reject_branchless_kmux_worktrees() -> Result<()> {
     )?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["open", "detached"])
+        .arg("restore")
         .assert()
         .failure()
         .stderr(predicate::str::contains("has no known git branch"));

@@ -12,8 +12,8 @@ pub struct Cli {
 pub enum Command {
     /// Create a git branch worktree and tmux window workspace.
     Add(AddArgs),
-    /// Select the tmux window for an existing complete workspace.
-    Open(WorkspaceNameArgs),
+    /// Restore tmux windows for existing workspaces.
+    Restore,
     /// List known workspaces.
     #[command(visible_alias = "ls")]
     List(JsonArgs),
@@ -58,16 +58,6 @@ pub struct AddArgs {
     /// Create the tmux window without switching to it.
     #[arg(short, long)]
     pub background: bool,
-
-    /// Open or repair an existing workspace instead of failing.
-    #[arg(short = 'o', long)]
-    pub open_if_exists: bool,
-}
-
-#[derive(Debug, Args)]
-pub struct WorkspaceNameArgs {
-    /// Workspace slug, branch, or window name.
-    pub name: String,
 }
 
 #[derive(Debug, Args)]

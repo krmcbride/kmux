@@ -122,6 +122,10 @@ impl TmuxFixture {
             .len())
     }
 
+    pub fn current_window_id(&self) -> Result<String> {
+        self.tmux_output(&["display-message", "-p", "-t", "project:", "#{window_id}"])
+    }
+
     pub fn has_one_sidebar_per_window(&self) -> Result<bool> {
         let sidebar_panes = self.sidebar_panes_by_window()?;
         Ok(sidebar_panes.len() == self.unique_window_count()?
