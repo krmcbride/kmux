@@ -117,15 +117,15 @@ fn prepare_zsh_base(script: &str, name: &str) -> String {
 }
 
 fn print_bash_dynamic_completion() {
-    print!("{}", include_str!("completions/bash_dynamic.bash"));
+    print!("{}", include_str!("bash_dynamic.bash"));
 }
 
 fn print_fish_dynamic_completion() {
-    print!("{}", include_str!("completions/fish_dynamic.fish"));
+    print!("{}", include_str!("fish_dynamic.fish"));
 }
 
 fn print_zsh_dynamic_completion() {
-    print!("{}", include_str!("completions/zsh_dynamic.zsh"));
+    print!("{}", include_str!("zsh_dynamic.zsh"));
 }
 
 #[cfg(test)]
