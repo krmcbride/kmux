@@ -273,6 +273,25 @@ pub fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
+pub fn kmux_workspace_state(repo: &Path) -> Result<serde_json::Value> {
+    let path = repo.join(".git/kmux/state.json");
+    serde_json::from_slice(&fs::read(&path)?)
+        .with_context(|| format!("failed to parse {}", path.display()))
+}
+
+pub fn kmux_parent_link(repo: &Path, branch: &str) -> Result<Option<serde_json::Value>> {
+    let state = kmux_workspace_state(repo)?;
+    Ok(state
+        .get("parents")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|links| {
+            links
+                .iter()
+                .find(|link| link.get("branch").and_then(serde_json::Value::as_str) == Some(branch))
+                .cloned()
+        }))
+}
+
 pub fn kmux_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
     let assert = Command::cargo_bin("kmux")?
         .current_dir(cwd)

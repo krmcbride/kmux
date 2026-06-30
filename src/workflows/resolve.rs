@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::path::PathBuf;
 
 use anyhow::{Result, anyhow, bail};
@@ -6,8 +7,10 @@ use serde::Serialize;
 use crate::config::Config;
 use crate::git::WorktreeInfo;
 use crate::slug::workspace_slug_from_branch;
+use crate::state::workspace::{WorkspaceState, WorkspaceStateStore};
 
 use super::context::RepoContext;
+use crate::paths::same_path;
 
 #[derive(Debug)]
 pub(super) struct ResolvedWorkspace {
@@ -16,13 +19,17 @@ pub(super) struct ResolvedWorkspace {
     pub(super) branch: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 pub(super) struct WorkspaceListItem {
     pub(super) workspace_slug: String,
     pub(super) git_branch: Option<String>,
+    pub(super) git_parent_branch: Option<String>,
+    pub(super) git_anchor_commit: Option<String>,
     pub(super) git_worktree_path: String,
     pub(super) is_main: bool,
     pub(super) created_at: Option<u64>,
+    #[serde(skip)]
+    pub(super) tree_depth: usize,
 }
 
 pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<ResolvedWorkspace> {
@@ -33,6 +40,38 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Resolv
     }
 
     bail!("workspace '{}' not found", name)
+}
+
+pub(super) fn resolve_current_kmux_workspace(
+    repo: &RepoContext,
+    command_name: &str,
+) -> Result<ResolvedWorkspace> {
+    if same_path(&repo.paths.current_worktree, &repo.paths.main_worktree) {
+        bail!("{command_name} requires a workspace name when run from the main worktree");
+    }
+
+    let is_current_kmux_worktree = repo
+        .paths
+        .current_worktree
+        .parent()
+        .is_some_and(|parent| same_path(parent, &repo.paths.worktree_base_dir));
+    if !is_current_kmux_worktree {
+        bail!("current worktree is not kmux-managed; pass a workspace name explicitly");
+    }
+
+    let current = repo
+        .git
+        .worktrees()?
+        .into_iter()
+        .find(|worktree| same_path(&worktree.path, &repo.paths.current_worktree))
+        .ok_or_else(|| {
+            anyhow!(
+                "current worktree {} is not registered with git",
+                repo.paths.current_worktree.display()
+            )
+        })?;
+
+    resolved_from_kmux_worktree(repo, current)
 }
 
 pub(super) fn resolved_from_worktree(worktree: WorktreeInfo) -> Result<ResolvedWorkspace> {
@@ -84,12 +123,9 @@ pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceListItem>> {
             .collect::<Result<Vec<_>>>()?,
     );
 
-    items.sort_by(|left, right| match (left.is_main, right.is_main) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => left.workspace_slug.cmp(&right.workspace_slug),
-    });
-    Ok(items)
+    let state = WorkspaceStateStore::new(&repo.paths.git_common_dir).load()?;
+    apply_parent_state(&mut items, &state);
+    Ok(parent_tree_order(items))
 }
 
 pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<ResolvedWorkspace>> {
@@ -160,10 +196,109 @@ fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<Work
     Ok(WorkspaceListItem {
         workspace_slug: resolved.workspace_slug,
         git_branch: resolved.branch,
+        git_parent_branch: None,
+        git_anchor_commit: None,
         git_worktree_path: resolved.path.display().to_string(),
         is_main,
         created_at,
+        tree_depth: 0,
     })
+}
+
+fn apply_parent_state(items: &mut [WorkspaceListItem], state: &WorkspaceState) {
+    for item in items {
+        let Some(branch) = item.git_branch.as_deref() else {
+            continue;
+        };
+        let Some(link) = state.parent_for(branch) else {
+            continue;
+        };
+        item.git_parent_branch = Some(link.parent.clone());
+        item.git_anchor_commit = Some(link.anchor.clone());
+    }
+}
+
+fn parent_tree_order(mut items: Vec<WorkspaceListItem>) -> Vec<WorkspaceListItem> {
+    let branch_set = items
+        .iter()
+        .filter_map(|item| item.git_branch.clone())
+        .collect::<BTreeSet<_>>();
+    let mut children = BTreeMap::<String, Vec<usize>>::new();
+    for (index, item) in items.iter().enumerate() {
+        if let Some(parent) = &item.git_parent_branch
+            && branch_set.contains(parent)
+        {
+            children.entry(parent.clone()).or_default().push(index);
+        }
+    }
+
+    for child_indexes in children.values_mut() {
+        child_indexes.sort_by(|left, right| {
+            item_order_key(&items[*left]).cmp(&item_order_key(&items[*right]))
+        });
+    }
+
+    let mut roots = items
+        .iter()
+        .enumerate()
+        .filter_map(|(index, item)| {
+            let parent_is_present = item
+                .git_parent_branch
+                .as_ref()
+                .is_some_and(|parent| branch_set.contains(parent));
+            (!parent_is_present).then_some(index)
+        })
+        .collect::<Vec<_>>();
+    roots.sort_by(|left, right| item_order_key(&items[*left]).cmp(&item_order_key(&items[*right])));
+
+    let mut ordered = Vec::new();
+    let mut visited = HashSet::new();
+    for root in roots {
+        visit_parent_tree(root, 0, &children, &mut items, &mut visited, &mut ordered);
+    }
+
+    let mut remaining = (0..items.len())
+        .filter(|index| !visited.contains(index))
+        .collect::<Vec<_>>();
+    remaining
+        .sort_by(|left, right| item_order_key(&items[*left]).cmp(&item_order_key(&items[*right])));
+    for index in remaining {
+        visit_parent_tree(index, 0, &children, &mut items, &mut visited, &mut ordered);
+    }
+
+    ordered
+        .into_iter()
+        .map(|index| items[index].clone())
+        .collect()
+}
+
+fn visit_parent_tree(
+    index: usize,
+    depth: usize,
+    children: &BTreeMap<String, Vec<usize>>,
+    items: &mut [WorkspaceListItem],
+    visited: &mut HashSet<usize>,
+    ordered: &mut Vec<usize>,
+) {
+    if !visited.insert(index) {
+        return;
+    }
+    items[index].tree_depth = depth;
+    ordered.push(index);
+
+    let Some(branch) = items[index].git_branch.clone() else {
+        return;
+    };
+    let Some(child_indexes) = children.get(&branch) else {
+        return;
+    };
+    for child in child_indexes {
+        visit_parent_tree(*child, depth + 1, children, items, visited, ordered);
+    }
+}
+
+fn item_order_key(item: &WorkspaceListItem) -> (bool, String) {
+    (!item.is_main, item.workspace_slug.clone())
 }
 
 fn name_candidates(config: &Config, name: &str) -> Vec<String> {

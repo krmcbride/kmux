@@ -12,6 +12,8 @@ pub struct Cli {
 pub enum Command {
     /// Create a git branch worktree and tmux window workspace.
     Add(AddArgs),
+    /// Set the recorded parent branch for a workspace.
+    Parent(ParentArgs),
     /// Restore tmux windows for existing workspaces.
     Restore,
     /// List known workspaces.
@@ -35,7 +37,7 @@ pub enum Command {
     /// Output checkoutable git branch refs for shell completion.
     #[command(name = "_complete-add-branches", hide = true)]
     CompleteAddBranches,
-    /// Output git branch refs for shell completion.
+    /// Output local git branch refs for shell completion.
     #[command(name = "_complete-git-branches", hide = true)]
     CompleteGitBranches,
     /// Record agent session state from an external integration.
@@ -51,13 +53,22 @@ pub struct AddArgs {
     /// Branch to create as a workspace.
     pub branch: String,
 
-    /// Base branch, tag, or commit for a new branch.
+    /// Local parent branch for the new workspace.
     #[arg(long)]
-    pub base: Option<String>,
+    pub parent: Option<String>,
 
     /// Create the tmux window without switching to it.
     #[arg(short, long)]
     pub background: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ParentArgs {
+    /// Child workspace slug/branch, or parent branch when run inside a workspace.
+    pub child_or_parent: String,
+
+    /// Local parent branch for the child workspace.
+    pub parent: Option<String>,
 }
 
 #[derive(Debug, Args)]

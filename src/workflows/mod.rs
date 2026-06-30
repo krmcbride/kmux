@@ -7,6 +7,7 @@ mod context;
 mod files;
 mod list;
 mod metadata;
+mod parent;
 mod remove;
 mod resolve;
 mod restore;
@@ -14,6 +15,10 @@ mod window;
 
 pub fn run_add(args: cli::AddArgs) -> Result<()> {
     add::run(args)
+}
+
+pub fn run_parent(args: cli::ParentArgs) -> Result<()> {
+    parent::run(args)
 }
 
 pub fn run_restore() -> Result<()> {

@@ -42,7 +42,8 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
     let rows = items
         .iter()
         .map(|item| DisplayRow {
-            branch: item.git_branch.as_deref().unwrap_or("-").to_owned(),
+            branch: format_branch(item),
+            parent: item.git_parent_branch.as_deref().unwrap_or("-").to_owned(),
             age: format_age(item, now),
             agent: format_agent(item, &agents, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
@@ -57,11 +58,20 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
 
 struct DisplayRow {
     branch: String,
+    parent: String,
     age: String,
     agent: String,
     mux: String,
     unmerged: String,
     path: String,
+}
+
+fn format_branch(item: &WorkspaceListItem) -> String {
+    let branch = item.git_branch.as_deref().unwrap_or("-");
+    if item.tree_depth == 0 {
+        return branch.to_owned();
+    }
+    format!("{}{}", "  ".repeat(item.tree_depth), branch)
 }
 
 fn format_age(item: &WorkspaceListItem, now: u64) -> String {
@@ -189,7 +199,9 @@ fn format_path(path: &Path, current_dir: &Path) -> String {
 }
 
 fn print_table(rows: &[DisplayRow]) {
-    let headers = ["BRANCH", "AGE", "AGENT", "MUX", "UNMERGED", "PATH"];
+    let headers = [
+        "BRANCH", "PARENT", "AGE", "AGENT", "MUX", "UNMERGED", "PATH",
+    ];
     let mut widths = headers.map(str::len);
 
     for row in rows {
@@ -205,9 +217,10 @@ fn print_table(rows: &[DisplayRow]) {
     }
 }
 
-fn row_values(row: &DisplayRow) -> [&str; 6] {
+fn row_values(row: &DisplayRow) -> [&str; 7] {
     [
         &row.branch,
+        &row.parent,
         &row.age,
         &row.agent,
         &row.mux,
@@ -216,7 +229,7 @@ fn row_values(row: &DisplayRow) -> [&str; 6] {
     ]
 }
 
-fn format_row(values: &[&str; 6], widths: &[usize; 6]) -> String {
+fn format_row(values: &[&str; 7], widths: &[usize; 7]) -> String {
     values
         .iter()
         .enumerate()

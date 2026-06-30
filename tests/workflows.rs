@@ -7,8 +7,32 @@ use predicates::prelude::*;
 
 use support::{
     TmuxFixture, delete_opencode_agent_observation_args, git, git_stdout, init_repo, kmux,
-    kmux_with_pane, run, set_opencode_status_args, write_config,
+    kmux_parent_link, kmux_with_pane, run, set_opencode_status_args, write_config,
 };
+
+fn assert_parent_link(repo: &std::path::Path, branch: &str, parent: &str) -> Result<String> {
+    let link = kmux_parent_link(repo, branch)?
+        .ok_or_else(|| anyhow::anyhow!("parent link for '{branch}' not found"))?;
+    assert_eq!(
+        link.get("branch").and_then(serde_json::Value::as_str),
+        Some(branch)
+    );
+    assert_eq!(
+        link.get("parent").and_then(serde_json::Value::as_str),
+        Some(parent)
+    );
+    let anchor = link
+        .get("anchor")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("parent link anchor missing"))?;
+    assert!(!anchor.is_empty());
+    Ok(anchor.to_owned())
+}
+
+fn assert_no_parent_link(repo: &std::path::Path, branch: &str) -> Result<()> {
+    assert!(kmux_parent_link(repo, branch)?.is_none());
+    Ok(())
+}
 
 #[test]
 fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
@@ -34,6 +58,7 @@ status_icons:
         .success()
         .stdout(predicate::str::contains("created feature-auth"));
     assert!(worktree.is_dir());
+    assert_parent_link(&repo, "feature/auth", "main")?;
     assert!(tmux.window_exists("kmux-feature-auth")?);
 
     kmux(&repo, &config_home, &tmux)?
@@ -180,6 +205,7 @@ status_icons:
     assert!(!worktree.exists());
     assert!(!tmux.window_exists("kmux-feature-auth")?);
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/auth"]).is_err());
+    assert_no_parent_link(&repo, "feature/auth")?;
 
     Ok(())
 }
@@ -237,6 +263,53 @@ files:
 }
 
 #[test]
+fn add_records_explicit_parent_branch() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    git(&repo, &["branch", "integration"])?;
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/explicit-parent",
+            "--parent",
+            "integration",
+            "--background",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created feature-explicit-parent"));
+
+    assert_parent_link(&repo, "feature/explicit-parent", "integration")?;
+    Ok(())
+}
+
+#[test]
+fn add_from_detached_head_without_parent_uses_parent_error_wording() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let head = git_stdout(&repo, &["rev-parse", "HEAD"])?;
+    git(&repo, &["checkout", "--detach", &head])?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/detached", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "cannot create a branch from detached HEAD without --parent",
+        ))
+        .stderr(predicate::str::contains("--base").not());
+
+    Ok(())
+}
+
+#[test]
 fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
@@ -255,7 +328,13 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
     let worktree = temp.path().join("project__worktrees/remote-only");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "origin/remote-only", "--background"])
+        .args([
+            "add",
+            "origin/remote-only",
+            "--parent",
+            "main",
+            "--background",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("created remote-only"));
@@ -270,7 +349,188 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
         )?,
         "origin/remote-only"
     );
+    assert_parent_link(&repo, "remote-only", "main")?;
     assert!(tmux.window_exists("kmux-remote-only")?);
+
+    Ok(())
+}
+
+#[test]
+fn parent_command_sets_replaces_and_defaults_child_to_current_workspace() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    git(&repo, &["branch", "feature/base"])?;
+    git(&repo, &["branch", "feature/short"])?;
+    let worktree = temp.path().join("project__worktrees/feature-child");
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/child", "--background"])
+        .assert()
+        .success();
+    assert_parent_link(&repo, "feature/child", "main")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-child", "feature/base"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "set parent of feature/child to feature/base",
+        ));
+    assert_parent_link(&repo, "feature/child", "feature/base")?;
+
+    kmux_with_pane(&worktree, &config_home, &tmux, &tmux.pane_id)?
+        .args(["parent", "feature/short"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "set parent of feature/child to feature/short",
+        ));
+    assert_parent_link(&repo, "feature/child", "feature/short")?;
+    assert!(repo.join(".git/kmux/state.json").is_file());
+    assert!(!worktree.join(".git/kmux/state.json").exists());
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "main"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "parent requires a workspace name when run from the main worktree",
+        ));
+
+    Ok(())
+}
+
+#[test]
+fn parent_command_rejects_invalid_relationships_before_writing_state() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/child", "--background"])
+        .assert()
+        .success();
+    let original_anchor = assert_parent_link(&repo, "feature/child", "main")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "missing-child", "main"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace 'missing-child' not found",
+        ));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-child", "missing-parent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "parent branch 'missing-parent' does not exist locally",
+        ));
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-child", "feature/child"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("cannot be its own parent"));
+
+    git(&repo, &["checkout", "--orphan", "orphan-parent"])?;
+    fs::remove_file(repo.join("README.md"))?;
+    fs::write(repo.join("orphan.txt"), "orphan\n")?;
+    git(&repo, &["add", "orphan.txt"])?;
+    git(&repo, &["commit", "-m", "orphan"])?;
+    git(&repo, &["checkout", "main"])?;
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-child", "orphan-parent"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("have no merge base"));
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/grandchild", "--background"])
+        .assert()
+        .success();
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-grandchild", "feature/child"])
+        .assert()
+        .success();
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-child", "feature/grandchild"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("would create a cycle"));
+
+    assert_eq!(
+        assert_parent_link(&repo, "feature/child", "main")?,
+        original_anchor
+    );
+    Ok(())
+}
+
+#[test]
+fn list_renders_parent_tree_order_and_json_parent_fields() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+
+    for branch in ["feature/child", "feature/sibling", "feature/grandchild"] {
+        kmux(&repo, &config_home, &tmux)?
+            .args(["add", branch, "--background"])
+            .assert()
+            .success();
+    }
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-grandchild", "feature/child"])
+        .assert()
+        .success();
+    git(&repo, &["branch", "feature/root-only"])?;
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-sibling", "feature/root-only"])
+        .assert()
+        .success();
+
+    let list = kmux(&repo, &config_home, &tmux)?
+        .arg("ls")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&list.get_output().stdout);
+    assert!(stdout.contains("PARENT"));
+    assert!(stdout.contains("  feature/child"));
+    assert!(stdout.contains("    feature/grandchild"));
+    assert!(stdout.contains("feature/root-only"));
+    let main_line = stdout
+        .lines()
+        .position(|line| line.contains("main"))
+        .expect("main row should render");
+    let child_line = stdout
+        .lines()
+        .position(|line| line.contains("feature/child"))
+        .expect("child row should render");
+    let grandchild_line = stdout
+        .lines()
+        .position(|line| line.contains("feature/grandchild"))
+        .expect("grandchild row should render");
+    let sibling_line = stdout
+        .lines()
+        .position(|line| line.contains("feature/sibling"))
+        .expect("sibling row should render");
+    assert!(main_line < child_line);
+    assert!(child_line < grandchild_line);
+    assert!(grandchild_line < sibling_line);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["list", "--json"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "\"git_parent_branch\": \"feature/child\"",
+        ))
+        .stdout(predicate::str::contains("\"git_anchor_commit\""));
 
     Ok(())
 }
@@ -517,6 +777,40 @@ fn remove_without_name_targets_current_kmux_workspace() -> Result<()> {
     assert!(!tmux.window_exists("kmux-feature-current")?);
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/current"]).is_err());
 
+    Ok(())
+}
+
+#[test]
+fn remove_warns_when_other_links_still_reference_removed_branch() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/parent", "--background"])
+        .assert()
+        .success();
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/child", "--background"])
+        .assert()
+        .success();
+    kmux(&repo, &config_home, &tmux)?
+        .args(["parent", "feature-child", "feature/parent"])
+        .assert()
+        .success();
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-parent"])
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "parent links still reference removed branch 'feature/parent': feature/child",
+        ));
+
+    assert_no_parent_link(&repo, "feature/parent")?;
+    assert_parent_link(&repo, "feature/child", "feature/parent")?;
     Ok(())
 }
 

@@ -5,6 +5,7 @@ use crate::{agent, cli, completions, workflows};
 pub fn dispatch(command: cli::Command) -> Result<()> {
     match command {
         cli::Command::Add(args) => workflows::run_add(args),
+        cli::Command::Parent(args) => workflows::run_parent(args),
         cli::Command::Restore => workflows::run_restore(),
         cli::Command::List(args) => workflows::run_list(args),
         cli::Command::Remove(args) => workflows::run_remove(args),

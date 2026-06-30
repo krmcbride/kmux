@@ -13,6 +13,12 @@ pub struct StateStore {
     base_path: PathBuf,
 }
 
+pub fn now_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs())
+}
+
 impl StateStore {
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("could not determine state directory")?;
@@ -110,12 +116,6 @@ impl StateStore {
     fn observation_path(&self, key: &AgentObservationKey) -> PathBuf {
         self.observations_dir().join(observation_filename(key))
     }
-}
-
-pub fn now_unix_seconds() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_secs())
 }
 
 fn read_observation_file(path: &Path) -> Result<Option<AgentObservationState>> {

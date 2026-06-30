@@ -9,7 +9,7 @@ _kmux_add_branches() {
     kmux _complete-add-branches 2>/dev/null
 }
 
-# Branch refs for ref-valued options such as add --base.
+# Local branch refs for parent-valued arguments.
 _kmux_git_branches() {
     kmux _complete-git-branches 2>/dev/null
 }
@@ -38,13 +38,30 @@ _kmux_dynamic() {
                 ;;
             add)
                 case "$prev" in
-                    --base)
+                    --parent)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
                         return
                         ;;
                 esac
                 if [[ "$cur" != -* ]]; then
                     COMPREPLY=($(compgen -W "$(_kmux_add_branches)" -- "$cur"))
+                    return
+                fi
+                ;;
+            parent)
+                if [[ "$cur" != -* ]]; then
+                    local positional_before=0
+                    local index
+                    for ((index = 2; index < cword; index++)); do
+                        if [[ "${words[index]}" != -* ]]; then
+                            ((positional_before++))
+                        fi
+                    done
+                    if (( positional_before >= 1 )); then
+                        COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "$(_kmux_workspaces) $(_kmux_git_branches)" -- "$cur"))
+                    fi
                     return
                 fi
                 ;;

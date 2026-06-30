@@ -125,7 +125,7 @@ impl Git {
 
     pub fn require_current_branch(&self) -> Result<String> {
         self.current_branch()?
-            .ok_or_else(|| anyhow!("cannot create a branch from detached HEAD without --base"))
+            .ok_or_else(|| anyhow!("cannot create a branch from detached HEAD without --parent"))
     }
 
     pub fn local_branch_exists(&self, branch: &str) -> Result<bool> {
@@ -160,30 +160,50 @@ impl Git {
         }
     }
 
-    pub fn ensure_local_branch(&self, branch: &str, base: Option<&str>) -> Result<BranchAction> {
+    pub fn ensure_local_branch(
+        &self,
+        branch: &str,
+        start_point: Option<&str>,
+    ) -> Result<BranchAction> {
         if self.local_branch_exists(branch)? {
             return Ok(BranchAction::Existing);
         }
 
-        let base = if let Some(base) = base {
-            base.to_owned()
+        let start_point = if let Some(start_point) = start_point {
+            start_point.to_owned()
         } else {
             self.require_current_branch()?
         };
 
-        if !self.commit_ref_exists(&base)? {
-            bail!("base ref '{base}' does not resolve to a commit");
+        if !self.commit_ref_exists(&start_point)? {
+            bail!("start point '{start_point}' does not resolve to a commit");
         }
 
         self.stdout(vec![
             OsString::from("branch"),
             OsString::from(branch),
-            OsString::from(&base),
+            OsString::from(&start_point),
         ])?;
-        if self.remote_tracking_branch_exists(&base)? {
-            self.set_branch_upstream(branch, &base)?;
+        if self.remote_tracking_branch_exists(&start_point)? {
+            self.set_branch_upstream(branch, &start_point)?;
         }
         Ok(BranchAction::Created)
+    }
+
+    pub fn merge_base(&self, left: &str, right: &str) -> Result<Option<String>> {
+        let output = self.output(["merge-base", left, right])?;
+        if output.status.success() {
+            let anchor = output.stdout.trim();
+            if anchor.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(anchor.to_owned()))
+            }
+        } else if output.status.code() == Some(1) {
+            Ok(None)
+        } else {
+            bail_git(output)
+        }
     }
 
     pub fn set_branch_upstream(&self, branch: &str, upstream: &str) -> Result<()> {
@@ -208,6 +228,16 @@ impl Git {
             "--sort=refname",
             "refs/heads/",
             "refs/remotes/",
+        ])?;
+        Ok(non_empty_branch_refs(&output))
+    }
+
+    pub fn local_branch_refs(&self) -> Result<Vec<String>> {
+        let output = self.stdout([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=refname",
+            "refs/heads/",
         ])?;
         Ok(non_empty_branch_refs(&output))
     }
@@ -734,7 +764,7 @@ prunable gitdir file points to non-existent location\n";
     }
 
     #[test]
-    fn creates_branch_from_explicit_base() -> Result<()> {
+    fn creates_branch_from_explicit_start_point() -> Result<()> {
         let (_temp, repo) = init_repo()?;
         let git_repo = Git::new(&repo);
         let initial_rev = git_repo.stdout(["rev-parse", "main"])?;
@@ -747,6 +777,35 @@ prunable gitdir file points to non-existent location\n";
         );
         assert_eq!(git_repo.stdout(["rev-parse", "from-initial"])?, initial_rev);
         assert!(!git_repo.commit_ref_exists("missing-ref")?);
+        Ok(())
+    }
+
+    #[test]
+    fn returns_merge_base_when_branches_share_history() -> Result<()> {
+        let (_temp, repo) = init_repo()?;
+        let git_repo = Git::new(&repo);
+        let initial_rev = git_repo.stdout(["rev-parse", "main"])?;
+        git_repo.ensure_local_branch("feature/auth", Some("main"))?;
+        commit_file(&repo, "later.txt", "later\n", "later")?;
+
+        assert_eq!(
+            git_repo.merge_base("feature/auth", "main")?.as_deref(),
+            Some(initial_rev.as_str())
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn returns_none_when_branches_have_no_merge_base() -> Result<()> {
+        let (_temp, repo) = init_repo()?;
+        let git_repo = Git::new(&repo);
+        git_repo.ensure_local_branch("feature/auth", Some("main"))?;
+        git(&repo, &["checkout", "--orphan", "orphan-parent"])?;
+        fs::remove_file(repo.join("README.md"))?;
+        commit_file(&repo, "orphan.txt", "orphan\n", "orphan")?;
+        git(&repo, &["checkout", "main"])?;
+
+        assert_eq!(git_repo.merge_base("feature/auth", "orphan-parent")?, None);
         Ok(())
     }
 

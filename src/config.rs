@@ -11,7 +11,6 @@ pub const DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS: u64 = 30 * 60;
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
-    pub base_branch: Option<String>,
     pub window_prefix: Option<String>,
     pub panes: Option<Vec<PaneConfig>>,
     pub post_create: Vec<String>,
@@ -342,6 +341,22 @@ sidebar: {width: 42, idle_after_seconds: 900}
     fn rejects_unsupported_config_fields() {
         let error = Config::from_yaml_str("sandbox: {}\n")
             .expect_err("unsupported config field should fail");
+
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn rejects_removed_base_branch_config_key() {
+        let error = Config::from_yaml_str("base_branch: main\n")
+            .expect_err("removed config field should fail");
+
+        assert!(error.to_string().contains("unknown field"));
+    }
+
+    #[test]
+    fn rejects_deferred_parent_branch_config_key() {
+        let error = Config::from_yaml_str("parent_branch: main\n")
+            .expect_err("deferred config field should fail");
 
         assert!(error.to_string().contains("unknown field"));
     }

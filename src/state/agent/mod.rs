@@ -1,17 +1,18 @@
-pub mod workspace;
+mod model;
+mod store;
+mod timing;
 
-mod agent;
-
-pub use agent::{
+pub use model::{
     AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey, AgentStatus,
-    StateStore, next_observation_timing, now_unix_seconds,
 };
+pub use store::{StateStore, now_unix_seconds};
+pub use timing::next_observation_timing;
 
 #[cfg(test)]
-pub mod test_support {
+pub(super) mod test_support {
     pub fn store_with_path(
         base_path: impl Into<std::path::PathBuf>,
     ) -> anyhow::Result<super::StateStore> {
-        super::agent::test_support::store_with_path(base_path)
+        super::StateStore::with_path(base_path)
     }
 }

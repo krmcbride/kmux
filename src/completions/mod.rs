@@ -102,7 +102,7 @@ fn checkoutable_branch_refs() -> Vec<String> {
 
 fn local_branches() -> Vec<String> {
     local_repo_git()
-        .and_then(|git| git.branch_refs().ok())
+        .and_then(|git| git.local_branch_refs().ok())
         .unwrap_or_default()
 }
 

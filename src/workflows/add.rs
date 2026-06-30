@@ -5,11 +5,13 @@ use crate::slug::workspace_slug_from_branch;
 
 use super::context::{load_repo_context, load_tmux_context};
 use super::files::{apply_file_operations, run_post_create};
+use super::parent::{record_parent, validate_no_cycle};
 use super::resolve::{
     ResolvedWorkspace, find_kmux_workspace_by_name, find_kmux_workspace_by_slug,
     resolved_from_kmux_worktree,
 };
 use super::window::create_resolved;
+use crate::state::workspace::WorkspaceStateStore;
 
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let repo = load_repo_context()?;
@@ -59,10 +61,31 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
             target.branch
         );
     }
+    if target.branch == target.parent {
+        bail!(
+            "workspace branch '{}' cannot be its own parent",
+            target.branch
+        );
+    }
+    if !repo.git.local_branch_exists(&target.parent)? {
+        bail!("parent branch '{}' does not exist locally", target.parent);
+    }
+    let state_store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
+    let state = state_store.load()?;
+    validate_no_cycle(&state, &target.branch, &target.parent)?;
+    repo.git
+        .merge_base(&target.start_point, &target.parent)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "branches '{}' and '{}' have no merge base",
+                target.branch,
+                target.parent
+            )
+        })?;
 
     repo.git.ensure_available_worktree_path(&worktree_path)?;
     repo.git
-        .ensure_local_branch(&target.branch, target.base.as_deref())?;
+        .ensure_local_branch(&target.branch, Some(&target.start_point))?;
     repo.git.add_worktree(&worktree_path, &target.branch)?;
     apply_file_operations(&repo.config, &repo.paths.main_worktree, &worktree_path)?;
     run_post_create(
@@ -75,9 +98,10 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let resolved = ResolvedWorkspace {
         workspace_slug,
         path: worktree_path,
-        branch: Some(target.branch),
+        branch: Some(target.branch.clone()),
     };
     create_resolved(&repo, &tmux, &resolved, !args.background)?;
+    record_parent(&repo, &target.branch, &target.parent)?;
     println!(
         "created {}\t{}",
         resolved.workspace_slug,
@@ -105,32 +129,31 @@ fn bail_existing_workspace(expected_branch: &str, resolved: ResolvedWorkspace) -
 
 struct AddTarget {
     branch: String,
-    base: Option<String>,
+    start_point: String,
+    parent: String,
 }
 
 impl AddTarget {
     fn resolve(repo: &super::context::RepoContext, args: &cli::AddArgs) -> Result<Self> {
-        if let Some(remote) = repo.git.known_remote_branch(&args.branch)? {
-            if args.base.is_some() {
-                bail!(
-                    "cannot use --base with remote branch '{}'; the remote branch is already the base",
-                    args.branch
-                );
-            }
+        let parent = args
+            .parent
+            .as_ref()
+            .cloned()
+            .map(Ok)
+            .unwrap_or_else(|| repo.git.require_current_branch())?;
 
+        if let Some(remote) = repo.git.known_remote_branch(&args.branch)? {
             return Ok(Self {
                 branch: remote.branch,
-                base: Some(remote.ref_name),
+                start_point: remote.ref_name,
+                parent,
             });
         }
 
         Ok(Self {
             branch: args.branch.clone(),
-            base: args
-                .base
-                .as_ref()
-                .or(repo.config.base_branch.as_ref())
-                .cloned(),
+            start_point: parent.clone(),
+            parent,
         })
     }
 }

@@ -15,7 +15,7 @@ _kmux_add_branches() {
     (( ${#branches} )) && compadd -a branches
 }
 
-# Branch refs for ref-valued options such as add --base.
+# Local branch refs for parent-valued arguments.
 _kmux_git_branches() {
     local -a branches
     branches=("${(@f)$(kmux _complete-git-branches 2>/dev/null)}")
@@ -30,7 +30,7 @@ _kmux() {
 
     local cmd="${words[2]}"
 
-    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--base" ]]; then
+    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--parent" ]]; then
         _kmux_git_branches
         return
     fi
@@ -49,6 +49,19 @@ _kmux() {
             ;;
         add)
             _kmux_add_branches
+            ;;
+        parent)
+            local positional_before=0
+            local index
+            for ((index = 3; index < CURRENT; index++)); do
+                [[ "${words[index]}" != -* ]] && ((positional_before++))
+            done
+            if (( positional_before >= 1 )); then
+                _kmux_git_branches
+            else
+                _kmux_workspaces
+                _kmux_git_branches
+            fi
             ;;
         *)
             _kmux_base "$@"
