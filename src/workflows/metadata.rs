@@ -7,6 +7,7 @@ use crate::tmux::{
 
 use super::resolve::ResolvedWorkspace;
 
+/// Set kmux workspace metadata on a named tmux window in a session.
 pub(super) fn set_workspace_metadata(
     tmux: &Tmux,
     session_name: &str,
@@ -17,6 +18,7 @@ pub(super) fn set_workspace_metadata(
     set_workspace_metadata_target(tmux, &target, resolved)
 }
 
+/// Set kmux workspace metadata on an arbitrary tmux target.
 pub(super) fn set_workspace_metadata_target(
     tmux: &Tmux,
     target: &str,

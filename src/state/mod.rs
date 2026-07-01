@@ -9,6 +9,7 @@ pub use agent::{
 
 #[cfg(test)]
 pub mod test_support {
+    /// Open an agent state store at a caller-provided path for tests.
     pub fn store_with_path(
         base_path: impl Into<std::path::PathBuf>,
     ) -> anyhow::Result<super::StateStore> {

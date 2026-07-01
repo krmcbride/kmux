@@ -5,6 +5,7 @@ use crate::config::StatusIcons;
 use crate::state::{AgentSessionKey, AgentStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Icon set precomputed for rendering sidebar rows.
 pub(super) struct SidebarIcons {
     working: String,
     waiting: String,
@@ -13,6 +14,7 @@ pub(super) struct SidebarIcons {
 }
 
 impl SidebarIcons {
+    /// Capture configured status icons into the sidebar row model.
     pub(super) fn from_config(status_icons: &StatusIcons) -> Self {
         Self {
             working: status_icons.working().to_owned(),
@@ -24,12 +26,14 @@ impl SidebarIcons {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Stable logical identity for a sidebar row.
 pub(super) struct SidebarRowIdentity {
     agent_kind: String,
     session_id: String,
 }
 
 impl SidebarRowIdentity {
+    /// Convert row identity back into a store key for session deletion.
     pub(super) fn session_key(&self) -> AgentSessionKey {
         AgentSessionKey {
             agent_kind: self.agent_kind.clone(),
@@ -46,6 +50,7 @@ impl SidebarRowIdentity {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Display state derived from agent status and idle age.
 pub(super) enum SidebarRowState {
     Working,
     Waiting,
@@ -73,6 +78,7 @@ impl SidebarRowState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Presentation-ready row rendered by the sidebar TUI.
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
     created_at: u64,
@@ -89,10 +95,12 @@ pub(super) struct SidebarRow {
 }
 
 impl SidebarRow {
+    /// Return whether this row is an old completed agent shown in the idle style.
     pub(super) fn is_idle(&self) -> bool {
         self.state.is_idle()
     }
 
+    /// Return whether this row is currently working and should use spinner frames.
     pub(super) fn is_working(&self) -> bool {
         self.state.is_working()
     }
@@ -160,6 +168,7 @@ impl SidebarRow {
     }
 }
 
+/// Build sorted sidebar rows from reconciled agent session views.
 pub(super) fn build_rows_with_working_icon(
     views: &[AgentSessionView],
     now: u64,
@@ -198,10 +207,12 @@ pub(super) fn build_rows_with_working_icon(
     rows
 }
 
+/// Return the row index associated with a tmux window id.
 pub(super) fn row_index_by_window(rows: &[SidebarRow], window_id: &str) -> Option<usize> {
     rows.iter().position(|row| row.window_id == window_id)
 }
 
+/// Return the row index associated with a logical agent session identity.
 pub(super) fn row_index_by_identity(
     rows: &[SidebarRow],
     identity: &SidebarRowIdentity,
@@ -209,11 +220,14 @@ pub(super) fn row_index_by_identity(
     rows.iter().position(|row| &row.identity == identity)
 }
 
+/// Return the row index associated with a tmux pane id.
 pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<usize> {
     rows.iter()
         .position(|row| row.pane_id.as_deref() == Some(pane_id))
 }
 
+// Primary label should be stable and repo-oriented; fall back through paths,
+// tmux window name, and finally session id.
 fn repo_label(view: &AgentSessionView) -> String {
     clean_label(view.target.git_repo_name.as_deref())
         .or_else(|| path_label(view.target.git_repo_path.as_deref()))
@@ -223,6 +237,7 @@ fn repo_label(view: &AgentSessionView) -> String {
         .unwrap_or_else(|| view.key.session_id.clone())
 }
 
+// Secondary label should add distinguishing context without repeating primary.
 fn branch_label(view: &AgentSessionView, primary: &str) -> String {
     clean_label(view.target.git_branch.as_deref())
         .or_else(|| distinct_label(view.target.kmux_workspace_slug.as_deref(), primary))

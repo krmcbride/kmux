@@ -3,8 +3,10 @@ use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_wor
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
 use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus, StateStore};
 
+/// Sleeping icon used by sidebar tests to assert idle-row rendering.
 pub(super) const TEST_SLEEPING_ICON: &str = "z";
 
+/// Build deterministic sidebar icons for tests.
 pub(super) fn test_icons() -> SidebarIcons {
     SidebarIcons::from_config(&StatusIcons {
         working: Some("?".to_owned()),
@@ -15,6 +17,7 @@ pub(super) fn test_icons() -> SidebarIcons {
     })
 }
 
+/// Build the first sidebar row generated from a single agent session view.
 pub(super) fn row_from_view(view: &AgentSessionView, now: u64) -> SidebarRow {
     let icons = test_icons();
     build_rows_with_working_icon(
@@ -27,6 +30,7 @@ pub(super) fn row_from_view(view: &AgentSessionView, now: u64) -> SidebarRow {
     .remove(0)
 }
 
+/// Build an agent session view with stable tmux, repo, workspace, and pane metadata.
 pub(super) fn report_state(
     status: AgentStatus,
     status_changed_at: u64,
@@ -64,6 +68,7 @@ pub(super) fn report_state(
     }
 }
 
+/// Build the standard sidebar test agent state.
 pub(super) fn agent_state(
     status: AgentStatus,
     status_changed_at: u64,
@@ -73,6 +78,7 @@ pub(super) fn agent_state(
     report_state(status, status_changed_at, window_id, pane_id)
 }
 
+/// Create an isolated empty state store for sidebar unit tests.
 pub(super) fn empty_state_store() -> StateStore {
     use std::time::{SystemTime, UNIX_EPOCH};
 

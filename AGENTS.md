@@ -12,7 +12,9 @@ These instructions apply to this repository in addition to the user-level agent 
   - public free functions before private helper functions
 - Keep tests at the bottom of each module behind `#[cfg(test)] mod tests`.
 - Extract shared test setup into `test_support` modules when it improves readability or avoids broadening production visibility.
+- Do not widen production visibility only for tests. Same-module tests should exercise private helpers directly; shared test-only constructors, fixtures, and helpers should live behind `#[cfg(test)]` in a local `test_support` module or a test-only impl on the owning type.
 - Avoid broad utility modules. Put behavior in the module that owns the concept.
+- Add Rust doc comments to public functions and methods to explain the behavior, invariants, and side effects that are not obvious from the signature. Add brief comments to non-trivial private helpers when they encode workflow policy, parsing rules, filesystem layout, subprocess behavior, or other mental-model context useful during code review.
 
 ## Architecture Boundaries
 
@@ -22,4 +24,3 @@ These instructions apply to this repository in addition to the user-level agent 
 - Keep UI code cordoned off as presentation. Terminal tables, sidebar/TUI rendering, and shell completion scripts should format or adapt data, not own workspace lifecycle rules, state mutation policy, or Git/tmux subprocess behavior.
 - `src/state/agent/` is XDG-backed external agent observation persistence.
 - `src/state/workspace.rs` is Git-common-dir-backed workspace graph persistence for local repo/worktree metadata.
-- Do not reuse agent observation state for workspace graph data. These lifecycles are intentionally different.

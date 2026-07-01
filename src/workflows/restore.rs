@@ -4,6 +4,7 @@ use super::context::{load_repo_context, load_tmux_context};
 use super::resolve::strict_kmux_workspaces;
 use super::window::restore_resolved;
 
+/// Recreate or repair tmux windows for existing strict kmux Git worktrees only.
 pub(super) fn run() -> Result<()> {
     let repo = load_repo_context()?;
     let tmux = load_tmux_context()?;

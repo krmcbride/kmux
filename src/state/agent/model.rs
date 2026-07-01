@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+/// Persisted lifecycle status reported by an external agent producer.
 pub enum AgentStatus {
     Working,
     Waiting,
@@ -9,6 +10,7 @@ pub enum AgentStatus {
 }
 
 impl AgentStatus {
+    /// Return the serialized status label used in tables and persisted state.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Working => "working",
@@ -19,12 +21,14 @@ impl AgentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Logical agent session identity shared by multiple observation producers.
 pub struct AgentSessionKey {
     pub agent_kind: String,
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+/// Unique persisted observation identity for one session producer.
 pub struct AgentObservationKey {
     pub session: AgentSessionKey,
     pub producer_kind: String,
@@ -32,6 +36,7 @@ pub struct AgentObservationKey {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+/// Optional location metadata used to attach agent sessions to tmux and Git workspaces.
 pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_instance: Option<String>,
@@ -64,6 +69,7 @@ pub struct AgentLocationHints {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Latest observed state from one producer for one logical agent session.
 pub struct AgentObservationState {
     pub key: AgentObservationKey,
     #[serde(default)]
@@ -85,6 +91,7 @@ pub struct AgentObservationState {
 }
 
 impl AgentObservationState {
+    /// Return the best available creation time for observations written by older kmux versions.
     pub fn effective_created_at(&self) -> u64 {
         if self.created_at != 0 {
             return self.created_at;

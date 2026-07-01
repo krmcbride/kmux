@@ -5,6 +5,7 @@ use std::process::{Command, ExitStatus};
 use anyhow::{Context, Result, bail};
 
 #[derive(Debug, Clone, Default)]
+/// Thin adapter for running tmux commands, optionally against a specific socket.
 pub struct Tmux {
     socket_name: Option<OsString>,
     clear_client_env: bool,
@@ -12,6 +13,7 @@ pub struct Tmux {
 }
 
 #[derive(Debug)]
+/// Raw tmux subprocess output with UTF-8-lossy stdout and stderr text.
 pub struct TmuxOutput {
     pub status: ExitStatus,
     pub stdout: String,
@@ -19,6 +21,7 @@ pub struct TmuxOutput {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Current tmux session, window, and pane identity for command workflows.
 pub struct TmuxContext {
     pub session_name: String,
     pub session_id: String,
@@ -28,6 +31,7 @@ pub struct TmuxContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// tmux window metadata, including kmux workspace options when present.
 pub struct TmuxWindow {
     pub session_name: String,
     pub window_id: String,
@@ -40,6 +44,7 @@ pub struct TmuxWindow {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Minimal pane metadata used for sidebar ownership and cleanup.
 pub struct TmuxPane {
     pub session_name: String,
     pub window_id: String,
@@ -48,6 +53,7 @@ pub struct TmuxPane {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Point-in-time pane data used to reconcile agent observations with tmux state.
 pub struct TmuxPaneSnapshot {
     pub session_name: String,
     pub window_id: String,
@@ -68,28 +74,35 @@ pub struct TmuxPaneSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Size specification for creating a tmux split.
 pub enum TmuxSplitSize {
     Cells(u16),
     Percent(u16),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Visibility state for a tmux pane and its containing window.
 pub struct TmuxPaneVisibility {
     pub pane_has_focus: bool,
     pub window_visible: bool,
 }
 
+/// tmux window option storing the kmux workspace slug.
 pub const KMUX_WORKSPACE_SLUG_OPTION: &str = "@kmux_workspace_slug";
+/// tmux window option storing the workspace filesystem path.
 pub const KMUX_WORKSPACE_PATH_OPTION: &str = "@kmux_workspace_path";
+/// tmux window option storing the workspace Git branch name.
 pub const KMUX_WORKSPACE_BRANCH_OPTION: &str = "@kmux_workspace_branch";
 
 const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
 
 impl Tmux {
+    /// Create an adapter for the default tmux socket and current process environment.
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// Create an adapter from kmux-specific environment overrides.
     pub fn from_env() -> Self {
         let mut tmux = if let Some(socket_name) = std::env::var_os("KMUX_TMUX_SOCKET_NAME") {
             Self::with_socket_name(socket_name)
@@ -104,19 +117,7 @@ impl Tmux {
         tmux
     }
 
-    pub fn with_socket_name(socket_name: impl Into<OsString>) -> Self {
-        Self {
-            socket_name: Some(socket_name.into()),
-            clear_client_env: true,
-            env: Vec::new(),
-        }
-    }
-
-    pub fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
-        self.env.push((key.into(), value.into()));
-        self
-    }
-
+    /// Return a stable identifier for the tmux instance observed by this adapter.
     pub fn instance_id(&self) -> String {
         self.socket_name
             .as_ref()
@@ -125,6 +126,7 @@ impl Tmux {
             .unwrap_or_else(|| "default".to_owned())
     }
 
+    /// Run a tmux command and return raw output without requiring a successful exit status.
     pub fn output<I, S>(&self, args: I) -> Result<TmuxOutput>
     where
         I: IntoIterator<Item = S>,
@@ -155,6 +157,7 @@ impl Tmux {
         })
     }
 
+    /// Run a tmux command, require success, and return trimmed stdout.
     pub fn stdout<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
@@ -167,6 +170,7 @@ impl Tmux {
         Ok(output.stdout.trim_end().to_owned())
     }
 
+    /// Return context for the current pane when running inside tmux, otherwise `None`.
     pub fn current_context(&self) -> Result<Option<TmuxContext>> {
         let pane_id = std::env::var("TMUX_PANE").ok();
         if let Some(pane_id) = pane_id {
@@ -180,10 +184,7 @@ impl Tmux {
         self.query_context(None).map(Some)
     }
 
-    pub fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
-        self.query_context(Some(pane_id))
-    }
-
+    /// Create a detached window in `session_name`, optionally sending a startup command.
     pub fn create_window_with_command(
         &self,
         session_name: &str,
@@ -220,43 +221,44 @@ impl Tmux {
         Ok(pane_id)
     }
 
-    pub fn send_keys(&self, pane_id: &str, command: &str) -> Result<()> {
-        self.stdout(["send-keys", "-t", pane_id, "-l", command])?;
-        self.stdout(["send-keys", "-t", pane_id, "Enter"])?;
-        Ok(())
-    }
-
+    /// Send one tmux key token to a pane.
     pub fn send_key(&self, pane_id: &str, key: &str) -> Result<()> {
         self.stdout(["send-keys", "-t", pane_id, key])?;
         Ok(())
     }
 
+    /// Select a window by session and exact window name.
     pub fn select_window(&self, session_name: &str, window_name: &str) -> Result<()> {
         let target = window_target(session_name, window_name);
         self.stdout(["select-window", "-t", &target])?;
         Ok(())
     }
 
+    /// Select a window by tmux window id.
     pub fn select_window_id(&self, window_id: &str) -> Result<()> {
         self.stdout(["select-window", "-t", window_id])?;
         Ok(())
     }
 
+    /// Rename a tmux window target.
     pub fn rename_window(&self, target: &str, window_name: &str) -> Result<()> {
         self.stdout(["rename-window", "-t", target, window_name])?;
         Ok(())
     }
 
+    /// Select a pane by tmux pane id.
     pub fn select_pane(&self, pane_id: &str) -> Result<()> {
         self.stdout(["select-pane", "-t", pane_id])?;
         Ok(())
     }
 
+    /// Set the tmux pane title displayed by clients that expose pane titles.
     pub fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
         self.stdout(["select-pane", "-t", pane_id, "-T", title])?;
         Ok(())
     }
 
+    /// Return whether a pane has focus and whether its window is visible to an attached client.
     pub fn pane_visibility(&self, pane_id: &str) -> Result<TmuxPaneVisibility> {
         let output = self.stdout([
             "display-message",
@@ -268,11 +270,13 @@ impl Tmux {
         parse_pane_visibility(&output)
     }
 
+    /// Switch the attached tmux client to a session.
     pub fn switch_client_to_session(&self, session_name: &str) -> Result<()> {
         self.stdout(["switch-client", "-t", session_name])?;
         Ok(())
     }
 
+    /// Kill a tmux window by exact name within a session.
     pub fn kill_window(&self, session_name: &str, window_name: &str) -> Result<()> {
         if !self.window_exists_by_name(session_name, window_name)? {
             bail!("tmux window '{window_name}' does not exist in session '{session_name}'");
@@ -283,6 +287,7 @@ impl Tmux {
         Ok(())
     }
 
+    /// List windows in one session, or all sessions when no session is provided.
     pub fn list_windows(&self, session_name: Option<&str>) -> Result<Vec<TmuxWindow>> {
         let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}\t#{@kmux_workspace_slug}\t#{@kmux_workspace_path}\t#{@kmux_workspace_branch}";
         let output = if let Some(session_name) = session_name {
@@ -294,12 +299,14 @@ impl Tmux {
         parse_windows(&output)
     }
 
+    /// List panes with their kmux role option when set.
     pub fn list_panes(&self) -> Result<Vec<TmuxPane>> {
         let format = "#{session_name}\t#{window_id}\t#{pane_id}\t#{@kmux_role}";
         let output = self.stdout(["list-panes", "-a", "-F", format])?;
         parse_panes(&output)
     }
 
+    /// List rich pane snapshots used by status and sidebar reconciliation.
     pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
         let separator = TMUX_FIELD_SEPARATOR;
         let format = format!(
@@ -309,6 +316,7 @@ impl Tmux {
         parse_pane_snapshots(&output)
     }
 
+    /// Return whether a session contains a window with an exact name match.
     pub fn window_exists_by_name(&self, session_name: &str, window_name: &str) -> Result<bool> {
         Ok(self
             .list_windows(Some(session_name))?
@@ -316,30 +324,35 @@ impl Tmux {
             .any(|window| window.window_name == window_name))
     }
 
+    /// Set a namespaced tmux window user option on a target.
     pub fn set_window_option(&self, target: &str, option_name: &str, value: &str) -> Result<()> {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-w", "-t", target, option_name, value])?;
         Ok(())
     }
 
+    /// Unset a namespaced tmux window user option on a target.
     pub fn unset_window_option(&self, target: &str, option_name: &str) -> Result<()> {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-uw", "-t", target, option_name])?;
         Ok(())
     }
 
+    /// Set a namespaced tmux pane user option on a target.
     pub fn set_pane_option(&self, target: &str, option_name: &str, value: &str) -> Result<()> {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-p", "-t", target, option_name, value])?;
         Ok(())
     }
 
+    /// Set a namespaced global tmux user option.
     pub fn set_global_option(&self, option_name: &str, value: &str) -> Result<()> {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-g", option_name, value])?;
         Ok(())
     }
 
+    /// Read a namespaced global tmux user option, returning `None` when unset or blank.
     pub fn show_global_option(&self, option_name: &str) -> Result<Option<String>> {
         validate_user_option(option_name)?;
         let output = self.output(["show-option", "-gqv", option_name])?;
@@ -350,22 +363,26 @@ impl Tmux {
         Ok(Some(output.stdout.trim_end().to_owned()).filter(|value| !value.is_empty()))
     }
 
+    /// Unset a namespaced global tmux user option.
     pub fn unset_global_option(&self, option_name: &str) -> Result<()> {
         validate_user_option(option_name)?;
         self.stdout(["set-option", "-gu", option_name])?;
         Ok(())
     }
 
+    /// Set a global tmux hook command.
     pub fn set_hook(&self, hook: &str, command: &str) -> Result<()> {
         self.stdout(["set-hook", "-g", hook, command])?;
         Ok(())
     }
 
+    /// Unset a global tmux hook command.
     pub fn unset_hook(&self, hook: &str) -> Result<()> {
         self.stdout(["set-hook", "-gu", hook])?;
         Ok(())
     }
 
+    /// Create a detached horizontal split to the left of a target window and return its pane id.
     pub fn split_window_left(
         &self,
         target_window: &str,
@@ -399,31 +416,69 @@ impl Tmux {
         self.stdout(args)
     }
 
+    /// Kill a tmux pane by pane id.
     pub fn kill_pane(&self, pane_id: &str) -> Result<()> {
         self.stdout(["kill-pane", "-t", pane_id])?;
         Ok(())
     }
 
+    /// Resize a pane to an absolute cell width.
     pub fn resize_pane_width(&self, pane_id: &str, width: u16) -> Result<()> {
         self.stdout(["resize-pane", "-t", pane_id, "-x", &width.to_string()])?;
         Ok(())
     }
 
+    /// Replace a pane's running command, killing the existing process if needed.
     pub fn respawn_pane(&self, pane_id: &str, command: &str) -> Result<()> {
         self.stdout(["respawn-pane", "-k", "-t", pane_id, command])?;
         Ok(())
     }
 
+    /// Acquire a tmux wait-for lock channel.
     pub fn wait_for_lock(&self, channel: &str) -> Result<()> {
         self.stdout(["wait-for", "-L", channel])?;
         Ok(())
     }
 
+    /// Release a tmux wait-for lock channel.
     pub fn wait_for_unlock(&self, channel: &str) -> Result<()> {
         self.stdout(["wait-for", "-U", channel])?;
         Ok(())
     }
 
+    /// Create an adapter pinned to a named tmux socket.
+    ///
+    /// The ambient `TMUX` variables are cleared so commands target that socket rather
+    /// than the caller's attached client.
+    fn with_socket_name(socket_name: impl Into<OsString>) -> Self {
+        Self {
+            socket_name: Some(socket_name.into()),
+            clear_client_env: true,
+            env: Vec::new(),
+        }
+    }
+
+    /// Add one environment override to every tmux subprocess.
+    fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
+        self.env.push((key.into(), value.into()));
+        self
+    }
+
+    /// Return session/window/pane context for a specific pane id.
+    fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
+        self.query_context(Some(pane_id))
+    }
+
+    /// Send literal command text to a pane followed by Enter.
+    fn send_keys(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.stdout(["send-keys", "-t", pane_id, "-l", command])?;
+        self.stdout(["send-keys", "-t", pane_id, "Enter"])?;
+        Ok(())
+    }
+
+    // Use tmux format expansion so callers get IDs from tmux itself rather than
+    // reconstructing context from environment variables. Keep the format and
+    // parsing together so tmux format changes fail near the adapter boundary.
     fn query_context(&self, target: Option<&str>) -> Result<TmuxContext> {
         let format = "#{session_name}\t#{session_id}\t#{window_name}\t#{window_id}\t#{pane_id}";
         let output = if let Some(target) = target {
@@ -431,27 +486,28 @@ impl Tmux {
         } else {
             self.stdout(["display-message", "-p", format])?
         };
-        parse_context(&output)
+        let fields = output.trim_end().split('\t').collect::<Vec<_>>();
+        if fields.len() != 5 {
+            bail!("unexpected tmux context format: {output:?}");
+        }
+
+        Ok(TmuxContext {
+            session_name: fields[0].to_owned(),
+            session_id: fields[1].to_owned(),
+            window_name: fields[2].to_owned(),
+            window_id: fields[3].to_owned(),
+            pane_id: fields[4].to_owned(),
+        })
     }
 }
 
+/// Build a tmux command target for a window with this exact name inside a session.
+///
+/// tmux target strings identify where a command should apply. The `session:=window`
+/// form scopes the lookup to one session and uses `=` so tmux matches the full
+/// window name instead of accepting a prefix or fuzzy match.
 pub fn window_target(session_name: &str, window_name: &str) -> String {
     format!("{session_name}:={window_name}")
-}
-
-fn parse_context(output: &str) -> Result<TmuxContext> {
-    let fields = output.trim_end().split('\t').collect::<Vec<_>>();
-    if fields.len() != 5 {
-        bail!("unexpected tmux context format: {output:?}");
-    }
-
-    Ok(TmuxContext {
-        session_name: fields[0].to_owned(),
-        session_id: fields[1].to_owned(),
-        window_name: fields[2].to_owned(),
-        window_id: fields[3].to_owned(),
-        pane_id: fields[4].to_owned(),
-    })
 }
 
 fn parse_windows(output: &str) -> Result<Vec<TmuxWindow>> {
@@ -498,6 +554,8 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
     })
 }
 
+// Use a unit-separator field delimiter for rich pane snapshots because tmux pane
+// titles and paths can contain tabs.
 fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
     if fields.len() != 16 {
@@ -557,6 +615,8 @@ fn non_empty_string(value: &str) -> Option<String> {
     Some(value.to_owned()).filter(|value| !value.is_empty())
 }
 
+// Restrict user options to kmux-owned names so generic tmux options cannot be
+// mutated through this adapter by accident.
 fn validate_user_option(option_name: &str) -> Result<()> {
     if !option_name.starts_with("@kmux") {
         bail!("tmux user option must be namespaced under @kmux, got '{option_name}'");

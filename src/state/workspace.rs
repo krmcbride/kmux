@@ -11,6 +11,7 @@ const CURRENT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// Repo-local kmux workspace graph metadata persisted under Git's common dir.
 pub struct WorkspaceState {
     pub version: u32,
     pub parents: Vec<WorkspaceParentLink>,
@@ -18,6 +19,7 @@ pub struct WorkspaceState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+/// Parent relationship for one branch, anchored at the branch merge base.
 pub struct WorkspaceParentLink {
     pub branch: String,
     pub parent: String,
@@ -25,15 +27,18 @@ pub struct WorkspaceParentLink {
 }
 
 #[derive(Debug, Clone)]
+/// Store for workspace graph metadata scoped to one Git repository.
 pub struct WorkspaceStateStore {
     path: PathBuf,
 }
 
 impl WorkspaceState {
+    /// Return the parent link recorded for a branch, if kmux knows one.
     pub fn parent_for(&self, branch: &str) -> Option<&WorkspaceParentLink> {
         self.parents.iter().find(|link| link.branch == branch)
     }
 
+    /// Insert or replace a branch parent link and keep persisted ordering stable.
     pub fn set_parent(&mut self, link: WorkspaceParentLink) {
         self.parents
             .retain(|existing| existing.branch != link.branch);
@@ -41,12 +46,14 @@ impl WorkspaceState {
         self.normalize();
     }
 
+    /// Remove the parent link owned by `branch`, leaving any child links untouched.
     pub fn remove_parent(&mut self, branch: &str) -> bool {
         let before = self.parents.len();
         self.parents.retain(|link| link.branch != branch);
         before != self.parents.len()
     }
 
+    /// Return branches that currently name `parent` as their parent branch.
     pub fn children_of(&self, parent: &str) -> Vec<String> {
         self.parents
             .iter()
@@ -55,6 +62,10 @@ impl WorkspaceState {
             .collect()
     }
 
+    /// Check whether assigning `parent` to `branch` would create a parent cycle.
+    ///
+    /// The proposed edge replaces any existing edge for `branch`, which lets callers
+    /// validate both new links and reparenting through the same path.
     pub fn would_create_cycle(&self, branch: &str, parent: &str) -> bool {
         let mut parents = BTreeMap::new();
         for link in &self.parents {
@@ -79,6 +90,7 @@ impl WorkspaceState {
         false
     }
 
+    // Keep state deterministic on disk and collapse duplicate entries from hand edits.
     fn normalize(&mut self) {
         self.parents
             .sort_by(|left, right| left.branch.cmp(&right.branch));
@@ -97,6 +109,7 @@ impl Default for WorkspaceState {
 }
 
 impl WorkspaceParentLink {
+    /// Build a parent link for `branch` with its parent branch and merge-base anchor.
     pub fn new(branch: String, parent: String, anchor: String) -> Self {
         Self {
             branch,
@@ -107,12 +120,14 @@ impl WorkspaceParentLink {
 }
 
 impl WorkspaceStateStore {
+    /// Create a store rooted at `<git-common-dir>/kmux/state.json`.
     pub fn new(git_common_dir: &Path) -> Self {
         Self {
             path: git_common_dir.join("kmux/state.json"),
         }
     }
 
+    /// Load workspace graph state, returning an empty current-version state when absent.
     pub fn load(&self) -> Result<WorkspaceState> {
         let content = match fs::read_to_string(&self.path) {
             Ok(content) => content,
@@ -138,6 +153,7 @@ impl WorkspaceStateStore {
         Ok(state)
     }
 
+    /// Persist workspace graph state with the current schema version and stable ordering.
     pub fn save(&self, state: &WorkspaceState) -> Result<()> {
         let mut state = state.clone();
         state.version = CURRENT_VERSION;
@@ -147,6 +163,8 @@ impl WorkspaceStateStore {
     }
 }
 
+// Write through a sibling temporary file so interrupted saves do not leave a
+// partially-written JSON state file behind.
 fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)

@@ -11,12 +11,7 @@ use crate::config::StatusIcons;
 use crate::state::StateStore;
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectionMode {
-    FollowHost,
-    Manual,
-}
-
+/// Mutable state for the sidebar terminal UI.
 pub(super) struct SidebarApp {
     tmux: Tmux,
     store: StateStore,
@@ -41,6 +36,7 @@ pub(super) struct SidebarApp {
 }
 
 impl SidebarApp {
+    /// Create sidebar UI state and capture the host tmux window/pane identity.
     pub(super) fn new(
         tmux: Tmux,
         store: StateStore,
@@ -76,16 +72,19 @@ impl SidebarApp {
         }
     }
 
+    /// Refresh rows from current agent/tmux state when visibility policy allows it.
     pub(super) fn refresh_rows(&mut self) -> bool {
         let visibility = self.sidebar_visibility();
         self.refresh_rows_for_visibility(visibility)
     }
 
+    /// Request that the TUI exit and that the sidebar be disabled afterward.
     pub(super) fn request_disable(&mut self) {
         self.disable_requested = true;
         self.should_quit = true;
     }
 
+    /// Move manual selection to the next row.
     pub(super) fn next(&mut self) {
         if self.rows.is_empty() {
             return;
@@ -97,6 +96,7 @@ impl SidebarApp {
         self.select_index_manual(next);
     }
 
+    /// Move manual selection to the previous row.
     pub(super) fn previous(&mut self) {
         if self.rows.is_empty() {
             return;
@@ -105,18 +105,21 @@ impl SidebarApp {
         self.select_index_manual(selected.saturating_sub(1));
     }
 
+    /// Move manual selection to the first row.
     pub(super) fn select_first(&mut self) {
         if !self.rows.is_empty() {
             self.select_index_manual(0);
         }
     }
 
+    /// Move manual selection to the last row.
     pub(super) fn select_last(&mut self) {
         if !self.rows.is_empty() {
             self.select_index_manual(self.rows.len() - 1);
         }
     }
 
+    /// Switch tmux focus to the selected agent row's pane or window.
     pub(super) fn jump_to_selected(&mut self) {
         let Some(row) = self.selected_row().cloned() else {
             return;
@@ -129,6 +132,7 @@ impl SidebarApp {
         }
     }
 
+    /// Delete all observations for the selected agent session and update the model.
     pub(super) fn delete_selected_session(&mut self) {
         let Some(index) = self.list_state.selected() else {
             return;
@@ -156,48 +160,58 @@ impl SidebarApp {
         }
     }
 
+    /// Return whether the TUI event loop should exit.
     pub(super) fn should_quit(&self) -> bool {
         self.should_quit
     }
 
+    /// Return whether exit should also disable the sidebar globally.
     pub(super) fn disable_requested(&self) -> bool {
         self.disable_requested
     }
 
+    /// Return the rows currently rendered by the sidebar.
     pub(super) fn rows(&self) -> &[SidebarRow] {
         &self.rows
     }
 
+    /// Return the last refresh or jump error, if one should be displayed.
     pub(super) fn last_error(&self) -> Option<&str> {
         self.last_error.as_deref()
     }
 
+    /// Return the row index for the host window the sidebar is attached to.
     pub(super) fn active_index(&self) -> Option<usize> {
         self.host_window_id
             .as_deref()
             .and_then(|window_id| row_index_by_window(&self.rows, window_id))
     }
 
+    /// Return the cursor row index when the sidebar pane has focus.
     pub(super) fn cursor_index(&self) -> Option<usize> {
         self.sidebar_has_focus
             .then(|| self.list_state.selected())
             .flatten()
     }
 
+    /// Return mutable ratatui list state for rendering.
     pub(super) fn list_state_mut(&mut self) -> &mut ListState {
         &mut self.list_state
     }
 
+    /// Return whether the sidebar's tmux window is visible to an attached client.
     pub(super) fn window_visible(&self) -> bool {
         self.window_visible
     }
 
+    /// Return whether working rows should animate spinner frames right now.
     pub(super) fn should_animate_spinner(&self) -> bool {
         self.window_visible
             && !self.working_frames.is_empty()
             && self.rows.iter().any(SidebarRow::is_working)
     }
 
+    /// Advance the spinner and update working row icons.
     pub(super) fn tick_spinner(&mut self) {
         if !self.should_animate_spinner() {
             return;
@@ -214,6 +228,8 @@ impl SidebarApp {
         }
     }
 
+    // Hidden sidebars keep lightweight state fresh but avoid full model refreshes
+    // while invisible unless focus/visibility changes require it.
     fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
         self.window_visible = visibility.window_visible;
         self.update_selection_mode_for_focus(visibility.pane_has_focus);
@@ -373,8 +389,15 @@ impl SidebarApp {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SelectionMode {
+    FollowHost,
+    Manual,
+}
+
 #[cfg(test)]
 impl SidebarApp {
+    /// Build a sidebar app with injected rows for unit tests.
     pub(super) fn test(host_window_id: Option<&str>, rows: Vec<SidebarRow>) -> Self {
         let mut app = Self {
             tmux: Tmux::new(),

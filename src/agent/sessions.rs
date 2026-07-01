@@ -10,6 +10,7 @@ use crate::state::{
 use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxWindow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Reconciled view of one logical agent session for UI and status output.
 pub struct AgentSessionView {
     pub key: AgentSessionKey,
     pub created_at: u64,
@@ -23,6 +24,10 @@ pub struct AgentSessionView {
 }
 
 impl AgentSessionView {
+    /// Return elapsed time for the current status at `now`.
+    ///
+    /// Working rows accumulate prior working time plus the active working span;
+    /// waiting and done rows show time since their current status began.
     pub fn elapsed_secs(&self, now: u64) -> u64 {
         let status_age = now.saturating_sub(self.status_changed_at);
         match self.status {
@@ -32,6 +37,7 @@ impl AgentSessionView {
     }
 }
 
+/// Reconcile persisted agent observations with live tmux pane/window state.
 pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSessionView>> {
     let tmux_instance = tmux.instance_id();
     let observations = store
@@ -60,6 +66,8 @@ struct EnrichedObservation {
     location_rank: u8,
 }
 
+// Ignore observations scoped to another tmux socket, but accept unscoped legacy
+// observations so older agents still appear in status views.
 fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_id: &str) -> bool {
     observation
         .target
@@ -68,6 +76,8 @@ fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_
         .is_none_or(|target_instance| target_instance == instance_id)
 }
 
+// Group observations by logical agent session after enriching each producer's
+// reported target with the best live tmux match available.
 fn reconcile_session_views(
     observations: Vec<AgentObservationState>,
     panes: &[TmuxPaneSnapshot],
@@ -109,6 +119,8 @@ fn reconcile_session_views(
         .collect()
 }
 
+// Choose one status observation and one location observation for a session, then
+// merge newer metadata fields around that resolved target.
 fn session_view_from_observations(
     key: AgentSessionKey,
     observations: &[EnrichedObservation],
@@ -186,6 +198,8 @@ fn status_priority(status: Option<AgentStatus>) -> u8 {
     }
 }
 
+// Target resolution is ranked from strongest to weakest identity: exact pane,
+// exact window, unique current path, kmux window metadata, then session/name.
 fn resolve_observation_target(
     observation: &AgentObservationState,
     pane_by_id: &HashMap<String, &TmuxPaneSnapshot>,
@@ -249,6 +263,8 @@ fn resolve_observation_target(
     (None, 0)
 }
 
+// Match a current pane path only when it identifies one window; otherwise the
+// observation is too ambiguous to enrich from geometry alone.
 fn unique_window_pane_by_current_path<'a>(
     target: &AgentLocationHints,
     panes: &'a [TmuxPaneSnapshot],
@@ -328,6 +344,8 @@ fn session_window_hints_match(
             .is_none_or(|target_window| target_window == window_name)
 }
 
+// If the agent supplied path hints, require at least one candidate path to match.
+// Without path hints, tmux session/window hints are enough.
 fn path_hints_match<const N: usize>(
     target: &AgentLocationHints,
     candidates: [Option<&str>; N],
@@ -430,6 +448,7 @@ fn enrich_target_from_window(
     }
 }
 
+// Merge newest metadata first so old sparse observations only fill remaining gaps.
 fn merge_target_metadata(target: &mut AgentLocationHints, observations: &[EnrichedObservation]) {
     let mut sorted = observations.iter().collect::<Vec<_>>();
     sorted.sort_by_key(|observation| observation.state.observed_at);
@@ -486,6 +505,8 @@ fn fill_missing_target_metadata(target: &mut AgentLocationHints, fallback: &Agen
     }
 }
 
+// Repo metadata can be recovered from any live path hint when agents did not
+// report it directly.
 fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
     if target.git_repo_name.is_some()
         && target.git_repo_path.is_some()

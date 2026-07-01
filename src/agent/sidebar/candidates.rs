@@ -6,18 +6,14 @@ use anyhow::Result;
 
 use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxSplitSize};
 
+/// Default sidebar width in cells when config does not specify one.
 pub(super) const DEFAULT_WIDTH: u16 = 42;
+/// tmux pane role value used to mark kmux sidebar panes.
 pub(super) const SIDEBAR_ROLE: &str = "sidebar";
 
 const RESURRECT_DIR_OPTION: &str = "@resurrect-dir";
 
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ResurrectPaneKey {
-    session_name: String,
-    window_index: String,
-    pane_index: String,
-}
-
+/// Recognizes live and restored panes that belong to the kmux sidebar.
 pub(super) struct SidebarCandidateMatcher {
     size: Option<TmuxSplitSize>,
     resurrect_panes: HashSet<ResurrectPaneKey>,
@@ -25,6 +21,7 @@ pub(super) struct SidebarCandidateMatcher {
 }
 
 impl SidebarCandidateMatcher {
+    /// Build the matcher used to recognize live and tmux-resurrect-restored sidebar panes.
     pub(super) fn new(
         tmux: &Tmux,
         panes: &[TmuxPaneSnapshot],
@@ -50,6 +47,7 @@ impl SidebarCandidateMatcher {
         }
     }
 
+    /// Return whether a pane should be treated as kmux sidebar state during reconciliation.
     pub(super) fn is_sidebar_candidate(&self, pane: &TmuxPaneSnapshot) -> bool {
         pane.kmux_role.as_deref() == Some(SIDEBAR_ROLE)
             || is_title_restored_sidebar_candidate(pane, self.size)
@@ -67,6 +65,7 @@ impl SidebarCandidateMatcher {
     }
 }
 
+/// Iterate panes that look like kmux sidebar panes.
 pub(super) fn sidebar_candidate_snapshots<'a>(
     panes: &'a [TmuxPaneSnapshot],
     matcher: &'a SidebarCandidateMatcher,
@@ -76,6 +75,7 @@ pub(super) fn sidebar_candidate_snapshots<'a>(
         .filter(move |pane| matcher.is_sidebar_candidate(pane))
 }
 
+/// Return the best sidebar candidate for each window id.
 pub(super) fn sidebar_candidates_by_window<'a>(
     panes: &'a [TmuxPaneSnapshot],
     matcher: &'a SidebarCandidateMatcher,
@@ -94,6 +94,7 @@ pub(super) fn sidebar_candidates_by_window<'a>(
     sidebars
 }
 
+/// Convert an absolute or percentage sidebar size into cell width for a window.
 pub(super) fn sidebar_width_cells(size: TmuxSplitSize, window_width: u16) -> u16 {
     match size {
         TmuxSplitSize::Cells(width) => width,
@@ -104,6 +105,15 @@ pub(super) fn sidebar_width_cells(size: TmuxSplitSize, window_width: u16) -> u16
     .max(1)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct ResurrectPaneKey {
+    session_name: String,
+    window_index: String,
+    pane_index: String,
+}
+
+// tmux-resurrect may restore pane titles before kmux user options are back; use
+// title plus left-edge geometry as a recovery signal.
 fn is_title_restored_sidebar_candidate(
     pane: &TmuxPaneSnapshot,
     size: Option<TmuxSplitSize>,
@@ -113,6 +123,8 @@ fn is_title_restored_sidebar_candidate(
         && pane.pane_width <= restored_sidebar_width_limit(pane, size)
 }
 
+// Geometry matching is a fallback for resurrected sidebars that lost both role
+// metadata and title, so keep it narrow and tied to the configured width.
 fn looks_like_restored_sidebar_geometry(pane: &TmuxPaneSnapshot, size: TmuxSplitSize) -> bool {
     pane.kmux_role.is_none()
         && pane.pane_left == 0
@@ -132,6 +144,7 @@ fn restored_sidebar_width_limit(pane: &TmuxPaneSnapshot, size: Option<TmuxSplitS
         .max(1)
 }
 
+// Prefer panes that are currently running kmux and already marked with the role option.
 fn sidebar_candidate_score(pane: &TmuxPaneSnapshot) -> (u8, u8) {
     (
         u8::from(pane.current_command.as_deref() == Some("kmux")),

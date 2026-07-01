@@ -30,6 +30,7 @@ const SIDEBAR_WAKE_HOOKS: &[&str] = &[
 ];
 const SIDEBAR_WAKE_KEY: &str = "F5";
 
+/// Toggle the sidebar on or off based on the current tmux global option.
 pub(super) fn toggle() -> Result<()> {
     let tmux = Tmux::from_env();
     if sidebar_enabled(&tmux)? {
@@ -39,6 +40,7 @@ pub(super) fn toggle() -> Result<()> {
     }
 }
 
+/// Enable the sidebar, install hooks, and reconcile panes for existing windows.
 pub(super) fn enable() -> Result<()> {
     let config = Config::load()?;
     let tmux = Tmux::from_env();
@@ -51,6 +53,7 @@ pub(super) fn enable() -> Result<()> {
     Ok(())
 }
 
+/// Disable the sidebar, remove hooks, and kill recognized sidebar panes.
 pub(super) fn disable() -> Result<()> {
     let tmux = Tmux::from_env();
     let _lock = SidebarLock::acquire(&tmux)?;
@@ -67,6 +70,7 @@ pub(super) fn disable() -> Result<()> {
     Ok(())
 }
 
+/// Reconcile sidebar panes when the sidebar is currently enabled.
 pub(super) fn refresh() -> Result<()> {
     let config = Config::load()?;
     let tmux = Tmux::from_env();
@@ -77,6 +81,7 @@ pub(super) fn refresh() -> Result<()> {
     Ok(())
 }
 
+/// Wake the sidebar pane associated with a tmux window id.
 pub(super) fn wake(window_id: &str) -> Result<()> {
     let tmux = Tmux::from_env();
     let panes = tmux.list_panes()?;
@@ -86,6 +91,7 @@ pub(super) fn wake(window_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Run the hidden sidebar TUI process inside a tmux pane.
 pub(super) fn run_tui() -> Result<()> {
     let tmux = Tmux::from_env();
     set_current_sidebar_pane_title(&tmux);
@@ -111,12 +117,15 @@ pub(super) fn run_tui() -> Result<()> {
     Ok(())
 }
 
+// Mark the current pane so tmux-resurrect can identify it before kmux options
+// are restored.
 fn set_current_sidebar_pane_title(tmux: &Tmux) {
     if let Ok(pane_id) = std::env::var("TMUX_PANE") {
         let _ = tmux.set_pane_title(&pane_id, "kmux");
     }
 }
 
+// Disable from outside the current TUI process so terminal cleanup can finish first.
 fn request_disable_async() -> Result<()> {
     let tmux = Tmux::from_env();
     let command = sidebar_off_command()?;
@@ -124,6 +133,8 @@ fn request_disable_async() -> Result<()> {
     Ok(())
 }
 
+// Reconcile under the global sidebar lock: one sidebar pane per window, marked
+// with kmux role metadata and running the current sidebar command.
 fn reconcile_locked(tmux: &Tmux, config: &Config) -> Result<()> {
     let windows = unique_windows(tmux.list_windows(None)?);
     let command = sidebar_tui_command()?;
@@ -153,6 +164,7 @@ fn unique_windows(windows: Vec<TmuxWindow>) -> Vec<TmuxWindow> {
         .collect()
 }
 
+// Keep the highest-scoring sidebar candidate per window and remove the rest.
 fn prune_extra_sidebars(tmux: &Tmux, size: TmuxSplitSize) -> Result<()> {
     let panes = tmux.list_pane_snapshots()?;
     let matcher = SidebarCandidateMatcher::new(tmux, &panes, Some(size), true);
@@ -168,6 +180,7 @@ fn prune_extra_sidebars(tmux: &Tmux, size: TmuxSplitSize) -> Result<()> {
     Ok(())
 }
 
+// Repair an existing sidebar candidate after tmux restore or config changes.
 fn heal_sidebar_pane(
     tmux: &Tmux,
     pane: &TmuxPaneSnapshot,
@@ -185,6 +198,8 @@ fn heal_sidebar_pane(
     Ok(())
 }
 
+// Install hooks that create sidebars for new windows and wake hidden panes when
+// users switch focus.
 fn install_hooks(tmux: &Tmux) -> Result<()> {
     let refresh_command = format!("run-shell -b {}", shell_quote(&sidebar_refresh_command()?));
     for hook in SIDEBAR_RECONCILE_HOOKS {
@@ -212,6 +227,7 @@ fn sidebar_enabled(tmux: &Tmux) -> Result<bool> {
     Ok(tmux.show_global_option(SIDEBAR_ENABLED_OPTION)?.as_deref() == Some("1"))
 }
 
+// Only print lifecycle messages for interactive commands, not background hooks.
 fn print_user_message(message: &str) {
     if std::io::stdout().is_terminal() {
         println!("{message}");
@@ -230,6 +246,7 @@ fn sidebar_pane_for_window<'a>(panes: &'a [TmuxPane], window_id: &str) -> Option
         .map(|pane| pane.pane_id.as_str())
 }
 
+// RAII wrapper for the tmux wait-for lock used around sidebar reconciliation.
 struct SidebarLock<'a> {
     tmux: &'a Tmux,
 }

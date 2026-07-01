@@ -19,6 +19,7 @@ const WORKING_FG: Color = Color::Rgb(120, 225, 213);
 const WAITING_FG: Color = Color::Rgb(203, 166, 247);
 const DONE_FG: Color = Color::Rgb(166, 218, 149);
 
+/// Render the sidebar TUI into the provided ratatui frame.
 pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
     let area = frame.area();
     if area.width == 0 || area.height == 0 {
@@ -205,6 +206,8 @@ fn narrow_tile_line(
     Line::from(Span::styled(fixed_width(&text, width), style))
 }
 
+// Keep left and right labels on one row when they fit; otherwise preserve the
+// left label, which carries the primary navigation context.
 fn line_with_right(
     left: &str,
     right: &str,

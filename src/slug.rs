@@ -1,6 +1,18 @@
 use anyhow::{Result, bail};
 
-pub fn slugify(input: &str) -> String {
+/// Derive a workspace slug from a branch name and reject names with no usable slug.
+pub fn workspace_slug_from_branch(branch_name: &str) -> Result<String> {
+    let slug = slugify(branch_name);
+
+    if slug.is_empty() {
+        bail!("workspace slug cannot be empty");
+    }
+
+    Ok(slug)
+}
+
+/// Convert user and branch names into ASCII slugs safe for tmux window names and paths.
+fn slugify(input: &str) -> String {
     let mut output = String::new();
     let mut last_was_separator = false;
 
@@ -15,16 +27,6 @@ pub fn slugify(input: &str) -> String {
     }
 
     output.trim_matches('-').to_string()
-}
-
-pub fn workspace_slug_from_branch(branch_name: &str) -> Result<String> {
-    let slug = slugify(branch_name);
-
-    if slug.is_empty() {
-        bail!("workspace slug cannot be empty");
-    }
-
-    Ok(slug)
 }
 
 #[cfg(test)]

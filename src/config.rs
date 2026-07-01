@@ -5,11 +5,14 @@ use directories::BaseDirs;
 use serde::Deserialize;
 use unicode_width::UnicodeWidthStr;
 
+/// Default tmux window-name prefix for kmux workspaces.
 pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
+/// Default age after which completed sidebar rows switch to the idle style.
 pub const DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS: u64 = 30 * 60;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// User-facing kmux configuration loaded from YAML.
 pub struct Config {
     pub window_prefix: Option<String>,
     pub panes: Option<Vec<PaneConfig>>,
@@ -20,16 +23,33 @@ pub struct Config {
 }
 
 impl Config {
+    /// Load the global kmux config, returning defaults when the file does not exist.
     pub fn load() -> Result<Self> {
         Self::load_from_path(Self::global_path()?)
     }
 
-    pub fn global_path() -> Result<PathBuf> {
+    /// Return the configured tmux window prefix or the project default.
+    pub fn window_prefix(&self) -> &str {
+        if let Some(prefix) = &self.window_prefix {
+            prefix
+        } else {
+            DEFAULT_WINDOW_PREFIX
+        }
+    }
+
+    /// Build the tmux window name for a kmux workspace slug.
+    pub fn workspace_window_name(&self, workspace_slug: &str) -> String {
+        format!("{}{}", self.window_prefix(), workspace_slug)
+    }
+
+    /// Return the XDG config-file path used for the global kmux YAML config.
+    fn global_path() -> Result<PathBuf> {
         let base_dirs = BaseDirs::new().context("could not determine config directory")?;
         Ok(base_dirs.config_dir().join("kmux/config.yaml"))
     }
 
-    pub fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
+    /// Load and validate config from a specific path, treating a missing file as defaults.
+    fn load_from_path(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref();
         if !path.exists() {
             return Ok(Self::default());
@@ -41,13 +61,15 @@ impl Config {
             .with_context(|| format!("failed to parse config file {}", path.display()))
     }
 
-    pub fn from_yaml_str(content: &str) -> Result<Self> {
+    /// Parse and validate config from YAML content.
+    fn from_yaml_str(content: &str) -> Result<Self> {
         let config: Self = yaml_serde::from_str(content)?;
         config.validate()?;
         Ok(config)
     }
 
-    pub fn validate(&self) -> Result<()> {
+    /// Validate cross-field config rules that serde cannot express.
+    fn validate(&self) -> Result<()> {
         self.status_icons.validate()?;
         self.sidebar.validate()?;
 
@@ -62,32 +84,23 @@ impl Config {
 
         Ok(())
     }
-
-    pub fn window_prefix(&self) -> &str {
-        if let Some(prefix) = &self.window_prefix {
-            prefix
-        } else {
-            DEFAULT_WINDOW_PREFIX
-        }
-    }
-
-    pub fn workspace_window_name(&self, workspace_slug: &str) -> String {
-        format!("{}{}", self.window_prefix(), workspace_slug)
-    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// Configured file operations applied to new worktrees.
 pub struct FileConfig {
     pub copy: Option<Vec<String>>,
     pub symlink: Option<Vec<String>>,
 }
 
 impl FileConfig {
+    /// Return configured files to copy into new worktrees.
     pub fn copy_entries(&self) -> &[String] {
         self.copy.as_deref().unwrap_or(&[])
     }
 
+    /// Return configured files to symlink into new worktrees.
     pub fn symlink_entries(&self) -> &[String] {
         self.symlink.as_deref().unwrap_or(&[])
     }
@@ -95,6 +108,7 @@ impl FileConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// Icons used by status, list, and sidebar presentation.
 pub struct StatusIcons {
     pub working: Option<String>,
     pub working_frames: Option<Vec<String>>,
@@ -104,22 +118,27 @@ pub struct StatusIcons {
 }
 
 impl StatusIcons {
+    /// Return the icon used for active agent work.
     pub fn working(&self) -> &str {
         self.working.as_deref().unwrap_or("🤖")
     }
 
+    /// Return optional animation frames used while an agent is working.
     pub fn working_frames(&self) -> Option<&[String]> {
         self.working_frames.as_deref()
     }
 
+    /// Return the icon used when an agent is waiting for input.
     pub fn waiting(&self) -> &str {
         self.waiting.as_deref().unwrap_or("💬")
     }
 
+    /// Return the icon used when an agent reports finished work.
     pub fn done(&self) -> &str {
         self.done.as_deref().unwrap_or("✅")
     }
 
+    /// Return the icon used when a sidebar row is idle long enough to sleep.
     pub fn sleeping(&self) -> &str {
         self.sleeping.as_deref().unwrap_or("💤")
     }
@@ -156,6 +175,7 @@ impl StatusIcons {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// Startup pane command for newly-created workspace windows.
 pub struct PaneConfig {
     pub command: Option<String>,
     pub focus: bool,
@@ -163,12 +183,14 @@ pub struct PaneConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
+/// Sidebar sizing and idle-row behavior.
 pub struct SidebarConfig {
     pub width: Option<SidebarSize>,
     pub idle_after_seconds: Option<u64>,
 }
 
 impl SidebarConfig {
+    /// Return the idle threshold for sidebar rows, falling back to the project default.
     pub fn idle_after_seconds(&self) -> u64 {
         self.idle_after_seconds
             .unwrap_or(DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS)
@@ -183,6 +205,7 @@ impl SidebarConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Sidebar width as an absolute cell count or tmux percentage.
 pub enum SidebarSize {
     Absolute(u16),
     Percent(u16),
@@ -238,7 +261,8 @@ impl<'de> Deserialize<'de> for SidebarSize {
     }
 }
 
-pub(crate) fn file_entry_relative_path(entry: &str) -> Result<PathBuf> {
+/// Validate and normalize a configured file operation path as repo-relative.
+pub fn file_entry_relative_path(entry: &str) -> Result<PathBuf> {
     let path = Path::new(entry);
     if entry.trim().is_empty()
         || path.is_absolute()
@@ -255,6 +279,8 @@ pub(crate) fn file_entry_relative_path(entry: &str) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
+// `Path::components` does not preserve every explicit `.` on all platforms, so
+// reject current-directory segments at the string level before normalizing.
 fn contains_current_dir_segment(entry: &str) -> bool {
     entry.split('/').any(|segment| segment == ".")
         || (cfg!(windows) && entry.split('\\').any(|segment| segment == "."))

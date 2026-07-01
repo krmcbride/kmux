@@ -19,6 +19,7 @@ use crate::tmux::Tmux;
 
 const KMUX_STATUS_OPTION: &str = "@kmux_status";
 
+/// Print active agent sessions, optionally scoped to the current repo and enriched with Git state.
 pub fn run(args: cli::StatusArgs) -> Result<()> {
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
@@ -36,6 +37,7 @@ pub fn run(args: cli::StatusArgs) -> Result<()> {
     Ok(())
 }
 
+/// Record or delete one agent status observation from an external producer.
 pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
     if std::env::var_os("KMUX_DISABLE_SET_AGENT_STATUS").is_some() {
         return Ok(());
@@ -99,6 +101,7 @@ pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
     Ok(())
 }
 
+/// Refresh each tmux window's kmux status option from the highest-priority agent in it.
 pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
     let views = session_views(store, tmux)?;
     let mut by_window = HashMap::<String, StoredAgentStatus>::new();
@@ -166,6 +169,8 @@ struct DisplayRow {
     title: String,
 }
 
+// The observation key identifies both the logical agent session and the producer
+// that reported it, so TUI and server observations can coexist for one session.
 fn observation_key(args: &cli::SetAgentStatusArgs) -> Result<AgentObservationKey> {
     Ok(AgentObservationKey {
         session: AgentSessionKey {
@@ -196,6 +201,7 @@ fn apply_location_args(target: &mut AgentLocationHints, args: &cli::SetAgentStat
     apply_optional(&mut target.directory, &args.directory);
 }
 
+// Metadata-only updates should not erase existing fields with empty strings.
 fn apply_optional(target: &mut Option<String>, value: &Option<String>) {
     if let Some(value) = clean_optional_ref(value.as_ref()) {
         *target = Some(value);
@@ -217,6 +223,8 @@ fn clean_str(value: &str) -> Option<&str> {
     (!value.is_empty()).then_some(value)
 }
 
+// Fill missing repo fields opportunistically from path hints so older or sparse
+// producers still show useful repo/branch labels.
 fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
     let metadata = infer_repo_metadata_from_paths(&[
         target.directory.as_deref(),
@@ -237,6 +245,8 @@ fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
     }
 }
 
+// Without filters, prefer views for the current repo when the command is run
+// inside a Git repository; otherwise show all known agent sessions.
 fn status_entries(
     views: &[AgentSessionView],
     args: &cli::StatusArgs,
@@ -265,6 +275,8 @@ fn status_entries(
         .collect())
 }
 
+// Current-repo scoping uses strict workspace identity matching to avoid pulling
+// in stale observations from another worktree that share a branch or slug.
 fn current_repo_entries(
     views: &[AgentSessionView],
     now: u64,
@@ -290,6 +302,8 @@ fn current_repo_entries(
     Ok(Some(entries))
 }
 
+// Build a presentation row from the resolved session view, falling back through
+// worktree, explicit target, and tmux metadata as needed.
 fn entry_for_view(
     view: &AgentSessionView,
     worktree: Option<&WorktreeInfo>,
@@ -375,6 +389,8 @@ fn status_icon(status: StoredAgentStatus, icons: &StatusIcons) -> &str {
     }
 }
 
+// Git status is display-only here; failures become false so a missing worktree
+// or transient Git error does not hide agent status.
 fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
     let git = Git::new(path);
     GitInfo {
@@ -390,6 +406,7 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
     }
 }
 
+// Higher ranks win when multiple agents report different states in one window.
 fn status_rank(status: StoredAgentStatus) -> u8 {
     match status {
         StoredAgentStatus::Waiting => 3,

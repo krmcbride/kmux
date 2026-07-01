@@ -6,6 +6,7 @@ use crate::state::workspace::{WorkspaceParentLink, WorkspaceState, WorkspaceStat
 use super::context::{RepoContext, load_repo_context};
 use super::resolve::{ResolvedWorkspace, resolve_current_kmux_workspace, resolve_workspace};
 
+/// Set or replace a workspace parent link without changing branches, worktrees, or tmux windows.
 pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let (resolved, parent) = resolve_target(&repo, args)?;
@@ -24,6 +25,7 @@ pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
     Ok(())
 }
 
+/// Validate and persist a parent link, returning the merge-base anchor that was recorded.
 pub(super) fn record_parent(repo: &RepoContext, child: &str, parent: &str) -> Result<String> {
     if child == parent {
         bail!("workspace branch '{child}' cannot be its own parent");
@@ -48,6 +50,7 @@ pub(super) fn record_parent(repo: &RepoContext, child: &str, parent: &str) -> Re
     Ok(anchor)
 }
 
+/// Fail if assigning `parent` to `child` would introduce a workspace parent cycle.
 pub(super) fn validate_no_cycle(state: &WorkspaceState, child: &str, parent: &str) -> Result<()> {
     if state.would_create_cycle(child, parent) {
         bail!("setting parent of '{child}' to '{parent}' would create a cycle");
@@ -55,6 +58,8 @@ pub(super) fn validate_no_cycle(state: &WorkspaceState, child: &str, parent: &st
     Ok(())
 }
 
+// `kmux parent <child> <parent>` targets an explicit child; `kmux parent <parent>`
+// targets the current kmux workspace for the short form.
 fn resolve_target(
     repo: &RepoContext,
     args: cli::ParentArgs,
@@ -69,6 +74,7 @@ fn resolve_target(
     ))
 }
 
+// Keep command output readable while retaining enough of the recorded anchor to identify it.
 fn short_anchor(anchor: &str) -> String {
     anchor.chars().take(12).collect()
 }

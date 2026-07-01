@@ -4,7 +4,8 @@ use crate::agent::sessions::AgentSessionView;
 use crate::paths::same_path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorkspaceMatchMode {
+/// Matching strategy for relating agent observations to a workspace.
+pub enum WorkspaceMatchMode {
     /// Match the workspace identified by a status view without falling back from
     /// conflicting path hints to looser branch or slug metadata.
     Identity,
@@ -13,18 +14,16 @@ pub(crate) enum WorkspaceMatchMode {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct WorkspaceTarget<'a> {
+/// Workspace identity used when matching agent observations.
+pub struct WorkspaceTarget<'a> {
     workspace_slug: Option<String>,
     branch: Option<String>,
     path: &'a Path,
 }
 
 impl<'a> WorkspaceTarget<'a> {
-    pub(crate) fn new(
-        workspace_slug: Option<String>,
-        branch: Option<String>,
-        path: &'a Path,
-    ) -> Self {
+    /// Build a workspace target from the identifiers known for a Git worktree.
+    pub fn new(workspace_slug: Option<String>, branch: Option<String>, path: &'a Path) -> Self {
         Self {
             workspace_slug,
             branch,
@@ -33,7 +32,8 @@ impl<'a> WorkspaceTarget<'a> {
     }
 }
 
-pub(crate) fn view_matches_workspace(
+/// Return whether an agent view matches a workspace according to the requested mode.
+pub fn view_matches_workspace(
     view: &AgentSessionView,
     target: &WorkspaceTarget<'_>,
     mode: WorkspaceMatchMode,
@@ -44,6 +44,8 @@ pub(crate) fn view_matches_workspace(
     }
 }
 
+// Identity mode trusts explicit path hints above branch/slug hints because agents
+// can move between windows while preserving stale logical metadata.
 fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
     let report_path = view
         .target
@@ -61,6 +63,8 @@ fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTa
             .is_some_and(|slug| view.target.kmux_workspace_slug.as_deref() == Some(slug))
 }
 
+// Summary mode is intentionally looser so list/status badges still show agents
+// that only reported one useful workspace hint.
 fn view_has_any_workspace_hint(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
     target
         .workspace_slug

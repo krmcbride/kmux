@@ -9,10 +9,12 @@ use directories::BaseDirs;
 use super::model::{AgentObservationKey, AgentObservationState, AgentSessionKey};
 
 #[derive(Debug, Clone)]
+/// XDG-backed store for external agent observations.
 pub struct StateStore {
     base_path: PathBuf,
 }
 
+/// Return the current Unix timestamp in seconds, saturating to zero on clock errors.
 pub fn now_unix_seconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -20,6 +22,7 @@ pub fn now_unix_seconds() -> u64 {
 }
 
 impl StateStore {
+    /// Open the XDG-backed kmux agent-observation state store.
     pub fn new() -> Result<Self> {
         let base_dirs = BaseDirs::new().context("could not determine state directory")?;
         let state_root = base_dirs
@@ -28,12 +31,14 @@ impl StateStore {
         Self::with_path(state_root.join("kmux"))
     }
 
+    /// Insert or replace one producer's latest observation for an agent session.
     pub fn upsert_observation(&self, state: &AgentObservationState) -> Result<()> {
         let path = self.observation_path(&state.key);
         let content = serde_json::to_vec_pretty(state)?;
         write_atomic(&path, &content)
     }
 
+    /// Load one observation by key, ignoring stale files whose embedded key does not match.
     pub fn get_observation(
         &self,
         key: &AgentObservationKey,
@@ -42,6 +47,7 @@ impl StateStore {
             .filter(|observation| observation.key == *key))
     }
 
+    /// List valid observations, migrating legacy filenames and pruning unreadable files.
     pub fn list_observations(&self) -> Result<Vec<AgentObservationState>> {
         let observations_dir = self.observations_dir();
         if !observations_dir.exists() {
@@ -89,10 +95,12 @@ impl StateStore {
         Ok(observations)
     }
 
+    /// Delete a single observation file if it exists.
     pub fn delete_observation(&self, key: &AgentObservationKey) -> Result<()> {
         delete_file_if_exists(&self.observation_path(key))
     }
 
+    /// Delete every producer observation associated with one agent session.
     pub fn delete_session(&self, session: &AgentSessionKey) -> Result<()> {
         for observation in self.list_observations()? {
             if &observation.key.session == session {
@@ -102,6 +110,7 @@ impl StateStore {
         Ok(())
     }
 
+    /// Open a store at an explicit base path for tests and controlled callers.
     pub(super) fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path = base_path.into();
         fs::create_dir_all(base_path.join("agent-observations"))
@@ -118,6 +127,8 @@ impl StateStore {
     }
 }
 
+// Agent observation files are external-agent telemetry. Invalid JSON is treated
+// as stale state so sidebar/status rendering can recover without user cleanup.
 fn read_observation_file(path: &Path) -> Result<Option<AgentObservationState>> {
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
@@ -130,6 +141,8 @@ fn read_observation_file(path: &Path) -> Result<Option<AgentObservationState>> {
     Ok(serde_json::from_str::<AgentObservationState>(&content).ok())
 }
 
+// Write observations atomically because status updates may be produced by
+// independent short-lived processes.
 fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -149,6 +162,7 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
+// Deletion races are harmless because producers can refresh observations later.
 fn delete_file_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -157,6 +171,8 @@ fn delete_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
+// Filenames encode every identity component so multiple producers can report
+// the same logical session without overwriting each other.
 fn observation_filename(key: &AgentObservationKey) -> String {
     format!(
         "{}__{}__{}__{}.json",
@@ -167,6 +183,8 @@ fn observation_filename(key: &AgentObservationKey) -> String {
     )
 }
 
+// Hex-encode arbitrary key text into portable filename components without
+// introducing collisions between escaped and literal separator characters.
 fn filename_component(value: &str) -> String {
     value.bytes().map(|byte| format!("{byte:02x}")).collect()
 }

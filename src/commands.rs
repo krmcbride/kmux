@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use crate::{agent, cli, completions, workflows};
 
+/// Route a parsed CLI command to the workflow, agent, or completion handler that owns it.
 pub fn dispatch(command: cli::Command) -> Result<()> {
     match command {
         cli::Command::Add(args) => workflows::run_add(args),

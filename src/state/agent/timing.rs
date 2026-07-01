@@ -1,11 +1,16 @@
 use super::model::{AgentObservationState, AgentStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Derived timing fields to persist for an incoming agent observation.
 pub struct AgentObservationTiming {
     pub status_changed_at: Option<u64>,
     pub working_elapsed_secs: u64,
 }
 
+/// Compute status timing for an incoming observation relative to prior state.
+///
+/// Working time accumulates only while transitioning from working to waiting;
+/// done resets the working counter for a completed run.
 pub fn next_observation_timing(
     previous: Option<&AgentObservationState>,
     status: Option<AgentStatus>,
@@ -46,6 +51,7 @@ pub fn next_observation_timing(
     }
 }
 
+// New status runs start their elapsed counters at the observation timestamp.
 fn fresh_observation_timing(now: u64) -> AgentObservationTiming {
     AgentObservationTiming {
         status_changed_at: Some(now),

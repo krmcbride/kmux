@@ -7,6 +7,7 @@ use super::context::{load_repo_context, load_tmux_context};
 use super::resolve::{ResolvedWorkspace, resolve_current_kmux_workspace, resolve_workspace};
 use crate::paths::same_path;
 
+/// Remove a kmux workspace, its worktree, local branch, tmux window, and owned parent link.
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let tmux = load_tmux_context()?;
@@ -32,6 +33,8 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     }
     let state_store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
     let mut state = state_store.load()?;
+    // Removing a parent branch is metadata-only for descendants: warn about
+    // dangling child links instead of silently reparenting or deleting them.
     let remaining_children = state.children_of(branch);
 
     std::env::set_current_dir(&repo.paths.main_worktree).with_context(|| {
@@ -65,6 +68,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     Ok(())
 }
 
+// Support both explicit removal by name and short-form removal from inside a kmux worktree.
 fn resolve_remove_target(
     repo: &super::context::RepoContext,
     name: Option<&str>,

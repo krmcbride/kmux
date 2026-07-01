@@ -15,6 +15,7 @@ use crate::agent::sidebar::render::render_sidebar_tui;
 const MODEL_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
 
+/// Run the sidebar terminal UI until it exits, returning whether disable was requested.
 pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
     enable_raw_mode()?;
     let _guard = TerminalGuard;
@@ -114,6 +115,7 @@ impl RefreshSchedule {
     }
 }
 
+// Always restore raw-mode and alternate-screen state when the TUI exits or errors.
 struct TerminalGuard;
 
 impl Drop for TerminalGuard {
@@ -129,6 +131,7 @@ enum EventOutcome {
     RedrawRequested,
 }
 
+// Key handling returns whether the caller should redraw immediately.
 fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {

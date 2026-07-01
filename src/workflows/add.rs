@@ -13,6 +13,7 @@ use super::resolve::{
 use super::window::create_resolved;
 use crate::state::workspace::WorkspaceStateStore;
 
+/// Create a new branch workspace, tmux window, and parent metadata link.
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let tmux = load_tmux_context()?;
@@ -110,6 +111,8 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     Ok(())
 }
 
+// Existing kmux worktrees are create-only conflicts, even when the tmux window
+// is gone. `kmux restore` owns tmux reconciliation for those cases.
 fn bail_existing_workspace(expected_branch: &str, resolved: ResolvedWorkspace) -> Result<()> {
     if resolved.branch.as_deref() != Some(expected_branch) {
         bail!(
@@ -134,6 +137,8 @@ struct AddTarget {
 }
 
 impl AddTarget {
+    // Resolve remote-tracking input into the local branch name to create while
+    // preserving the remote ref as the start point.
     fn resolve(repo: &super::context::RepoContext, args: &cli::AddArgs) -> Result<Self> {
         let parent = args
             .parent

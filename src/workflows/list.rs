@@ -15,6 +15,7 @@ use super::context::load_repo_context;
 use super::resolve::{WorkspaceListItem, list_items};
 use crate::paths::same_path;
 
+/// Print workspace inventory, optionally as JSON for machine consumers.
 pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let items = list_items(&repo)?;
@@ -66,6 +67,7 @@ struct DisplayRow {
     path: String,
 }
 
+// Indent by tree depth while keeping parent labels in their own column for scanability.
 fn format_branch(item: &WorkspaceListItem) -> String {
     let branch = item.git_branch.as_deref().unwrap_or("-");
     if item.tree_depth == 0 {
@@ -74,6 +76,7 @@ fn format_branch(item: &WorkspaceListItem) -> String {
     format!("{}{}", "  ".repeat(item.tree_depth), branch)
 }
 
+// Main worktree age is intentionally omitted because the column describes kmux workspaces.
 fn format_age(item: &WorkspaceListItem, now: u64) -> String {
     if item.is_main {
         return "-".to_owned();
@@ -98,6 +101,7 @@ fn compact_age(seconds: u64) -> String {
     }
 }
 
+// Summarize all agent sessions that provide any hint for this workspace.
 fn format_agent(
     item: &WorkspaceListItem,
     agents: &[AgentSessionView],
@@ -129,6 +133,7 @@ fn format_agent(
         .join(" ")
 }
 
+// Match agent observations against the full workspace identity that list rows know.
 fn workspace_target(item: &WorkspaceListItem) -> WorkspaceTarget<'_> {
     WorkspaceTarget::new(
         Some(item.workspace_slug.clone()),
@@ -145,6 +150,7 @@ fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {
     }
 }
 
+// tmux status is best-effort list decoration and should not fail inventory output.
 fn format_mux(
     item: &WorkspaceListItem,
     config: &crate::config::Config,
@@ -165,6 +171,8 @@ fn format_mux(
     }
 }
 
+// Show whether removal would fail the safe-delete check, but keep list resilient
+// when Git cannot answer for a transient reason.
 fn format_unmerged(item: &WorkspaceListItem, git: &crate::git::Git) -> String {
     if item.is_main {
         return "-".to_owned();
@@ -181,6 +189,7 @@ fn format_unmerged(item: &WorkspaceListItem, git: &crate::git::Git) -> String {
     }
 }
 
+// Prefer relative paths near the current directory while preserving exact paths for distant repos.
 fn format_path(path: &Path, current_dir: &Path) -> String {
     if same_path(path, current_dir) {
         return "(here)".to_owned();
@@ -198,6 +207,7 @@ fn format_path(path: &Path, current_dir: &Path) -> String {
     path.display().to_string()
 }
 
+// Width calculations use chars rather than bytes because status icons may be multibyte.
 fn print_table(rows: &[DisplayRow]) {
     let headers = [
         "BRANCH", "PARENT", "AGE", "AGENT", "MUX", "UNMERGED", "PATH",

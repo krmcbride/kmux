@@ -6,6 +6,7 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, file_entry_relative_path};
 
+/// Return the startup command for a new workspace window, preferring the focused pane.
 pub(super) fn startup_command(config: &Config) -> Option<&str> {
     let panes = config.panes.as_deref()?;
     panes
@@ -15,6 +16,7 @@ pub(super) fn startup_command(config: &Config) -> Option<&str> {
         .and_then(|pane| pane.command.as_deref())
 }
 
+/// Copy or symlink configured repo-relative files into a new worktree.
 pub(super) fn apply_file_operations(
     config: &Config,
     repo_root: &Path,
@@ -47,6 +49,7 @@ pub(super) fn apply_file_operations(
     Ok(())
 }
 
+/// Run configured post-create shell commands in the new worktree with kmux env vars.
 pub(super) fn run_post_create(
     config: &Config,
     repo_root: &Path,
@@ -71,6 +74,8 @@ pub(super) fn run_post_create(
     Ok(())
 }
 
+// Missing sources are warnings because optional local config files often differ
+// between repos and machines.
 fn warn_missing_source(operation: &str, source: &Path) {
     eprintln!(
         "kmux: warning: configured file source missing for {operation}: {}",
@@ -78,6 +83,7 @@ fn warn_missing_source(operation: &str, source: &Path) {
     );
 }
 
+// Copy files, symlinks, and directories, replacing any preexisting destination.
 fn copy_path(source: &Path, destination: &Path) -> Result<()> {
     let metadata = source.symlink_metadata()?;
     remove_destination(destination)?;
@@ -92,6 +98,7 @@ fn copy_path(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+// Preserve directory structure recursively but skip special file types.
 fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     fs::create_dir_all(destination)?;
     for entry in fs::read_dir(source)? {
@@ -113,6 +120,7 @@ fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+// Symlink configured paths using platform-specific directory/file APIs where required.
 fn symlink_path(source: &Path, destination: &Path) -> Result<()> {
     remove_destination(destination)?;
     if let Some(parent) = destination.parent() {
@@ -134,6 +142,7 @@ fn symlink_path(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+// Remove a destination path before copy/symlink so repeated setup is deterministic.
 fn remove_destination(destination: &Path) -> Result<()> {
     let Ok(metadata) = destination.symlink_metadata() else {
         return Ok(());

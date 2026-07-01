@@ -12,6 +12,7 @@ use anyhow::Result;
 
 use crate::cli::{SidebarArgs, SidebarCommand};
 
+/// Dispatch sidebar lifecycle commands or toggle the sidebar when no subcommand is provided.
 pub fn run(args: SidebarArgs) -> Result<()> {
     match args.command {
         Some(SidebarCommand::On) => lifecycle::enable(),

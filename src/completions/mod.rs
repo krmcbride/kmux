@@ -7,6 +7,7 @@ use crate::git::Git;
 use crate::paths::RepoPaths;
 use crate::slug::workspace_slug_from_branch;
 
+/// Print static clap completions plus kmux dynamic completion hooks for a shell.
 pub fn generate(shell: Shell) -> Result<()> {
     let mut command = cli::Cli::command();
     let name = command.get_name().to_owned();
@@ -34,6 +35,7 @@ pub fn generate(shell: Shell) -> Result<()> {
     Ok(())
 }
 
+/// Print strict kmux workspace slugs for shell completion.
 pub fn complete_workspaces() -> Result<()> {
     for workspace in kmux_workspaces() {
         println!("{workspace}");
@@ -41,6 +43,7 @@ pub fn complete_workspaces() -> Result<()> {
     Ok(())
 }
 
+/// Print branch refs that can be used with `kmux add` without colliding with worktrees.
 pub fn complete_add_branches() -> Result<()> {
     for branch in checkoutable_branch_refs() {
         println!("{branch}");
@@ -48,6 +51,7 @@ pub fn complete_add_branches() -> Result<()> {
     Ok(())
 }
 
+/// Print local branch refs for parent-selection completion.
 pub fn complete_git_branches() -> Result<()> {
     for branch in local_branches() {
         println!("{branch}");
@@ -55,6 +59,8 @@ pub fn complete_git_branches() -> Result<()> {
     Ok(())
 }
 
+// Dynamic completion must fail closed: outside a Git repo, or while Git is
+// transiently unavailable, return no candidates instead of surfacing errors.
 fn kmux_workspaces() -> Vec<String> {
     let Ok(cwd) = std::env::current_dir() else {
         return Vec::new();
@@ -112,6 +118,8 @@ fn local_repo_git() -> Option<Git> {
     Some(Git::new(paths.main_worktree))
 }
 
+// clap_complete generates a `_kmux` zsh function. Rename it so the custom
+// wrapper can own `_kmux` while still delegating to the generated implementation.
 fn prepare_zsh_base(script: &str, name: &str) -> String {
     let function_prefix = format!("_{name}");
     let base_function_prefix = format!("_{name}_base");

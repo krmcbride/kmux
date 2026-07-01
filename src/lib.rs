@@ -13,6 +13,7 @@ pub(crate) mod workflows;
 use anyhow::Result;
 use clap::Parser;
 
+/// Parse the CLI and dispatch the selected kmux command.
 pub fn run() -> Result<()> {
     let args = cli::Cli::parse();
 

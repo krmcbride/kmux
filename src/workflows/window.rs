@@ -9,6 +9,7 @@ use super::resolve::ResolvedWorkspace;
 use crate::paths::same_path;
 use crate::tmux::TmuxWindow;
 
+/// Create a tmux window for a resolved workspace and attach kmux metadata options.
 pub(super) fn create_resolved(
     repo: &RepoContext,
     tmux: &TmuxContext,
@@ -41,6 +42,7 @@ pub(super) fn create_resolved(
     Ok(())
 }
 
+/// Ensure a resolved workspace has exactly one matching tmux window with fresh metadata.
 pub(super) fn restore_resolved(
     repo: &RepoContext,
     tmux: &TmuxContext,
@@ -104,6 +106,8 @@ pub(super) fn restore_resolved(
     Ok(())
 }
 
+// Restore accepts old metadata matches so windows created by previous kmux versions
+// can be renamed and refreshed instead of duplicated.
 fn window_matches_workspace(window: &TmuxWindow, resolved: &ResolvedWorkspace) -> bool {
     window.kmux_workspace_slug.as_deref() == Some(resolved.workspace_slug.as_str())
         || window.kmux_workspace_branch.as_deref() == resolved.branch.as_deref()

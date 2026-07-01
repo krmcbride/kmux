@@ -5,6 +5,7 @@ use anyhow::{Context, Result, anyhow};
 use crate::git::Git;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Resolved filesystem layout for a Git repo and its kmux worktree area.
 pub struct RepoPaths {
     pub current_worktree: PathBuf,
     pub main_worktree: PathBuf,
@@ -13,6 +14,7 @@ pub struct RepoPaths {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Best-effort repo identity recovered from path hints in agent observations.
 pub struct RepoMetadata {
     pub repo_name: Option<String>,
     pub repo_path: Option<String>,
@@ -20,6 +22,10 @@ pub struct RepoMetadata {
 }
 
 impl RepoPaths {
+    /// Discover the current, main, common-Git, and kmux worktree-base paths for a repo.
+    ///
+    /// When called from a linked worktree, the main worktree is resolved from Git's
+    /// common metadata so new kmux worktrees are still created beside the primary checkout.
     pub fn discover(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref();
         let git = Git::new(cwd);
@@ -64,12 +70,39 @@ impl RepoPaths {
         })
     }
 
+    /// Return the filesystem path for a kmux workspace slug under this repo's worktree base.
     pub fn workspace_path(&self, workspace_slug: &str) -> PathBuf {
         self.worktree_base_dir.join(workspace_slug)
     }
 }
 
-pub fn default_worktree_base_dir(main_worktree: &Path) -> Result<PathBuf> {
+/// Compare paths after canonicalization when possible, falling back to literal comparison.
+pub fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// Infer repo name, repo path, and branch from the first path that belongs to a Git repo.
+pub fn infer_repo_metadata_from_paths(paths: &[Option<&str>]) -> RepoMetadata {
+    paths
+        .iter()
+        .flatten()
+        .find_map(|path| infer_repo_metadata(path))
+        .unwrap_or_default()
+}
+
+/// Return the final path component as owned text, ignoring empty basenames.
+pub fn path_basename(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
+/// Return the sibling directory where kmux stores linked worktrees for a main worktree.
+fn default_worktree_base_dir(main_worktree: &Path) -> Result<PathBuf> {
     let project_name = main_worktree
         .file_name()
         .map(|name| name.to_string_lossy().into_owned())
@@ -90,28 +123,8 @@ pub fn default_worktree_base_dir(main_worktree: &Path) -> Result<PathBuf> {
     Ok(parent.join(format!("{project_name}__worktrees")))
 }
 
-pub fn same_path(left: &Path, right: &Path) -> bool {
-    match (left.canonicalize(), right.canonicalize()) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
-}
-
-pub fn infer_repo_metadata_from_paths(paths: &[Option<&str>]) -> RepoMetadata {
-    paths
-        .iter()
-        .flatten()
-        .find_map(|path| infer_repo_metadata(path))
-        .unwrap_or_default()
-}
-
-pub fn path_basename(path: &str) -> Option<String> {
-    Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-}
-
+// Observation paths may outlive their tmux pane or worktree. Treat failures here
+// as absence of metadata so status/sidebar rendering can keep going.
 fn infer_repo_metadata(path: &str) -> Option<RepoMetadata> {
     let paths = RepoPaths::discover(path).ok()?;
     let branch = Git::new(&paths.current_worktree)

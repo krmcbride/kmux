@@ -2,22 +2,27 @@ use std::ffi::OsString;
 
 use anyhow::{Context, Result};
 
+/// Build the shell command tmux uses to run the sidebar TUI pane.
 pub(super) fn sidebar_tui_command() -> Result<String> {
     sidebar_command(["sidebar", "run"])
 }
 
+/// Build the shell command tmux hooks use to reconcile sidebar panes.
 pub(super) fn sidebar_refresh_command() -> Result<String> {
     sidebar_command(["sidebar", "refresh"])
 }
 
+/// Build the shell command used to disable the sidebar from inside tmux.
 pub(super) fn sidebar_off_command() -> Result<String> {
     sidebar_command(["sidebar", "off"])
 }
 
+/// Build the shell command that wakes the sidebar pane for one window.
 pub(super) fn sidebar_wake_command(window_id: &str) -> Result<String> {
     sidebar_command(["sidebar", "wake", window_id])
 }
 
+/// Build the tmux hook command that expands `#{window_id}` at hook runtime.
 pub(super) fn sidebar_wake_hook_command() -> Result<String> {
     Ok(format!(
         "run-shell -b {}",
@@ -25,10 +30,13 @@ pub(super) fn sidebar_wake_hook_command() -> Result<String> {
     ))
 }
 
+/// Quote a shell word for the simple POSIX shell commands kmux installs in tmux.
 pub(super) fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
+// Preserve the executable path and relevant XDG/tmux environment so hooks run
+// against the same kmux binary and tmux socket as the user command.
 fn sidebar_command<const N: usize>(args: [&str; N]) -> Result<String> {
     let executable = std::env::current_exe().context("failed to determine current executable")?;
     let mut parts = vec!["exec".to_owned(), "env".to_owned()];

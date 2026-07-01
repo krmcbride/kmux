@@ -13,6 +13,7 @@ use super::context::RepoContext;
 use crate::paths::same_path;
 
 #[derive(Debug)]
+/// Workspace identity resolved from Git worktree state.
 pub(super) struct ResolvedWorkspace {
     pub(super) workspace_slug: String,
     pub(super) path: PathBuf,
@@ -20,6 +21,7 @@ pub(super) struct ResolvedWorkspace {
 }
 
 #[derive(Clone, Serialize)]
+/// Workspace inventory row shared by human list output and JSON output.
 pub(super) struct WorkspaceListItem {
     pub(super) workspace_slug: String,
     pub(super) git_branch: Option<String>,
@@ -32,6 +34,7 @@ pub(super) struct WorkspaceListItem {
     pub(super) tree_depth: usize,
 }
 
+/// Resolve a user-supplied workspace name, slug, or window-prefixed slug.
 pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<ResolvedWorkspace> {
     for candidate in name_candidates(&repo.config, name) {
         if let Some(worktree) = find_kmux_workspace_by_name(repo, &candidate)? {
@@ -42,6 +45,7 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Resolv
     bail!("workspace '{}' not found", name)
 }
 
+/// Resolve the current worktree as a strict kmux workspace for short-form commands.
 pub(super) fn resolve_current_kmux_workspace(
     repo: &RepoContext,
     command_name: &str,
@@ -74,26 +78,7 @@ pub(super) fn resolve_current_kmux_workspace(
     resolved_from_kmux_worktree(repo, current)
 }
 
-pub(super) fn resolved_from_worktree(worktree: WorktreeInfo) -> Result<ResolvedWorkspace> {
-    let workspace_slug = worktree
-        .path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
-        .ok_or_else(|| {
-            anyhow!(
-                "could not determine workspace slug from {}",
-                worktree.path.display()
-            )
-        })?;
-
-    Ok(ResolvedWorkspace {
-        workspace_slug,
-        path: worktree.path,
-        branch: worktree.branch,
-    })
-}
-
+/// Resolve a Git worktree and require its kmux path slug to match its branch name.
 pub(super) fn resolved_from_kmux_worktree(
     repo: &RepoContext,
     worktree: WorktreeInfo,
@@ -103,6 +88,7 @@ pub(super) fn resolved_from_kmux_worktree(
     Ok(resolved)
 }
 
+/// Build the full workspace inventory, enriched with parent metadata and tree depth.
 pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceListItem>> {
     let mut worktrees = repo.git.worktrees()?;
     let mut items = Vec::new();
@@ -128,6 +114,9 @@ pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceListItem>> {
     Ok(parent_tree_order(items))
 }
 
+/// Return strict kmux workspaces suitable for tmux restore.
+///
+/// Strict workspaces live under the kmux worktree base and use the branch-derived slug.
 pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<ResolvedWorkspace>> {
     let mut workspaces = Vec::new();
     for worktree in repo.git.worktrees()? {
@@ -149,6 +138,7 @@ pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<ResolvedW
     Ok(workspaces)
 }
 
+/// Find a kmux worktree by exact branch name or workspace slug/name.
 pub(super) fn find_kmux_workspace_by_name(
     repo: &RepoContext,
     name: &str,
@@ -167,6 +157,7 @@ pub(super) fn find_kmux_workspace_by_name(
         }))
 }
 
+/// Find a kmux worktree by derived workspace slug or expected workspace path.
 pub(super) fn find_kmux_workspace_by_slug(
     repo: &RepoContext,
     workspace_slug: &str,
@@ -185,6 +176,29 @@ pub(super) fn find_kmux_workspace_by_slug(
         }))
 }
 
+/// Convert a Git worktree record into kmux's resolved workspace shape.
+fn resolved_from_worktree(worktree: WorktreeInfo) -> Result<ResolvedWorkspace> {
+    let workspace_slug = worktree
+        .path
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            anyhow!(
+                "could not determine workspace slug from {}",
+                worktree.path.display()
+            )
+        })?;
+
+    Ok(ResolvedWorkspace {
+        workspace_slug,
+        path: worktree.path,
+        branch: worktree.branch,
+    })
+}
+
+// Filesystem creation time is best-effort list metadata; unsupported platforms
+// fall back to modified time, then omit the field.
 fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<WorkspaceListItem> {
     let resolved = resolved_from_worktree(worktree)?;
     let created_at = std::fs::metadata(&resolved.path)
@@ -205,6 +219,8 @@ fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<Work
     })
 }
 
+// Parent metadata is allowed to reference branches/worktrees that are not
+// currently present; missing parents are rendered as roots with a parent label.
 fn apply_parent_state(items: &mut [WorkspaceListItem], state: &WorkspaceState) {
     for item in items {
         let Some(branch) = item.git_branch.as_deref() else {
@@ -218,6 +234,8 @@ fn apply_parent_state(items: &mut [WorkspaceListItem], state: &WorkspaceState) {
     }
 }
 
+// Order inventory as a forest. Links to absent parents become roots, and the
+// visited fallback handles hand-edited cyclic state defensively.
 fn parent_tree_order(mut items: Vec<WorkspaceListItem>) -> Vec<WorkspaceListItem> {
     let branch_set = items
         .iter()
@@ -301,6 +319,7 @@ fn item_order_key(item: &WorkspaceListItem) -> (bool, String) {
     (!item.is_main, item.workspace_slug.clone())
 }
 
+// Accept a raw slug or a tmux window name with the configured prefix stripped.
 fn name_candidates(config: &Config, name: &str) -> Vec<String> {
     let mut candidates = vec![name.to_owned()];
     if let Some(stripped) = name.strip_prefix(config.window_prefix())
@@ -311,10 +330,12 @@ fn name_candidates(config: &Config, name: &str) -> Vec<String> {
     candidates
 }
 
+// A kmux worktree must be a direct child of the repo's configured worktree base.
 fn is_kmux_worktree(repo: &RepoContext, path: &std::path::Path) -> bool {
     path.parent() == Some(repo.paths.worktree_base_dir.as_path())
 }
 
+// Strict workspaces additionally require the path basename to equal the branch-derived slug.
 fn is_strict_kmux_workspace(repo: &RepoContext, worktree: &WorktreeInfo) -> bool {
     if !is_kmux_worktree(repo, &worktree.path) {
         return false;
@@ -331,6 +352,7 @@ fn is_strict_kmux_workspace(repo: &RepoContext, worktree: &WorktreeInfo) -> bool
         .is_some_and(|file_name| file_name == expected_slug.as_str())
 }
 
+// Reject branch/path mismatches so strict commands do not operate on ambiguous worktrees.
 fn validate_branch_derived_workspace_slug(
     repo: &RepoContext,
     resolved: &ResolvedWorkspace,

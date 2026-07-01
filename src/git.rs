@@ -7,30 +7,27 @@ use std::process::{Command, ExitStatus};
 use anyhow::{Context, Result, anyhow, bail};
 
 #[derive(Debug, Clone)]
+/// Thin adapter for running Git commands from a fixed working directory.
 pub struct Git {
     cwd: PathBuf,
 }
 
-#[derive(Debug)]
-pub struct GitOutput {
-    pub status: ExitStatus,
-    pub stdout: String,
-    pub stderr: String,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Git repository paths needed by kmux to locate worktrees and shared metadata.
 pub struct RepoInfo {
     pub current_worktree: PathBuf,
     pub git_common_dir: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Outcome of ensuring a local branch exists.
 pub enum BranchAction {
     Existing,
     Created,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// One entry from `git worktree list --porcelain`.
 pub struct WorktreeInfo {
     pub path: PathBuf,
     pub head: Option<String>,
@@ -42,39 +39,30 @@ pub struct WorktreeInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+/// Remote-tracking branch split into remote name, local branch name, and full ref.
 pub struct RemoteBranch {
     pub remote: String,
     pub branch: String,
     pub ref_name: String,
 }
 
+#[derive(Debug)]
+/// Raw Git subprocess output with UTF-8-lossy stdout and stderr text.
+struct GitOutput {
+    pub status: ExitStatus,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 impl Git {
+    /// Create a Git adapter rooted at `cwd`.
     pub fn new(cwd: impl AsRef<Path>) -> Self {
         Self {
             cwd: cwd.as_ref().to_path_buf(),
         }
     }
 
-    pub fn output<I, S>(&self, args: I) -> Result<GitOutput>
-    where
-        I: IntoIterator<Item = S>,
-        S: Into<OsString>,
-    {
-        let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
-        let display_args = display_args(&args);
-        let output = Command::new("git")
-            .args(&args)
-            .current_dir(&self.cwd)
-            .output()
-            .with_context(|| format!("failed to run git {display_args}"))?;
-
-        Ok(GitOutput {
-            status: output.status,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
-            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
-        })
-    }
-
+    /// Run a Git command, require success, and return trimmed stdout.
     pub fn stdout<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
@@ -87,6 +75,7 @@ impl Git {
         Ok(output.stdout.trim_end().to_owned())
     }
 
+    /// Resolve the current worktree root and Git common dir for this adapter's cwd.
     pub fn repo_info(&self) -> Result<RepoInfo> {
         let current_worktree_raw = self
             .stdout(["rev-parse", "--show-toplevel"])
@@ -107,6 +96,7 @@ impl Git {
         })
     }
 
+    /// Return the current branch name, or `None` when HEAD is detached.
     pub fn current_branch(&self) -> Result<Option<String>> {
         let output = self.output(["symbolic-ref", "--quiet", "--short", "HEAD"])?;
         if output.status.success() {
@@ -123,11 +113,13 @@ impl Git {
         }
     }
 
+    /// Return the current branch or fail with a user-facing detached-HEAD message.
     pub fn require_current_branch(&self) -> Result<String> {
         self.current_branch()?
             .ok_or_else(|| anyhow!("cannot create a branch from detached HEAD without --parent"))
     }
 
+    /// Return whether a local branch exists under `refs/heads`.
     pub fn local_branch_exists(&self, branch: &str) -> Result<bool> {
         let output = self.output(vec![
             OsString::from("show-ref"),
@@ -144,22 +136,10 @@ impl Git {
         }
     }
 
-    pub fn commit_ref_exists(&self, reference: &str) -> Result<bool> {
-        let output = self.output(vec![
-            OsString::from("rev-parse"),
-            OsString::from("--verify"),
-            OsString::from("--quiet"),
-            OsString::from(format!("{reference}^{{commit}}")),
-        ])?;
-        if output.status.success() {
-            Ok(true)
-        } else if output.status.code() == Some(1) {
-            Ok(false)
-        } else {
-            bail_git(output)
-        }
-    }
-
+    /// Ensure `branch` exists locally, creating it from `start_point` or the current branch.
+    ///
+    /// When the start point is a remote-tracking ref, the new branch is configured to
+    /// track that upstream.
     pub fn ensure_local_branch(
         &self,
         branch: &str,
@@ -190,6 +170,7 @@ impl Git {
         Ok(BranchAction::Created)
     }
 
+    /// Return the merge-base commit for two refs, or `None` when Git finds no common base.
     pub fn merge_base(&self, left: &str, right: &str) -> Result<Option<String>> {
         let output = self.output(["merge-base", left, right])?;
         if output.status.success() {
@@ -206,32 +187,13 @@ impl Git {
         }
     }
 
-    pub fn set_branch_upstream(&self, branch: &str, upstream: &str) -> Result<()> {
-        self.stdout(vec![
-            OsString::from("branch"),
-            OsString::from("--set-upstream-to"),
-            OsString::from(upstream),
-            OsString::from(branch),
-        ])?;
-        Ok(())
-    }
-
+    /// List all Git worktrees using porcelain output.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
         let output = self.stdout(["worktree", "list", "--porcelain"])?;
         parse_worktree_list(&output)
     }
 
-    pub fn branch_refs(&self) -> Result<Vec<String>> {
-        let output = self.stdout([
-            "for-each-ref",
-            "--format=%(refname:short)",
-            "--sort=refname",
-            "refs/heads/",
-            "refs/remotes/",
-        ])?;
-        Ok(non_empty_branch_refs(&output))
-    }
-
+    /// Return sorted local branch names.
     pub fn local_branch_refs(&self) -> Result<Vec<String>> {
         let output = self.stdout([
             "for-each-ref",
@@ -242,6 +204,7 @@ impl Git {
         Ok(non_empty_branch_refs(&output))
     }
 
+    /// Return branch refs that are not already checked out in any worktree.
     pub fn checkoutable_branch_refs(&self) -> Result<Vec<String>> {
         // This feeds shell tab completion, so keep it to a fixed number of Git
         // subprocesses. Per-ref validation belongs in command execution paths
@@ -260,6 +223,7 @@ impl Git {
         ))
     }
 
+    /// Resolve a branch ref to a known remote-tracking branch, if it names one.
     pub fn known_remote_branch(&self, branch: &str) -> Result<Option<RemoteBranch>> {
         let remotes = self.sorted_remotes_by_length()?;
         let Some(remote_branch) = remote_branch_from_ref(&remotes, branch) else {
@@ -273,27 +237,7 @@ impl Git {
         Ok(None)
     }
 
-    pub fn remotes(&self) -> Result<Vec<String>> {
-        let output = self.stdout(["remote"])?;
-        Ok(non_empty_lines(&output))
-    }
-
-    pub fn remote_tracking_branch_exists(&self, branch: &str) -> Result<bool> {
-        let output = self.output(vec![
-            OsString::from("show-ref"),
-            OsString::from("--verify"),
-            OsString::from("--quiet"),
-            OsString::from(format!("refs/remotes/{branch}")),
-        ])?;
-        if output.status.success() {
-            Ok(true)
-        } else if output.status.code() == Some(1) {
-            Ok(false)
-        } else {
-            bail_git(output)
-        }
-    }
-
+    /// Return the first worktree from Git's worktree list, which Git reports as the main one.
     pub fn main_worktree_from_list(&self) -> Result<Option<PathBuf>> {
         Ok(self
             .worktrees()?
@@ -302,6 +246,7 @@ impl Git {
             .map(|worktree| worktree.path))
     }
 
+    /// Find a worktree currently checked out on `branch`.
     pub fn find_worktree_by_branch(&self, branch: &str) -> Result<Option<WorktreeInfo>> {
         Ok(self
             .worktrees()?
@@ -309,6 +254,7 @@ impl Git {
             .find(|worktree| worktree.branch.as_deref() == Some(branch)))
     }
 
+    /// Ensure a candidate worktree path is absent or an empty directory.
     pub fn ensure_available_worktree_path(&self, path: &Path) -> Result<()> {
         if !path.exists() {
             return Ok(());
@@ -338,6 +284,7 @@ impl Git {
         );
     }
 
+    /// Add a linked worktree at `path` for an existing local branch.
     pub fn add_worktree(&self, path: &Path, branch: &str) -> Result<()> {
         self.ensure_available_worktree_path(path)?;
         self.stdout(vec![
@@ -349,23 +296,17 @@ impl Git {
         Ok(())
     }
 
-    pub fn worktree_is_dirty(&self, path: &Path) -> Result<bool> {
-        if !path.is_dir() {
-            bail!("worktree path {} does not exist", path.display());
-        }
-
-        let output = Git::new(path).stdout(["status", "--porcelain", "--untracked-files=all"])?;
-        Ok(!output.trim().is_empty())
-    }
-
+    /// Return whether this worktree has staged changes.
     pub fn has_staged_changes(&self) -> Result<bool> {
         self.diff_has_changes(["--no-optional-locks", "diff", "--cached", "--quiet"])
     }
 
+    /// Return whether this worktree has unstaged changes.
     pub fn has_unstaged_changes(&self) -> Result<bool> {
         self.diff_has_changes(["--no-optional-locks", "diff", "--quiet"])
     }
 
+    /// Return whether `branch` is merged into its upstream or, without upstream, HEAD.
     pub fn branch_is_safely_deletable(&self, branch: &str) -> Result<bool> {
         let target = self
             .branch_upstream(branch)?
@@ -380,6 +321,7 @@ impl Git {
         }
     }
 
+    /// Remove a linked worktree, requiring a clean tree unless `force` is true.
     pub fn remove_worktree(&self, path: &Path, force: bool) -> Result<()> {
         if !force && self.worktree_is_dirty(path)? {
             bail!("worktree {} has uncommitted changes", path.display());
@@ -394,18 +336,115 @@ impl Git {
         Ok(())
     }
 
+    /// Delete a local branch using `-d` or `-D` depending on `force`.
     pub fn delete_local_branch(&self, branch: &str, force: bool) -> Result<()> {
         let flag = if force { "-D" } else { "-d" };
         self.stdout(["branch", flag, branch])?;
         Ok(())
     }
 
+    /// Run a Git command and return raw output without requiring a successful exit status.
+    fn output<I, S>(&self, args: I) -> Result<GitOutput>
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<OsString>,
+    {
+        let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
+        let display_args = display_args(&args);
+        let output = Command::new("git")
+            .args(&args)
+            .current_dir(&self.cwd)
+            .output()
+            .with_context(|| format!("failed to run git {display_args}"))?;
+
+        Ok(GitOutput {
+            status: output.status,
+            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+
+    /// Return whether a reference resolves to a commit object.
+    fn commit_ref_exists(&self, reference: &str) -> Result<bool> {
+        let output = self.output(vec![
+            OsString::from("rev-parse"),
+            OsString::from("--verify"),
+            OsString::from("--quiet"),
+            OsString::from(format!("{reference}^{{commit}}")),
+        ])?;
+        if output.status.success() {
+            Ok(true)
+        } else if output.status.code() == Some(1) {
+            Ok(false)
+        } else {
+            bail_git(output)
+        }
+    }
+
+    /// Configure a local branch to track an upstream branch.
+    fn set_branch_upstream(&self, branch: &str, upstream: &str) -> Result<()> {
+        self.stdout(vec![
+            OsString::from("branch"),
+            OsString::from("--set-upstream-to"),
+            OsString::from(upstream),
+            OsString::from(branch),
+        ])?;
+        Ok(())
+    }
+
+    /// Return sorted local and remote branch refs suitable for display or completion.
+    fn branch_refs(&self) -> Result<Vec<String>> {
+        let output = self.stdout([
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "--sort=refname",
+            "refs/heads/",
+            "refs/remotes/",
+        ])?;
+        Ok(non_empty_branch_refs(&output))
+    }
+
+    /// Return configured Git remote names.
+    fn remotes(&self) -> Result<Vec<String>> {
+        let output = self.stdout(["remote"])?;
+        Ok(non_empty_lines(&output))
+    }
+
+    /// Return whether a remote-tracking branch exists under `refs/remotes`.
+    fn remote_tracking_branch_exists(&self, branch: &str) -> Result<bool> {
+        let output = self.output(vec![
+            OsString::from("show-ref"),
+            OsString::from("--verify"),
+            OsString::from("--quiet"),
+            OsString::from(format!("refs/remotes/{branch}")),
+        ])?;
+        if output.status.success() {
+            Ok(true)
+        } else if output.status.code() == Some(1) {
+            Ok(false)
+        } else {
+            bail_git(output)
+        }
+    }
+
+    /// Return whether a worktree contains staged, unstaged, or untracked changes.
+    fn worktree_is_dirty(&self, path: &Path) -> Result<bool> {
+        if !path.is_dir() {
+            bail!("worktree path {} does not exist", path.display());
+        }
+
+        let output = Git::new(path).stdout(["status", "--porcelain", "--untracked-files=all"])?;
+        Ok(!output.trim().is_empty())
+    }
+
+    // Sort longest first so a remote named `origin/private` wins before `origin`.
     fn sorted_remotes_by_length(&self) -> Result<Vec<String>> {
         let mut remotes = self.remotes()?;
         remotes.sort_by_key(|remote| std::cmp::Reverse(remote.len()));
         Ok(remotes)
     }
 
+    // Empty upstream output means the branch exists but has no upstream.
     fn branch_upstream(&self, branch: &str) -> Result<Option<String>> {
         let output = self.stdout(vec![
             OsString::from("for-each-ref"),
@@ -415,6 +454,7 @@ impl Git {
         Ok(Some(output).filter(|upstream| !upstream.is_empty()))
     }
 
+    // `git diff --quiet` returns 1 for differences and >1 for real command failures.
     fn diff_has_changes<const N: usize>(&self, args: [&str; N]) -> Result<bool> {
         let output = self.output(args)?;
         if output.status.success() {
@@ -427,7 +467,8 @@ impl Git {
     }
 }
 
-pub fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
+// Parse `git worktree list --porcelain` output into structured worktree records.
+fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
     let mut worktrees = Vec::new();
     let mut current = WorktreeBuilder::default();
 
@@ -541,6 +582,8 @@ fn push_worktree(worktrees: &mut Vec<WorktreeInfo>, current: &mut WorktreeBuilde
     current.bare = false;
 }
 
+// Git emits `refs/heads/<name>` for worktree branches; kmux stores/display names
+// in the normal short local-branch form.
 fn local_branch_name(branch_ref: &str) -> &str {
     branch_ref.strip_prefix("refs/heads/").unwrap_or(branch_ref)
 }
