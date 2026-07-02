@@ -1,3 +1,10 @@
+//! Filesystem path discovery and normalization for kmux-managed repositories.
+//!
+//! This module centralizes the rules for deriving the main worktree, Git common
+//! dir, sibling kmux worktree base, and best-effort repo metadata from path
+//! hints. Keep generic path helpers here only when they support those layout and
+//! identity rules.
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};

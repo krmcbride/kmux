@@ -1,3 +1,9 @@
+//! Stateful controller for the sidebar terminal UI.
+//!
+//! `SidebarApp` owns selection, focus-following behavior, row refreshes, jump
+//! actions, deletion, spinner state, and transient errors. Rendering and terminal
+//! event plumbing live in sibling modules.
+
 use anyhow::Result;
 use ratatui::widgets::ListState;
 

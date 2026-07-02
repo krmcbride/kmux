@@ -1,3 +1,10 @@
+//! tmux subprocess adapter and metadata model.
+//!
+//! This module owns tmux target syntax, format-string parsing, user-option
+//! access, and socket/environment handling. Higher-level workflows should use
+//! this boundary instead of constructing tmux commands or parsing tmux output.
+//! The `resurrect` child module handles tmux-resurrect save-file integration.
+
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitStatus};

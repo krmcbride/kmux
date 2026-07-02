@@ -1,3 +1,9 @@
+//! Shell command builders for tmux sidebar hooks and panes.
+//!
+//! Commands preserve the current kmux executable and relevant environment so
+//! background tmux hooks run against the same binary, socket, and XDG roots as
+//! the command that installed them.
+
 use std::ffi::OsString;
 
 use anyhow::{Context, Result};

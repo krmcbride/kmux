@@ -1,3 +1,9 @@
+//! Query predicates for matching agent session views to kmux workspaces.
+//!
+//! The functions here do not load state themselves; callers provide already-built
+//! `AgentSessionView` values and a workspace target, then choose the matching
+//! strictness needed for identity-sensitive actions or summary badges.
+
 use std::path::Path;
 
 use crate::agent::sessions::AgentSessionView;

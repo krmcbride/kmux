@@ -1,3 +1,9 @@
+//! Terminal event loop for the sidebar TUI.
+//!
+//! This module owns crossterm raw-mode setup, alternate-screen cleanup, input
+//! handling, refresh scheduling, and redraw timing. Application state changes are
+//! delegated to `SidebarApp`.
+
 use std::io;
 use std::time::{Duration, Instant};
 

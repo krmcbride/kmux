@@ -1,3 +1,9 @@
+//! Serializable model for external agent observation state.
+//!
+//! These types define the JSON contract written by `set-agent-status` producers
+//! and read by status/sidebar presentation. Keep them tolerant of older files so
+//! persisted observations can survive kmux upgrades.
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

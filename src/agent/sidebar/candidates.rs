@@ -1,3 +1,9 @@
+//! Sidebar pane candidate detection and de-duplication.
+//!
+//! This module identifies live, resurrect-restored, and geometry-only sidebar
+//! panes so lifecycle reconciliation can repair or prune them without knowing the
+//! details of tmux-resurrect save rows or tmux pane geometry heuristics.
+
 use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;

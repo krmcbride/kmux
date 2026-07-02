@@ -1,3 +1,9 @@
+//! Reconciliation of persisted agent observations with live tmux state.
+//!
+//! External producers can report partial or stale location hints, so this module
+//! merges observations for each logical session and resolves the best current
+//! tmux/window/workspace target for status output and sidebar rows.
+
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 

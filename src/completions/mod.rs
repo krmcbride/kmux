@@ -1,3 +1,8 @@
+//! Shell completion generation and dynamic completion candidate providers.
+//!
+//! Static completions come from clap, while dynamic helpers query local Git state
+//! and fail closed so shell completion stays quiet outside supported contexts.
+
 use anyhow::Result;
 use clap::CommandFactory;
 use clap_complete::{Shell, generate as generate_for_shell};

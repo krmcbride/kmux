@@ -1,3 +1,9 @@
+//! Filesystem store for agent observation JSON files.
+//!
+//! The store uses the user's XDG state directory because observations are local
+//! process telemetry, not repo metadata. It owns filename construction,
+//! migration/pruning of stale files, and atomic writes from short-lived producers.
+
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};

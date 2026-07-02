@@ -1,3 +1,9 @@
+//! View model construction for sidebar rows.
+//!
+//! This module turns merged agent session views into sorted, display-ready rows
+//! with stable identities, status-derived icons, elapsed-time labels, and compact
+//! primary/secondary text for the renderer.
+
 use std::path::Path;
 
 use crate::agent::sessions::AgentSessionView;

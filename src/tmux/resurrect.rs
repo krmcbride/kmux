@@ -1,3 +1,10 @@
+//! Integration helpers for tmux-resurrect save files.
+//!
+//! tmux-resurrect stores saved tmux state as tab-delimited `pane`, `window`,
+//! and `state` records rather than preserving arbitrary tmux user options.
+//!
+//! Upstream: <https://github.com/tmux-plugins/tmux-resurrect>
+
 use std::fs;
 use std::path::PathBuf;
 

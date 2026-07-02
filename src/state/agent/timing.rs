@@ -1,3 +1,9 @@
+//! Timing derivation for agent observation updates.
+//!
+//! Producers may send partial metadata-only updates or repeated statuses, so this
+//! module computes the persisted status-change time and accumulated working
+//! duration from the previous observation plus the incoming status.
+
 use super::model::{AgentObservationState, AgentStatus};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

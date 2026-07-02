@@ -1,3 +1,9 @@
+//! ratatui rendering for the sidebar pane.
+//!
+//! Rendering is intentionally presentation-only: it consumes `SidebarApp` state
+//! and `SidebarRow` data, handles terminal-width fitting, and draws visual row
+//! states without owning lifecycle or tmux reconciliation policy.
+
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},

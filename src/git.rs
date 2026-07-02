@@ -1,3 +1,9 @@
+//! Git subprocess adapter for repository and worktree operations.
+//!
+//! This module is kmux's boundary to the Git CLI. It keeps porcelain parsing,
+//! ref checks, branch/worktree mutations, and Git common-dir discovery out of
+//! workflow code so command use cases can reason in kmux terms.
+
 use std::collections::HashSet;
 use std::ffi::OsString;
 use std::fs;

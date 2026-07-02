@@ -1,3 +1,10 @@
+//! Git-common-dir-backed workspace graph persistence.
+//!
+//! This module stores branch parent relationships and merge-base anchors with
+//! the repo's shared Git metadata so all worktrees for a clone see the same
+//! graph. It is intentionally separate from `state::agent`, which stores
+//! external agent observations in XDG state.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::io;

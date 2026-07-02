@@ -1,3 +1,8 @@
+//! Persistence surfaces for kmux-owned state.
+//!
+//! Workspace graph metadata is repo-local under Git's common dir, while external
+//! agent observation state is stored separately through the agent state store.
+
 pub mod workspace;
 
 mod agent;

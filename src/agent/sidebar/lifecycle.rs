@@ -1,3 +1,9 @@
+//! Sidebar lifecycle orchestration against tmux.
+//!
+//! This module enables, disables, refreshes, wakes, and runs the hidden sidebar
+//! pane. It owns tmux hooks, global sidebar options, reconciliation locking, and
+//! pane repair while keeping row modeling and rendering in sibling modules.
+
 use std::collections::HashSet;
 use std::io::IsTerminal;
 

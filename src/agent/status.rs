@@ -1,3 +1,9 @@
+//! Agent status command workflows and tmux status option updates.
+//!
+//! This module handles both sides of the status surface: external producers call
+//! `set-agent-status` to persist observations, while users call `status` to view
+//! reconciled sessions, optional Git context, and per-window tmux status badges.
+
 use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
