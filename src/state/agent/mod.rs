@@ -1,3 +1,8 @@
+//! XDG-backed persistence for external agent observations.
+//!
+//! This module owns the stored report model, file layout, and timing rules used
+//! to merge status updates from producers such as editor or CLI integrations.
+
 mod model;
 mod store;
 mod timing;

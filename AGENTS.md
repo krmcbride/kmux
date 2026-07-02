@@ -14,6 +14,7 @@ These instructions apply to this repository in addition to the user-level agent 
 - Extract shared test setup into `test_support` modules when it improves readability or avoids broadening production visibility.
 - Do not widen production visibility only for tests. Same-module tests should exercise private helpers directly; shared test-only constructors, fixtures, and helpers should live behind `#[cfg(test)]` in a local `test_support` module or a test-only impl on the owning type.
 - Avoid broad utility modules. Put behavior in the module that owns the concept.
+- Use inner module doc comments (`//!`) at the top of `mod.rs` files or focused module files when a module needs ownership, boundary, or upstream-integration context.
 - Add Rust doc comments to public functions and methods to explain the behavior, invariants, and side effects that are not obvious from the signature. Add brief comments to non-trivial private helpers when they encode workflow policy, parsing rules, filesystem layout, subprocess behavior, or other mental-model context useful during code review.
 
 ## Architecture Boundaries

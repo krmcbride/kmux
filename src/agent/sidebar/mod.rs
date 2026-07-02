@@ -1,3 +1,8 @@
+//! Hidden tmux sidebar UI for monitoring active agent sessions.
+//!
+//! Sidebar lifecycle and rendering stay here so presentation, tmux pane repair,
+//! and keyboard navigation do not leak into workspace lifecycle workflows.
+
 mod app;
 mod candidates;
 mod commands;

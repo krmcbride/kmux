@@ -1,3 +1,9 @@
+//! Command use-case entrypoints for workspace lifecycle operations.
+//!
+//! Workflow modules orchestrate CLI input, config, Git, tmux, files, state, and
+//! output while keeping adapter-specific subprocess and storage details outside
+//! the use-case layer.
+
 use anyhow::Result;
 
 use crate::cli;
