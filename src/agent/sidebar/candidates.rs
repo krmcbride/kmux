@@ -1,17 +1,13 @@
 use std::collections::{HashMap, HashSet};
-use std::fs;
-use std::path::PathBuf;
 
 use anyhow::Result;
 
-use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxSplitSize};
+use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxResurrectPane, TmuxSplitSize};
 
 /// Default sidebar width in cells when config does not specify one.
 pub(super) const DEFAULT_WIDTH: u16 = 42;
 /// tmux pane role value used to mark kmux sidebar panes.
 pub(super) const SIDEBAR_ROLE: &str = "sidebar";
-
-const RESURRECT_DIR_OPTION: &str = "@resurrect-dir";
 
 /// Recognizes live and restored panes that belong to the kmux sidebar.
 pub(super) struct SidebarCandidateMatcher {
@@ -105,6 +101,8 @@ pub(super) fn sidebar_width_cells(size: TmuxSplitSize, window_width: u16) -> u16
     .max(1)
 }
 
+// tmux-resurrect saves pane identity as session/window/pane indexes, not the
+// live ids a new tmux server assigns after restore.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct ResurrectPaneKey {
     session_name: String,
@@ -202,91 +200,22 @@ fn restored_sidebar_geometry_panes(
 }
 
 fn resurrect_sidebar_panes(tmux: &Tmux) -> Result<HashSet<ResurrectPaneKey>> {
-    let Some(last_file) = resurrect_last_file(tmux)? else {
-        return Ok(HashSet::new());
-    };
-    let contents = fs::read_to_string(last_file)?;
-    Ok(parse_resurrect_sidebar_panes(&contents))
+    Ok(tmux
+        .resurrect_saved_panes()?
+        .into_iter()
+        .filter(is_resurrect_sidebar_pane)
+        .map(|pane| ResurrectPaneKey {
+            session_name: pane.session_name,
+            window_index: pane.window_index,
+            pane_index: pane.pane_index,
+        })
+        .collect())
 }
 
-fn resurrect_last_file(tmux: &Tmux) -> Result<Option<PathBuf>> {
-    let Some(dir) = resurrect_dir(tmux)? else {
-        return Ok(None);
-    };
-    let last = dir.join("last");
-    if !last.exists() {
-        return Ok(None);
-    }
-    Ok(Some(fs::read_link(&last).map_or(last, |target| {
-        if target.is_absolute() {
-            target
-        } else {
-            dir.join(target)
-        }
-    })))
-}
-
-fn resurrect_dir(tmux: &Tmux) -> Result<Option<PathBuf>> {
-    let output = tmux.output(["show-option", "-gqv", RESURRECT_DIR_OPTION])?;
-    if output.status.success() {
-        let value = output.stdout.trim_end();
-        if !value.is_empty() {
-            return Ok(Some(expand_resurrect_path(value)));
-        }
-    }
-
-    let Some(home) = std::env::var_os("HOME") else {
-        return Ok(None);
-    };
-    let home = PathBuf::from(home);
-    let legacy_dir = home.join(".tmux/resurrect");
-    if legacy_dir.is_dir() {
-        return Ok(Some(legacy_dir));
-    }
-
-    Ok(Some(
-        std::env::var_os("XDG_DATA_HOME")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| home.join(".local/share"))
-            .join("tmux/resurrect"),
-    ))
-}
-
-fn expand_resurrect_path(value: &str) -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_default();
-    if value == "~" {
-        return PathBuf::from(home);
-    }
-    if let Some(rest) = value.strip_prefix("~/") {
-        return PathBuf::from(home).join(rest);
-    }
-    PathBuf::from(value.replace("$HOME", &home))
-}
-
-fn parse_resurrect_sidebar_panes(contents: &str) -> HashSet<ResurrectPaneKey> {
-    contents
-        .lines()
-        .filter_map(parse_resurrect_sidebar_pane)
-        .collect()
-}
-
-fn parse_resurrect_sidebar_pane(line: &str) -> Option<ResurrectPaneKey> {
-    let fields = line.split('\t').collect::<Vec<_>>();
-    if fields.first().copied() != Some("pane") || fields.len() < 10 {
-        return None;
-    }
-
-    let pane_title = fields[6];
-    let pane_command = fields[9];
-    if pane_title != "kmux" && pane_command != "kmux" {
-        return None;
-    }
-
-    Some(ResurrectPaneKey {
-        session_name: fields[1].to_owned(),
-        window_index: fields[2].to_owned(),
-        pane_index: fields[5].to_owned(),
-    })
+// The hidden sidebar TUI marks itself with both a stable pane title and command
+// so resurrect save rows can identify it even after tmux user options are lost.
+fn is_resurrect_sidebar_pane(pane: &TmuxResurrectPane) -> bool {
+    pane.title == "kmux" || pane.current_command == "kmux"
 }
 
 #[cfg(test)]
@@ -323,12 +252,31 @@ mod tests {
     }
 
     #[test]
-    fn parses_resurrect_sidebar_panes_from_saved_kmux_rows() {
-        let keys = parse_resurrect_sidebar_panes(
-            "pane\tproject\t1\t1\t:*\t1\tkmux\t:/repo\t0\tkmux\t:\n\
-             pane\tproject\t1\t1\t:*\t2\tfish\t:/repo\t1\tfish\t:\n\
-             window\tproject\t1\t:main\t1\t:*\tlayout\t:\n",
-        );
+    fn saved_resurrect_panes_identify_sidebars() {
+        let keys = vec![
+            TmuxResurrectPane {
+                session_name: "project".to_owned(),
+                window_index: "1".to_owned(),
+                pane_index: "1".to_owned(),
+                title: "kmux".to_owned(),
+                current_command: "kmux".to_owned(),
+            },
+            TmuxResurrectPane {
+                session_name: "project".to_owned(),
+                window_index: "1".to_owned(),
+                pane_index: "2".to_owned(),
+                title: "fish".to_owned(),
+                current_command: "fish".to_owned(),
+            },
+        ]
+        .into_iter()
+        .filter(is_resurrect_sidebar_pane)
+        .map(|pane| ResurrectPaneKey {
+            session_name: pane.session_name,
+            window_index: pane.window_index,
+            pane_index: pane.pane_index,
+        })
+        .collect::<HashSet<_>>();
 
         assert!(keys.contains(&ResurrectPaneKey {
             session_name: "project".to_owned(),

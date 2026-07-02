@@ -4,6 +4,10 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
 
+mod resurrect;
+
+pub use resurrect::TmuxResurrectPane;
+
 #[derive(Debug, Clone, Default)]
 /// Thin adapter for running tmux commands, optionally against a specific socket.
 pub struct Tmux {
@@ -87,6 +91,12 @@ pub struct TmuxPaneVisibility {
     pub window_visible: bool,
 }
 
+// Kmux stores workspace identity in tmux window user options (`@kmux_*`) so a
+// window remains recognizable across separate kmux invocations and shell
+// processes. These options live on the tmux window until kmux unsets them or the
+// window or tmux server is killed. tmux-resurrect does not round-trip arbitrary
+// user options, so kmux has separate restore heuristics for resurrected panes
+// whose window or pane options disappeared with the old tmux server.
 /// tmux window option storing the kmux workspace slug.
 pub const KMUX_WORKSPACE_SLUG_OPTION: &str = "@kmux_workspace_slug";
 /// tmux window option storing the workspace filesystem path.
@@ -94,6 +104,8 @@ pub const KMUX_WORKSPACE_PATH_OPTION: &str = "@kmux_workspace_path";
 /// tmux window option storing the workspace Git branch name.
 pub const KMUX_WORKSPACE_BRANCH_OPTION: &str = "@kmux_workspace_branch";
 
+// Unit Separator (U+001F) delimits rich tmux format output where fields such as
+// pane titles and current paths may contain tabs.
 const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
 
 impl Tmux {
