@@ -115,6 +115,7 @@ pub(super) fn run_tui() -> Result<()> {
         icons,
         working_frames,
         config.sidebar.idle_after_seconds(),
+        config.sidebar.selection_hooks,
     );
     let disable_requested = run_terminal_app(&mut app)?;
     if disable_requested {

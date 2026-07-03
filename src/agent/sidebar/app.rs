@@ -8,12 +8,13 @@ use anyhow::Result;
 use ratatui::widgets::ListState;
 
 use crate::agent::sessions::session_views;
+use crate::agent::sidebar::hooks::run_selection_hooks;
 use crate::agent::sidebar::model::{
     SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
     row_index_by_identity, row_index_by_pane, row_index_by_window,
 };
 use crate::agent::status::refresh_window_statuses;
-use crate::config::StatusIcons;
+use crate::config::{SidebarSelectionHookConfig, StatusIcons};
 use crate::state::StateStore;
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
@@ -25,6 +26,7 @@ pub(super) struct SidebarApp {
     icons: SidebarIcons,
     working_frames: Vec<String>,
     idle_after_seconds: u64,
+    selection_hooks: Vec<SidebarSelectionHookConfig>,
     spinner_frame: usize,
     rows: Vec<SidebarRow>,
     list_state: ListState,
@@ -50,6 +52,7 @@ impl SidebarApp {
         icons: SidebarIcons,
         working_frames: Vec<String>,
         idle_after_seconds: u64,
+        selection_hooks: Vec<SidebarSelectionHookConfig>,
     ) -> Self {
         let context = tmux.current_context().ok().flatten();
         let host_window_id = context.as_ref().map(|context| context.window_id.clone());
@@ -61,6 +64,7 @@ impl SidebarApp {
             icons,
             working_frames,
             idle_after_seconds,
+            selection_hooks,
             spinner_frame: 0,
             rows: Vec::new(),
             list_state: ListState::default(),
@@ -134,7 +138,13 @@ impl SidebarApp {
             let _ = self.refresh_rows();
             self.last_error = Some(format!("jump failed: {error}"));
         } else {
+            let hook_result = self.run_selection_hooks_for_row(&row);
             self.reset_after_successful_jump(&row);
+            if let Err(error) = hook_result {
+                self.last_error = Some(format!("hook failed: {error}"));
+            } else {
+                self.last_error = None;
+            }
         }
     }
 
@@ -315,11 +325,20 @@ impl SidebarApp {
 
     fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
         self.tmux.select_window_id(&row.window_id)?;
-        let _ = self.tmux.switch_client_to_session(&row.session_name);
+        self.tmux.switch_client_to_session(&row.session_name)?;
         if let Some(pane_id) = &row.pane_id {
             self.tmux.select_pane(pane_id)?;
         }
         Ok(())
+    }
+
+    fn run_selection_hooks_for_row(&self, row: &SidebarRow) -> Result<()> {
+        run_selection_hooks(
+            &self.selection_hooks,
+            &self.store,
+            &self.tmux.instance_id(),
+            row,
+        )
     }
 
     fn selected_row(&self) -> Option<&SidebarRow> {
@@ -412,6 +431,7 @@ impl SidebarApp {
             icons: crate::agent::sidebar::test_support::test_icons(),
             working_frames: Vec::new(),
             idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
+            selection_hooks: Vec::new(),
             spinner_frame: 0,
             rows,
             list_state: ListState::default(),
@@ -440,6 +460,7 @@ mod tests {
     };
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
     use crate::state::AgentStatus;
+    use tempfile::tempdir;
 
     fn selected_index(app: &SidebarApp) -> Option<usize> {
         app.list_state.selected()
@@ -736,6 +757,33 @@ mod tests {
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
         );
+    }
+
+    #[test]
+    fn jump_failure_does_not_run_selection_hooks() -> Result<()> {
+        let dir = tempdir()?;
+        let marker = dir.path().join("marker");
+        let rows = vec![row_from_view(
+            &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
+            100,
+        )];
+        let mut app = SidebarApp::test(Some("not-a-window"), rows);
+        app.selection_hooks = vec![SidebarSelectionHookConfig {
+            command: format!("touch '{}'", marker.display()),
+            agent_kind: Some("opencode".to_owned()),
+            producer_kind: None,
+            timeout_ms: Some(1000),
+        }];
+
+        app.jump_to_selected();
+
+        assert!(!marker.exists());
+        assert!(!app.should_quit());
+        assert!(
+            app.last_error()
+                .is_some_and(|error| error.contains("jump failed"))
+        );
+        Ok(())
     }
 
     #[test]

@@ -37,6 +37,8 @@
                 $out/share/kmux/integrations/opencode/kmux-status-server.ts
               install -Dm0644 integrations/opencode/kmux-status-tui.ts \
                 $out/share/kmux/integrations/opencode/kmux-status-tui.ts
+              install -Dm0755 integrations/opencode/kmux-select-session.ts \
+                $out/share/kmux/integrations/opencode/kmux-select-session.ts
             '';
           };
         }

@@ -8,7 +8,7 @@ use std::path::Path;
 
 use crate::agent::sessions::AgentSessionView;
 use crate::config::StatusIcons;
-use crate::state::{AgentSessionKey, AgentStatus};
+use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Icon set precomputed for rendering sidebar rows.
@@ -55,6 +55,28 @@ impl SidebarRowIdentity {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Hook-facing context for a selected sidebar row.
+pub(super) struct SidebarRowSelection {
+    pub(super) key: AgentSessionKey,
+    pub(super) status: AgentStatus,
+    pub(super) title: Option<String>,
+    pub(super) context: Option<String>,
+    pub(super) target: AgentLocationHints,
+}
+
+impl SidebarRowSelection {
+    fn from_view(view: &AgentSessionView) -> Self {
+        Self {
+            key: view.key.clone(),
+            status: view.status,
+            title: view.title.clone(),
+            context: view.context.clone(),
+            target: view.target.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Display state derived from agent status and idle age.
 pub(super) enum SidebarRowState {
@@ -87,6 +109,7 @@ impl SidebarRowState {
 /// Presentation-ready row rendered by the sidebar TUI.
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
+    pub(super) selection: SidebarRowSelection,
     created_at: u64,
     pub(super) state: SidebarRowState,
     pub(super) icon: String,
@@ -159,6 +182,7 @@ impl SidebarRow {
 
         Self {
             identity: SidebarRowIdentity::from_view(view),
+            selection: SidebarRowSelection::from_view(view),
             created_at: view.created_at,
             state,
             icon,

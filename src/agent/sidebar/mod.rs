@@ -6,6 +6,7 @@
 mod app;
 mod candidates;
 mod commands;
+mod hooks;
 mod lifecycle;
 mod model;
 mod render;
