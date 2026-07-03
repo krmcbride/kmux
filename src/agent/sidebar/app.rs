@@ -15,13 +15,14 @@ use crate::agent::sidebar::model::{
 };
 use crate::agent::status::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
-use crate::state::StateStore;
+use crate::state::{AgentSessionKey, SidebarSelectionStore, StateStore};
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
 /// Mutable state for the sidebar terminal UI.
 pub(super) struct SidebarApp {
     tmux: Tmux,
     store: StateStore,
+    selection_store: SidebarSelectionStore,
     status_icons: StatusIcons,
     icons: SidebarIcons,
     working_frames: Vec<String>,
@@ -43,23 +44,41 @@ pub(super) struct SidebarApp {
     disable_requested: bool,
 }
 
+/// Persistence adapters used by the sidebar app.
+pub(super) struct SidebarStores {
+    agent: StateStore,
+    selection: SidebarSelectionStore,
+}
+
+impl SidebarStores {
+    /// Bundle sidebar persistence adapters for app construction.
+    pub(super) fn new(agent: StateStore, selection: SidebarSelectionStore) -> Self {
+        Self { agent, selection }
+    }
+}
+
 impl SidebarApp {
     /// Create sidebar UI state and capture the host tmux window/pane identity.
     pub(super) fn new(
         tmux: Tmux,
-        store: StateStore,
+        stores: SidebarStores,
         status_icons: StatusIcons,
         icons: SidebarIcons,
         working_frames: Vec<String>,
         idle_after_seconds: u64,
         selection_hooks: Vec<SidebarSelectionHookConfig>,
     ) -> Self {
+        let SidebarStores {
+            agent: store,
+            selection: selection_store,
+        } = stores;
         let context = tmux.current_context().ok().flatten();
         let host_window_id = context.as_ref().map(|context| context.window_id.clone());
         let sidebar_pane_id = context.map(|context| context.pane_id);
         Self {
             tmux,
             store,
+            selection_store,
             status_icons,
             icons,
             working_frames,
@@ -134,14 +153,28 @@ impl SidebarApp {
         let Some(row) = self.selected_row().cloned() else {
             return;
         };
+        let mut persistence_warning = None;
+        let rollback = match self.persist_selection_before_jump(&row) {
+            Ok(rollback) => rollback,
+            Err(error) => {
+                persistence_warning = Some(format!("selection state failed: {error}"));
+                None
+            }
+        };
         if let Err(error) = self.select_row_target(&row) {
+            let rollback_error = rollback
+                .and_then(|rollback| self.restore_persisted_selection(rollback).err())
+                .map(|error| format!("; selection restore failed: {error}"))
+                .unwrap_or_default();
             let _ = self.refresh_rows();
-            self.last_error = Some(format!("jump failed: {error}"));
+            self.last_error = Some(format!("jump failed: {error}{rollback_error}"));
         } else {
             let hook_result = self.run_selection_hooks_for_row(&row);
             self.reset_after_successful_jump(&row);
             if let Err(error) = hook_result {
                 self.last_error = Some(format!("hook failed: {error}"));
+            } else if let Some(warning) = persistence_warning {
+                self.last_error = Some(warning);
             } else {
                 self.last_error = None;
             }
@@ -307,7 +340,8 @@ impl SidebarApp {
 
         let selected = match self.selection_mode {
             SelectionMode::FollowHost => self
-                .remembered_host_identity_index()
+                .persisted_host_identity_index()
+                .or_else(|| self.remembered_host_identity_index())
                 .or_else(|| self.host_window_index()),
             SelectionMode::Manual => Some(self.manual_selection_index().unwrap_or(0)),
         };
@@ -347,6 +381,53 @@ impl SidebarApp {
         Ok(())
     }
 
+    fn persist_selection_before_jump(
+        &self,
+        row: &SidebarRow,
+    ) -> Result<Option<PersistedSelectionRollback>> {
+        if row.window_id.trim().is_empty() {
+            return Ok(None);
+        }
+
+        let tmux_instance = self.tmux.instance_id();
+        let previous = self
+            .selection_store
+            .selection_for_window(&tmux_instance, &row.window_id)?;
+        let attempted = row.identity.session_key();
+        self.selection_store.set_selection_for_window(
+            &tmux_instance,
+            &row.window_id,
+            attempted.clone(),
+        )?;
+
+        Ok(Some(PersistedSelectionRollback {
+            tmux_instance,
+            window_id: row.window_id.clone(),
+            attempted,
+            previous,
+        }))
+    }
+
+    fn restore_persisted_selection(&self, rollback: PersistedSelectionRollback) -> Result<()> {
+        let current = self
+            .selection_store
+            .selection_for_window(&rollback.tmux_instance, &rollback.window_id)?;
+        if current.as_ref() != Some(&rollback.attempted) {
+            return Ok(());
+        }
+
+        if let Some(previous) = rollback.previous {
+            self.selection_store.set_selection_for_window(
+                &rollback.tmux_instance,
+                &rollback.window_id,
+                previous,
+            )
+        } else {
+            self.selection_store
+                .clear_selection_for_window(&rollback.tmux_instance, &rollback.window_id)
+        }
+    }
+
     fn run_selection_hooks_for_row(&self, row: &SidebarRow) -> Result<()> {
         run_selection_hooks(
             &self.selection_hooks,
@@ -360,6 +441,18 @@ impl SidebarApp {
         self.list_state
             .selected()
             .and_then(|index| self.rows.get(index))
+    }
+
+    fn persisted_host_identity_index(&self) -> Option<usize> {
+        let host_window_id = self.host_window_id.as_deref()?;
+        let session = self
+            .selection_store
+            .selection_for_window(&self.tmux.instance_id(), host_window_id)
+            .ok()
+            .flatten()?;
+        self.rows.iter().position(|row| {
+            row.window_id == host_window_id && row.identity.session_key() == session
+        })
     }
 
     fn reset_after_successful_jump(&mut self, row: &SidebarRow) {
@@ -435,13 +528,34 @@ enum SelectionMode {
     Manual,
 }
 
+#[derive(Debug)]
+struct PersistedSelectionRollback {
+    tmux_instance: String,
+    window_id: String,
+    attempted: AgentSessionKey,
+    previous: Option<AgentSessionKey>,
+}
+
 #[cfg(test)]
 impl SidebarApp {
     /// Build a sidebar app with injected rows for unit tests.
     pub(super) fn test(host_window_id: Option<&str>, rows: Vec<SidebarRow>) -> Self {
+        Self::test_with_selection_store(
+            host_window_id,
+            rows,
+            crate::agent::sidebar::test_support::empty_sidebar_selection_store(),
+        )
+    }
+
+    pub(super) fn test_with_selection_store(
+        host_window_id: Option<&str>,
+        rows: Vec<SidebarRow>,
+        selection_store: SidebarSelectionStore,
+    ) -> Self {
         let mut app = Self {
             tmux: Tmux::new(),
             store: crate::agent::sidebar::test_support::empty_state_store(),
+            selection_store,
             status_icons: StatusIcons::default(),
             icons: crate::agent::sidebar::test_support::test_icons(),
             working_frames: Vec::new(),
@@ -774,6 +888,167 @@ mod tests {
     }
 
     #[test]
+    fn persisted_selection_from_another_sidebar_process_selects_matching_host_row() -> Result<()> {
+        let temp = tempdir()?;
+        let selection_store = crate::state::test_support::sidebar_selection_store_with_path(
+            temp.path().join("state"),
+        );
+        let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
+        let source = SidebarApp::test_with_selection_store(
+            Some("@2"),
+            rows.clone(),
+            selection_store.clone(),
+        );
+        source.persist_selection_before_jump(&rows[1])?;
+
+        let destination = SidebarApp::test_with_selection_store(Some("@1"), rows, selection_store);
+
+        assert_eq!(selected_index(&destination), Some(1));
+        assert_eq!(destination.active_index(), Some(1));
+        assert_eq!(destination.cursor_index(), None);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_persisted_selection_falls_back_to_first_host_window_row() -> Result<()> {
+        let temp = tempdir()?;
+        let selection_store = crate::state::test_support::sidebar_selection_store_with_path(
+            temp.path().join("state"),
+        );
+        selection_store.set_selection_for_window(
+            "default",
+            "@1",
+            session_key("opencode", "ses_missing"),
+        )?;
+
+        let app = SidebarApp::test_with_selection_store(
+            Some("@1"),
+            vec![server_row("ses_a", "First"), server_row("ses_b", "Second")],
+            selection_store,
+        );
+
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(app.active_index(), Some(0));
+        Ok(())
+    }
+
+    #[test]
+    fn persisted_selection_for_row_in_another_window_is_ignored() -> Result<()> {
+        let temp = tempdir()?;
+        let selection_store = crate::state::test_support::sidebar_selection_store_with_path(
+            temp.path().join("state"),
+        );
+        selection_store.set_selection_for_window(
+            "default",
+            "@1",
+            session_key("opencode", "ses_a"),
+        )?;
+
+        let rows = vec![
+            server_row_in_window("ses_a", "Other window", "@2"),
+            server_row_in_window("ses_b", "Host window", "@1"),
+        ];
+        let app = SidebarApp::test_with_selection_store(Some("@1"), rows, selection_store);
+
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(app.active_index(), Some(1));
+        Ok(())
+    }
+
+    #[test]
+    fn jump_failure_restores_previous_persisted_selection() -> Result<()> {
+        let temp = tempdir()?;
+        let selection_store = crate::state::test_support::sidebar_selection_store_with_path(
+            temp.path().join("state"),
+        );
+        let previous = session_key("opencode", "ses_previous");
+        selection_store.set_selection_for_window("default", "not-a-window", previous.clone())?;
+        let rows = vec![row_from_view(
+            &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
+            100,
+        )];
+        let mut app = SidebarApp::test_with_selection_store(
+            Some("not-a-window"),
+            rows,
+            selection_store.clone(),
+        );
+
+        app.jump_to_selected();
+
+        assert_eq!(
+            selection_store.selection_for_window("default", "not-a-window")?,
+            Some(previous)
+        );
+        assert!(
+            app.last_error()
+                .is_some_and(|error| error.contains("jump failed"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn jump_failure_clears_new_persisted_selection_when_no_previous_selection_exists() -> Result<()>
+    {
+        let temp = tempdir()?;
+        let selection_store = crate::state::test_support::sidebar_selection_store_with_path(
+            temp.path().join("state"),
+        );
+        let rows = vec![row_from_view(
+            &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
+            100,
+        )];
+        let mut app = SidebarApp::test_with_selection_store(
+            Some("not-a-window"),
+            rows,
+            selection_store.clone(),
+        );
+
+        app.jump_to_selected();
+
+        assert_eq!(
+            selection_store.selection_for_window("default", "not-a-window")?,
+            None
+        );
+        assert!(
+            app.last_error()
+                .is_some_and(|error| error.contains("jump failed"))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rollback_does_not_overwrite_newer_persisted_selection() -> Result<()> {
+        let temp = tempdir()?;
+        let selection_store = crate::state::test_support::sidebar_selection_store_with_path(
+            temp.path().join("state"),
+        );
+        selection_store.set_selection_for_window(
+            "default",
+            "@1",
+            session_key("opencode", "ses_previous"),
+        )?;
+        let rows = vec![server_row("ses_attempted", "Attempted")];
+        let app = SidebarApp::test_with_selection_store(
+            Some("@1"),
+            rows.clone(),
+            selection_store.clone(),
+        );
+        let rollback = app
+            .persist_selection_before_jump(&rows[0])?
+            .ok_or_else(|| anyhow::anyhow!("expected persisted selection rollback"))?;
+        let newer = session_key("opencode", "ses_newer");
+        selection_store.set_selection_for_window("default", "@1", newer.clone())?;
+
+        app.restore_persisted_selection(rollback)?;
+
+        assert_eq!(
+            selection_store.selection_for_window("default", "@1")?,
+            Some(newer)
+        );
+        Ok(())
+    }
+
+    #[test]
     fn jump_failure_is_reported_without_panicking_or_quitting() {
         let rows = vec![row_from_view(
             &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
@@ -833,13 +1108,21 @@ mod tests {
     }
 
     fn server_row(session_id: &str, title: &str) -> SidebarRow {
-        let mut report = report_state(AgentStatus::Working, 100, "@1", "%server");
-        report.key = crate::state::AgentSessionKey {
-            agent_kind: "opencode".to_owned(),
-            session_id: session_id.to_owned(),
-        };
+        server_row_in_window(session_id, title, "@1")
+    }
+
+    fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
+        let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
+        report.key = session_key("opencode", session_id);
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
         row_from_view(&report, 100)
+    }
+
+    fn session_key(agent_kind: &str, session_id: &str) -> AgentSessionKey {
+        AgentSessionKey {
+            agent_kind: agent_kind.to_owned(),
+            session_id: session_id.to_owned(),
+        }
     }
 }

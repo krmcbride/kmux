@@ -9,7 +9,7 @@ use std::io::IsTerminal;
 
 use anyhow::Result;
 
-use crate::agent::sidebar::app::SidebarApp;
+use crate::agent::sidebar::app::{SidebarApp, SidebarStores};
 use crate::agent::sidebar::candidates::{
     DEFAULT_WIDTH, SIDEBAR_ROLE, SidebarCandidateMatcher, sidebar_candidate_snapshots,
     sidebar_candidates_by_window, sidebar_width_cells,
@@ -21,7 +21,7 @@ use crate::agent::sidebar::commands::{
 use crate::agent::sidebar::model::SidebarIcons;
 use crate::agent::sidebar::runtime::run_terminal_app;
 use crate::config::{Config, SidebarSize};
-use crate::state::StateStore;
+use crate::state::{SidebarSelectionStore, StateStore};
 use crate::tmux::{Tmux, TmuxPane, TmuxPaneSnapshot, TmuxSplitSize, TmuxWindow};
 
 const SIDEBAR_ROLE_OPTION: &str = "@kmux_role";
@@ -103,6 +103,7 @@ pub(super) fn run_tui() -> Result<()> {
     set_current_sidebar_pane_title(&tmux);
     let config = Config::load()?;
     let store = StateStore::new()?;
+    let selection_store = SidebarSelectionStore::new()?;
     let working_frames = config
         .status_icons
         .working_frames()
@@ -110,7 +111,7 @@ pub(super) fn run_tui() -> Result<()> {
     let icons = SidebarIcons::from_config(&config.status_icons);
     let mut app = SidebarApp::new(
         tmux,
-        store,
+        SidebarStores::new(store, selection_store),
         config.status_icons.clone(),
         icons,
         working_frames,
