@@ -5,6 +5,12 @@
  *
  * This consumes kmux's generic sidebar hook payload and asks an OpenCode server
  * to navigate attached TUIs to the selected session.
+ *
+ * OpenCode v1 scopes tui.session.select events by workspace, not by directory
+ * or TUI process. Without a workspace ID, implicit-local TUIs can all accept the
+ * event and navigate to the wrong session, so this hook intentionally skips the
+ * OpenCode API call unless kmux reports target.agent_workspace_id. Directory is
+ * still sent with workspace-scoped calls to preserve OpenCode routing context.
  */
 
 const AGENT_KIND = "opencode";
@@ -50,6 +56,10 @@ function selectedDirectory(payload: HookPayload): string | undefined {
   return clean(target?.git_worktree_path) ?? clean(target?.directory);
 }
 
+function selectedWorkspaceID(payload: HookPayload): string | undefined {
+  return clean(optionalRecord(payload.target)?.agent_workspace_id);
+}
+
 function configuredServerUrl(): string | undefined {
   return validHttpUrl(clean(Bun.env.OPENCODE_SERVER_URL));
 }
@@ -79,12 +89,14 @@ function validHttpUrl(value: string | undefined): string | undefined {
 function selectionEndpoint(
   serverUrl: string,
   directory: string | undefined,
+  workspaceID: string,
 ): URL {
   const endpoint = new URL(serverUrl);
   const basePath = endpoint.pathname.replace(/\/$/, "");
   endpoint.pathname = `${basePath}/tui/select-session`;
   endpoint.search = "";
   if (directory) endpoint.searchParams.set("directory", directory);
+  endpoint.searchParams.set("workspace", workspaceID);
   return endpoint;
 }
 
@@ -111,8 +123,9 @@ async function selectSession(
   serverUrl: string,
   sessionID: string,
   directory: string | undefined,
+  workspaceID: string,
 ) {
-  const endpoint = selectionEndpoint(serverUrl, directory);
+  const endpoint = selectionEndpoint(serverUrl, directory, workspaceID);
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs());
   try {
@@ -141,6 +154,14 @@ async function main() {
   if (!selectedSessionID)
     throw new Error("kmux hook payload is missing agent.session_id");
 
+  const workspaceID = selectedWorkspaceID(payload);
+  if (!workspaceID) {
+    console.error(
+      "OpenCode select-session skipped: selected session has no agent workspace ID",
+    );
+    return;
+  }
+
   const serverUrl = serverUrlFromPayload(payload);
   if (!serverUrl) {
     console.error(
@@ -149,7 +170,12 @@ async function main() {
     return;
   }
 
-  await selectSession(serverUrl, selectedSessionID, selectedDirectory(payload));
+  await selectSession(
+    serverUrl,
+    selectedSessionID,
+    selectedDirectory(payload),
+    workspaceID,
+  );
 }
 
 main().catch((error) => {

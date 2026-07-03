@@ -21,6 +21,7 @@ type KmuxStatus = "working" | "waiting" | "done" | "clear";
 type SessionInfo = Session & {
   project?: { worktree: string } | null;
   slug?: string;
+  workspaceID?: string;
   tokens?: TokenUsage;
 };
 
@@ -333,6 +334,7 @@ class KmuxServerReporter {
         clean(fallbackDirectory) ??
         previous?.directory ??
         "",
+      workspaceID: clean(session.workspaceID),
       project: "project" in session ? session.project : previous?.project,
     });
     this.reconcileChangedRoots(oldRoots);
@@ -430,12 +432,14 @@ class KmuxServerReporter {
     const title = clean(root.title) ?? clean(root.slug);
     const context = await this.contextUsage(root);
     const directory = clean(root.directory);
+    const workspaceID = clean(root.workspaceID);
     const worktreePath = directory ?? clean(root.project?.worktree);
     const reportKey = JSON.stringify({
       status,
       title,
       context,
       directory,
+      workspaceID,
       worktreePath,
     });
     if (this.lastReport.get(rootID) === reportKey) return;
@@ -457,6 +461,8 @@ class KmuxServerReporter {
     ];
     if (title) cmd.push("--title", title);
     if (context) cmd.push("--context", context);
+    if (workspaceID) cmd.push("--agent-workspace-id", workspaceID);
+    else cmd.push("--clear-agent-workspace-id");
     if (directory) cmd.push("--directory", directory);
     if (worktreePath) cmd.push("--git-worktree-path", worktreePath);
 

@@ -42,7 +42,8 @@ pub struct AgentObservationKey {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-/// Optional location metadata used to attach agent sessions to tmux and Git workspaces.
+/// Optional location metadata used to attach agent sessions to tmux, Git, and
+/// external agent workspace scopes.
 pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_instance: Option<String>,
@@ -66,6 +67,8 @@ pub struct AgentLocationHints {
     pub git_repo_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kmux_workspace_slug: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

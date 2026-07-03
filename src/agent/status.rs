@@ -200,11 +200,20 @@ fn apply_location_args(target: &mut AgentLocationHints, args: &cli::SetAgentStat
     apply_optional(&mut target.tmux_instance, &args.tmux_instance);
     apply_optional(&mut target.tmux_pane_id, &args.tmux_pane_id);
     apply_optional(&mut target.tmux_window_id, &args.tmux_window_id);
+    apply_agent_workspace_id(target, args);
     apply_optional(&mut target.git_repo_name, &args.git_repo_name);
     apply_optional(&mut target.git_repo_path, &args.git_repo_path);
     apply_optional(&mut target.git_worktree_path, &args.git_worktree_path);
     apply_optional(&mut target.git_branch, &args.git_branch);
     apply_optional(&mut target.directory, &args.directory);
+}
+
+fn apply_agent_workspace_id(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
+    if let Some(value) = clean_optional_ref(args.agent_workspace_id.as_ref()) {
+        target.agent_workspace_id = Some(value);
+    } else if args.clear_agent_workspace_id {
+        target.agent_workspace_id = None;
+    }
 }
 
 // Metadata-only updates should not erase existing fields with empty strings.
@@ -531,4 +540,72 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn apply_location_args_records_agent_workspace_id() {
+        let mut target = AgentLocationHints::default();
+        let mut args = set_status_args();
+        args.agent_workspace_id = Some("  wrk_01KTEST  ".to_owned());
+
+        apply_location_args(&mut target, &args);
+
+        assert_eq!(target.agent_workspace_id.as_deref(), Some("wrk_01KTEST"));
+    }
+
+    #[test]
+    fn apply_location_args_ignores_empty_agent_workspace_id() {
+        let mut target = AgentLocationHints {
+            agent_workspace_id: Some("wrk_existing".to_owned()),
+            ..AgentLocationHints::default()
+        };
+        let mut args = set_status_args();
+        args.agent_workspace_id = Some("   ".to_owned());
+
+        apply_location_args(&mut target, &args);
+
+        assert_eq!(target.agent_workspace_id.as_deref(), Some("wrk_existing"));
+    }
+
+    #[test]
+    fn apply_location_args_clears_agent_workspace_id() {
+        let mut target = AgentLocationHints {
+            agent_workspace_id: Some("wrk_existing".to_owned()),
+            ..AgentLocationHints::default()
+        };
+        let mut args = set_status_args();
+        args.clear_agent_workspace_id = true;
+
+        apply_location_args(&mut target, &args);
+
+        assert_eq!(target.agent_workspace_id, None);
+    }
+
+    fn set_status_args() -> cli::SetAgentStatusArgs {
+        cli::SetAgentStatusArgs {
+            status: Some(cli::AgentStatus::Working),
+            agent_kind: "opencode".to_owned(),
+            session_id: "ses_root".to_owned(),
+            producer_kind: "tui".to_owned(),
+            producer_instance: "default/%1".to_owned(),
+            delete: false,
+            delete_session: false,
+            title: None,
+            context: None,
+            tmux_instance: None,
+            tmux_pane_id: None,
+            tmux_window_id: None,
+            agent_workspace_id: None,
+            clear_agent_workspace_id: false,
+            git_repo_name: None,
+            git_repo_path: None,
+            git_worktree_path: None,
+            git_branch: None,
+            directory: None,
+        }
+    }
 }

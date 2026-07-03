@@ -277,6 +277,13 @@ function activeSessionDirectory(
   return clean(session?.directory) ?? envValue("PWD");
 }
 
+function activeSessionWorkspaceID(
+  api: TuiApi,
+  sessionID: string,
+): string | undefined {
+  return clean(api.state.session.get(sessionID)?.workspaceID);
+}
+
 function reportStatus(api: TuiApi, status: KmuxStatus) {
   const sessionID = activeSessionID(api) ?? lastRootSessionID;
   if (!sessionID) return;
@@ -289,6 +296,9 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
   const directory = deleting
     ? undefined
     : activeSessionDirectory(api, sessionID);
+  const workspaceID = deleting
+    ? undefined
+    : activeSessionWorkspaceID(api, sessionID);
   const instance = deleting
     ? (reportedProducerInstances.get(sessionID) ?? producerInstance())
     : producerInstance();
@@ -300,6 +310,7 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     paneID,
     tmuxInstance,
     directory,
+    workspaceID,
     instance,
   });
   if (lastReportKey === reportKey) return;
@@ -327,6 +338,8 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     pushArg(cmd, "--context", context);
     pushArg(cmd, "--tmux-instance", tmuxInstance);
     pushArg(cmd, "--tmux-pane-id", paneID);
+    if (workspaceID) cmd.push("--agent-workspace-id", workspaceID);
+    else cmd.push("--clear-agent-workspace-id");
     pushArg(cmd, "--directory", directory);
     pushArg(cmd, "--git-worktree-path", directory);
   }

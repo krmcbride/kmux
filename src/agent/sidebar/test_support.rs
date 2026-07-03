@@ -61,6 +61,7 @@ pub(super) fn report_state(
             git_repo_name: Some("kmux".to_owned()),
             git_repo_path: Some("/repo".to_owned()),
             kmux_workspace_slug: Some("feature-sidebar".to_owned()),
+            agent_workspace_id: None,
             git_worktree_path: Some("/repo__worktrees/feature-sidebar".to_owned()),
             git_branch: Some("feature/sidebar".to_owned()),
             directory: None,

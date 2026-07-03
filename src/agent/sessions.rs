@@ -147,6 +147,7 @@ fn session_view_from_observations(
         .max_by_key(|observation| (observation.location_rank, observation.state.observed_at))?;
     let mut target = location_observation.resolved_target.clone()?;
     merge_target_metadata(&mut target, observations);
+    target.agent_workspace_id = newest_agent_workspace_id(observations);
     enrich_missing_repo_metadata(&mut target);
 
     let status_changed_at = status_observation.state.status_changed_at?;
@@ -193,6 +194,29 @@ fn newest_value(
         })
         .max_by_key(|(observed_at, _)| *observed_at)
         .map(|(_, value)| value)
+}
+
+// Workspace IDs are routing scope, so a newer observation that omits the field
+// must clear older values instead of letting stale scopes drive selection hooks.
+fn newest_agent_workspace_id(observations: &[EnrichedObservation]) -> Option<String> {
+    let observed_at = observations
+        .iter()
+        .map(|observation| observation.state.observed_at)
+        .max()?;
+    let mut workspace_id = None;
+
+    for observation in observations
+        .iter()
+        .filter(|observation| observation.state.observed_at == observed_at)
+    {
+        let candidate = observation.state.target.agent_workspace_id.as_deref()?;
+        if workspace_id.is_some_and(|workspace_id| workspace_id != candidate) {
+            return None;
+        }
+        workspace_id = Some(candidate);
+    }
+
+    workspace_id.map(str::to_owned)
 }
 
 fn status_priority(status: Option<AgentStatus>) -> u8 {
@@ -500,6 +524,9 @@ fn fill_missing_target_metadata(target: &mut AgentLocationHints, fallback: &Agen
     if target.kmux_workspace_slug.is_none() {
         target.kmux_workspace_slug = fallback.kmux_workspace_slug.clone();
     }
+    if target.agent_workspace_id.is_none() {
+        target.agent_workspace_id = fallback.agent_workspace_id.clone();
+    }
     if target.git_worktree_path.is_none() {
         target.git_worktree_path = fallback.git_worktree_path.clone();
     }
@@ -563,6 +590,7 @@ mod tests {
             Some("Server title"),
         );
         server.context = Some("55.2K".to_owned());
+        server.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
         server.target.tmux_pane_id = None;
         server.target.tmux_window_id = None;
 
@@ -577,6 +605,10 @@ mod tests {
         assert_eq!(views[0].status, AgentStatus::Waiting);
         assert_eq!(views[0].title.as_deref(), Some("Server title"));
         assert_eq!(views[0].context.as_deref(), Some("55.2K"));
+        assert_eq!(
+            views[0].target.agent_workspace_id.as_deref(),
+            Some("wrk_01KTEST")
+        );
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
@@ -835,6 +867,82 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, AgentStatus::Waiting);
         assert_eq!(views[0].title.as_deref(), Some("Renamed"));
+    }
+
+    #[test]
+    fn newer_missing_agent_workspace_id_clears_stale_scope() {
+        let mut old_workspace = observation(
+            "tui",
+            "default/%1",
+            Some(AgentStatus::Working),
+            100,
+            Some("Old workspace"),
+        );
+        old_workspace.target.agent_workspace_id = Some("wrk_old".to_owned());
+        let mut cleared_workspace = observation("server", "server", None, 200, Some("Cleared"));
+        cleared_workspace.target.tmux_pane_id = None;
+        cleared_workspace.target.tmux_window_id = None;
+
+        let views = reconcile_session_views(
+            vec![old_workspace, cleared_workspace],
+            &[pane_snapshot("%1", "@1", "/repo/project", None)],
+            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            "default",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].target.agent_workspace_id, None);
+    }
+
+    #[test]
+    fn equal_timestamp_missing_agent_workspace_id_clears_stale_scope() {
+        let mut old_workspace = observation(
+            "tui",
+            "default/%1",
+            Some(AgentStatus::Working),
+            100,
+            Some("Old workspace"),
+        );
+        old_workspace.target.agent_workspace_id = Some("wrk_old".to_owned());
+        let mut cleared_workspace = observation("server", "server", None, 100, Some("Cleared"));
+        cleared_workspace.target.tmux_pane_id = None;
+        cleared_workspace.target.tmux_window_id = None;
+
+        let views = reconcile_session_views(
+            vec![old_workspace, cleared_workspace],
+            &[pane_snapshot("%1", "@1", "/repo/project", None)],
+            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            "default",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].target.agent_workspace_id, None);
+    }
+
+    #[test]
+    fn equal_timestamp_conflicting_agent_workspace_ids_clear_scope() {
+        let mut first_workspace = observation(
+            "tui",
+            "default/%1",
+            Some(AgentStatus::Working),
+            100,
+            Some("First workspace"),
+        );
+        first_workspace.target.agent_workspace_id = Some("wrk_first".to_owned());
+        let mut second_workspace = observation("server", "server", None, 100, Some("Second"));
+        second_workspace.target.agent_workspace_id = Some("wrk_second".to_owned());
+        second_workspace.target.tmux_pane_id = None;
+        second_workspace.target.tmux_window_id = None;
+
+        let views = reconcile_session_views(
+            vec![first_workspace, second_workspace],
+            &[pane_snapshot("%1", "@1", "/repo/project", None)],
+            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            "default",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].target.agent_workspace_id, None);
     }
 
     fn observation(

@@ -152,6 +152,14 @@ pub struct SetAgentStatusArgs {
     #[arg(long)]
     pub tmux_window_id: Option<String>,
 
+    /// Optional agent-native workspace/project id hint; distinct from kmux workspace slugs.
+    #[arg(long)]
+    pub agent_workspace_id: Option<String>,
+
+    /// Clear any previously reported agent-native workspace/project id hint.
+    #[arg(long)]
+    pub clear_agent_workspace_id: bool,
+
     /// Optional Git repository/project display hint; arbitrary text supplied by the integration.
     #[arg(long)]
     pub git_repo_name: Option<String>,

@@ -75,6 +75,8 @@ struct SelectionHookTargetPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     kmux_workspace_slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    agent_workspace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     git_worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     git_branch: Option<String>,
@@ -305,6 +307,11 @@ fn hook_env(payload: &SelectionHookPayload, log_path: Option<&Path>) -> Vec<(OsS
         "KMUX_WORKSPACE_SLUG",
         &payload.target.kmux_workspace_slug,
     );
+    push_optional_env(
+        &mut env,
+        "KMUX_AGENT_WORKSPACE_ID",
+        &payload.target.agent_workspace_id,
+    );
     if let Some(log_path) = log_path {
         env.push((
             OsString::from("KMUX_HOOK_LOG"),
@@ -350,6 +357,7 @@ impl SelectionHookTargetPayload {
             git_repo_name: target.git_repo_name.clone(),
             git_repo_path: target.git_repo_path.clone(),
             kmux_workspace_slug: target.kmux_workspace_slug.clone(),
+            agent_workspace_id: target.agent_workspace_id.clone(),
             git_worktree_path: target.git_worktree_path.clone(),
             git_branch: target.git_branch.clone(),
             directory: target.directory.clone(),
@@ -389,6 +397,7 @@ mod tests {
         view.title = Some("Implement hooks".to_owned());
         view.context = Some("55.2K".to_owned());
         view.target.directory = Some("/repo/worktree".to_owned());
+        view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
         let row = row_from_view(&view, 100);
         let observation = observation_for_row(&row, "server", "http://127.0.0.1:4096");
 
@@ -402,10 +411,15 @@ mod tests {
         assert_eq!(json["status"], "waiting");
         assert_eq!(json["target"]["tmux_window_id"], "@1");
         assert_eq!(json["target"]["directory"], "/repo/worktree");
+        assert_eq!(json["target"]["agent_workspace_id"], "wrk_01KTEST");
         assert_eq!(json["observations"][0]["producer_kind"], "server");
         assert_eq!(
             json["observations"][0]["producer_instance"],
             "http://127.0.0.1:4096"
+        );
+        assert_eq!(
+            json["observations"][0]["target"]["agent_workspace_id"],
+            "wrk_01KTEST"
         );
     }
 
@@ -445,14 +459,17 @@ mod tests {
         let dir = tempdir()?;
         let mut view = report_state(AgentStatus::Working, 100, "@1", "%1");
         view.target.git_worktree_path = Some(dir.path().display().to_string());
+        view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
         let row = row_from_view(&view, 100);
         let payload_path = dir.path().join("payload.json");
         let session_path = dir.path().join("session.txt");
+        let workspace_path = dir.path().join("workspace.txt");
         let cwd_path = dir.path().join("cwd.txt");
         let command = format!(
-            "cat > '{}'; printf '%s' \"$KMUX_AGENT_SESSION_ID\" > '{}'; pwd > '{}'",
+            "cat > '{}'; printf '%s' \"$KMUX_AGENT_SESSION_ID\" > '{}'; printf '%s' \"$KMUX_AGENT_WORKSPACE_ID\" > '{}'; pwd > '{}'",
             payload_path.display(),
             session_path.display(),
+            workspace_path.display(),
             cwd_path.display()
         );
 
@@ -466,6 +483,7 @@ mod tests {
         let payload: Value = serde_json::from_str(&fs::read_to_string(payload_path)?)?;
         assert_eq!(payload["agent"]["session_id"], "ses_%1");
         assert_eq!(fs::read_to_string(session_path)?, "ses_%1");
+        assert_eq!(fs::read_to_string(workspace_path)?, "wrk_01KTEST");
         assert_eq!(
             fs::read_to_string(cwd_path)?.trim(),
             dir.path().display().to_string()

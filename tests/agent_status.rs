@@ -338,6 +338,76 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
 }
 
 #[test]
+fn set_agent_status_persists_agent_workspace_id() -> Result<()> {
+    let temp = TempDir::new()?;
+    let config_home = write_config(temp.path(), "")?;
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd)?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args(set_opencode_status_args(
+            Some("working"),
+            "ses_workspace_scope",
+            "server",
+            "http://127.0.0.1:4096",
+            &[
+                ("--agent-workspace-id", "wrk_01KTEST"),
+                ("--directory", cwd.to_str().unwrap_or_default()),
+            ],
+        ))
+        .assert()
+        .success();
+
+    let report = agent_observation_for_key(
+        &config_home,
+        "opencode",
+        "ses_workspace_scope",
+        "server",
+        "http://127.0.0.1:4096",
+    )?;
+    assert_eq!(
+        report
+            .pointer("/target/agent_workspace_id")
+            .and_then(serde_json::Value::as_str),
+        Some("wrk_01KTEST")
+    );
+
+    let mut clear_args = set_opencode_status_args(
+        Some("working"),
+        "ses_workspace_scope",
+        "server",
+        "http://127.0.0.1:4096",
+        &[],
+    );
+    clear_args.push("--clear-agent-workspace-id".to_owned());
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args(clear_args)
+        .assert()
+        .success();
+
+    let cleared = agent_observation_for_key(
+        &config_home,
+        "opencode",
+        "ses_workspace_scope",
+        "server",
+        "http://127.0.0.1:4096",
+    )?;
+    assert!(cleared.pointer("/target/agent_workspace_id").is_none());
+    Ok(())
+}
+
+#[test]
 fn set_agent_status_persists_non_opencode_agent_kind() -> Result<()> {
     let temp = TempDir::new()?;
     let config_home = write_config(temp.path(), "")?;

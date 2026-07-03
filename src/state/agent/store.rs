@@ -228,6 +228,7 @@ mod tests {
                 git_repo_name: Some("repo".to_owned()),
                 git_repo_path: Some("/repo".to_owned()),
                 kmux_workspace_slug: Some("feature-auth".to_owned()),
+                agent_workspace_id: Some("wrk_01KTEST".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 git_branch: Some("feature/auth".to_owned()),
                 directory: Some("/repo__worktrees/feature-auth".to_owned()),
