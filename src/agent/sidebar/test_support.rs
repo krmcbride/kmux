@@ -1,9 +1,7 @@
 use crate::agent::sessions::AgentSessionView;
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
-use crate::state::{
-    AgentLocationHints, AgentSessionKey, AgentStatus, SidebarSelectionStore, StateStore,
-};
+use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus, StateStore};
 
 /// Sleeping icon used by sidebar tests to assert idle-row rendering.
 pub(super) const TEST_SLEEPING_ICON: &str = "z";
@@ -92,19 +90,4 @@ pub(super) fn empty_state_store() -> StateStore {
         std::process::id()
     )))
     .expect("test state store should be created")
-}
-
-/// Create an isolated empty sidebar selection store for sidebar unit tests.
-pub(super) fn empty_sidebar_selection_store() -> SidebarSelectionStore {
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |duration| duration.as_nanos());
-    crate::state::test_support::sidebar_selection_store_with_path(std::env::temp_dir().join(
-        format!(
-            "kmux-sidebar-selection-test-empty-{}-{nanos}",
-            std::process::id()
-        ),
-    ))
 }

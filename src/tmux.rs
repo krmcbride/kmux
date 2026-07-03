@@ -350,6 +350,17 @@ impl Tmux {
         Ok(())
     }
 
+    /// Read a namespaced tmux window user option, returning `None` when unset or blank.
+    pub fn show_window_option(&self, target: &str, option_name: &str) -> Result<Option<String>> {
+        validate_user_option(option_name)?;
+        let output = self.output(["show-option", "-wqv", "-t", target, option_name])?;
+        if !output.status.success() {
+            return Ok(None);
+        }
+
+        Ok(Some(output.stdout.trim_end().to_owned()).filter(|value| !value.is_empty()))
+    }
+
     /// Unset a namespaced tmux window user option on a target.
     pub fn unset_window_option(&self, target: &str, option_name: &str) -> Result<()> {
         validate_user_option(option_name)?;
@@ -673,20 +684,21 @@ fn bail_tmux<T>(output: TmuxOutput) -> Result<T> {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod test_support {
     use super::*;
-    use std::thread;
-    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use tempfile::TempDir;
 
-    struct TmuxFixture {
-        tmux: Tmux,
+    /// Isolated tmux server fixture for adapter and sidebar tests.
+    pub struct TmuxFixture {
+        pub tmux: Tmux,
         _socket_dir: TempDir,
     }
 
     impl TmuxFixture {
-        fn new() -> Result<Option<Self>> {
+        /// Create an isolated tmux server fixture when tmux is available.
+        pub fn new() -> Result<Option<Self>> {
             if !Command::new("tmux")
                 .arg("-V")
                 .output()
@@ -712,7 +724,8 @@ mod tests {
         }
     }
 
-    fn create_test_session(tmux: &Tmux, session_name: &str, cwd: &Path) -> Result<()> {
+    /// Create a detached test session in the fixture's tmux server.
+    pub fn create_test_session(tmux: &Tmux, session_name: &str, cwd: &Path) -> Result<()> {
         tmux.stdout(vec![
             OsString::from("new-session"),
             OsString::from("-d"),
@@ -723,6 +736,16 @@ mod tests {
         ])?;
         Ok(())
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tmux::test_support::{TmuxFixture, create_test_session};
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use tempfile::TempDir;
 
     fn wait_for_path(path: &Path) -> bool {
         let deadline = Instant::now() + Duration::from_secs(2);
@@ -942,25 +965,20 @@ mod tests {
             window.kmux_workspace_branch.as_deref(),
             Some("feature/auth")
         );
+        assert_eq!(
+            tmux.show_window_option(&target, KMUX_WORKSPACE_SLUG_OPTION)?,
+            Some("feature-auth".to_owned())
+        );
 
         tmux.unset_window_option(&target, KMUX_WORKSPACE_SLUG_OPTION)?;
         tmux.unset_window_option(&target, KMUX_WORKSPACE_PATH_OPTION)?;
         tmux.unset_window_option(&target, KMUX_WORKSPACE_BRANCH_OPTION)?;
 
         assert_eq!(
-            show_window_option(tmux, &target, KMUX_WORKSPACE_SLUG_OPTION)?,
+            tmux.show_window_option(&target, KMUX_WORKSPACE_SLUG_OPTION)?,
             None
         );
         Ok(())
-    }
-
-    fn show_window_option(tmux: &Tmux, target: &str, option_name: &str) -> Result<Option<String>> {
-        let output = tmux.output(["show-option", "-wqv", "-t", target, option_name])?;
-        if !output.status.success() {
-            return Ok(None);
-        }
-
-        Ok(Some(output.stdout.trim_end().to_owned()).filter(|value| !value.is_empty()))
     }
 
     #[test]
