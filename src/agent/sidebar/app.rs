@@ -11,14 +11,14 @@ use crate::agent::sessions::session_views;
 use crate::agent::sidebar::hooks::run_selection_hooks;
 use crate::agent::sidebar::model::{
     SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
-    row_index_by_identity, row_index_by_pane, row_index_by_window,
 };
-use crate::agent::sidebar::selection_state::{
-    SELECTED_SESSION_OPTION, decode_selected_session, encode_selected_session,
+use crate::agent::sidebar::selection::{
+    self, PersistedSelectionRollback, PreviousSelectionOption, SELECTED_SESSION_OPTION,
+    SelectionMode, decode_selected_session, encode_selected_session,
 };
 use crate::agent::status::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
-use crate::state::{AgentSessionKey, StateStore};
+use crate::state::StateStore;
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
 /// Mutable state for the sidebar terminal UI.
@@ -216,24 +216,15 @@ impl SidebarApp {
     /// Return the row index for the host window the sidebar is attached to.
     pub(super) fn active_index(&self) -> Option<usize> {
         if self.selection_mode == SelectionMode::FollowHost {
-            self.remembered_host_identity_index()
-                .or_else(|| self.host_window_index())
+            selection::remembered_host_identity_index(
+                &self.rows,
+                self.host_window_id.as_deref(),
+                self.selected_identity.as_ref(),
+            )
+            .or_else(|| selection::host_window_index(&self.rows, self.host_window_id.as_deref()))
         } else {
-            self.host_window_index()
+            selection::host_window_index(&self.rows, self.host_window_id.as_deref())
         }
-    }
-
-    fn remembered_host_identity_index(&self) -> Option<usize> {
-        let host_window_id = self.host_window_id.as_deref()?;
-        let identity = self.selected_identity.as_ref()?;
-        let index = row_index_by_identity(&self.rows, identity)?;
-        (self.rows[index].window_id == host_window_id).then_some(index)
-    }
-
-    fn host_window_index(&self) -> Option<usize> {
-        self.host_window_id
-            .as_deref()
-            .and_then(|window_id| row_index_by_window(&self.rows, window_id))
     }
 
     /// Return the cursor row index when the sidebar pane has focus.
@@ -325,35 +316,31 @@ impl SidebarApp {
         let selected = match self.selection_mode {
             SelectionMode::FollowHost => self
                 .persisted_host_identity_index()
-                .or_else(|| self.remembered_host_identity_index())
-                .or_else(|| self.host_window_index()),
-            SelectionMode::Manual => Some(self.manual_selection_index().unwrap_or(0)),
+                .or_else(|| {
+                    selection::remembered_host_identity_index(
+                        &self.rows,
+                        self.host_window_id.as_deref(),
+                        self.selected_identity.as_ref(),
+                    )
+                })
+                .or_else(|| {
+                    selection::host_window_index(&self.rows, self.host_window_id.as_deref())
+                }),
+            SelectionMode::Manual => Some(
+                selection::manual_selection_index(
+                    &self.rows,
+                    self.selected_identity.as_ref(),
+                    self.selected_pane_id.as_deref(),
+                    self.selected_window_id.as_deref(),
+                    self.list_state.selected(),
+                )
+                .unwrap_or(0),
+            ),
         };
         match selected {
             Some(index) => self.select_index_internal(index),
             None => self.list_state.select(None),
         }
-    }
-
-    fn manual_selection_index(&self) -> Option<usize> {
-        self.selected_identity
-            .as_ref()
-            .and_then(|identity| row_index_by_identity(&self.rows, identity))
-            .or_else(|| {
-                self.selected_pane_id
-                    .as_deref()
-                    .and_then(|pane_id| row_index_by_pane(&self.rows, pane_id))
-            })
-            .or_else(|| {
-                self.selected_window_id
-                    .as_deref()
-                    .and_then(|window_id| row_index_by_window(&self.rows, window_id))
-            })
-            .or_else(|| {
-                self.list_state
-                    .selected()
-                    .filter(|idx| *idx < self.rows.len())
-            })
     }
 
     fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
@@ -432,9 +419,11 @@ impl SidebarApp {
             .ok()
             .flatten()?;
         let session = decode_selected_session(&value)?;
-        self.rows.iter().position(|row| {
-            row.window_id == host_window_id && row.identity.session_key() == session
-        })
+        selection::persisted_host_session_index(
+            &self.rows,
+            self.host_window_id.as_deref(),
+            &session,
+        )
     }
 
     fn reset_after_successful_jump(&mut self, row: &SidebarRow) {
@@ -504,31 +493,6 @@ impl SidebarApp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SelectionMode {
-    FollowHost,
-    Manual,
-}
-
-#[derive(Debug)]
-struct PersistedSelectionRollback {
-    window_id: String,
-    attempted: AgentSessionKey,
-    previous: PreviousSelectionOption,
-}
-
-#[derive(Debug)]
-enum PreviousSelectionOption {
-    Unset,
-    Value(String),
-}
-
-impl From<Option<String>> for PreviousSelectionOption {
-    fn from(value: Option<String>) -> Self {
-        value.map_or(Self::Unset, Self::Value)
-    }
-}
-
 #[cfg(test)]
 impl SidebarApp {
     /// Build a sidebar app with injected rows for unit tests.
@@ -576,7 +540,7 @@ mod tests {
         TEST_SLEEPING_ICON, agent_state, report_state, row_from_view,
     };
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
-    use crate::state::AgentStatus;
+    use crate::state::{AgentSessionKey, AgentStatus};
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
     use tempfile::{TempDir, tempdir};
 

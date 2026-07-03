@@ -11,7 +11,7 @@ mod lifecycle;
 mod model;
 mod render;
 mod runtime;
-mod selection_state;
+mod selection;
 #[cfg(test)]
 mod test_support;
 
