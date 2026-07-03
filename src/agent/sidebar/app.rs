@@ -198,6 +198,22 @@ impl SidebarApp {
 
     /// Return the row index for the host window the sidebar is attached to.
     pub(super) fn active_index(&self) -> Option<usize> {
+        if self.selection_mode == SelectionMode::FollowHost {
+            self.remembered_host_identity_index()
+                .or_else(|| self.host_window_index())
+        } else {
+            self.host_window_index()
+        }
+    }
+
+    fn remembered_host_identity_index(&self) -> Option<usize> {
+        let host_window_id = self.host_window_id.as_deref()?;
+        let identity = self.selected_identity.as_ref()?;
+        let index = row_index_by_identity(&self.rows, identity)?;
+        (self.rows[index].window_id == host_window_id).then_some(index)
+    }
+
+    fn host_window_index(&self) -> Option<usize> {
         self.host_window_id
             .as_deref()
             .and_then(|window_id| row_index_by_window(&self.rows, window_id))
@@ -291,9 +307,8 @@ impl SidebarApp {
 
         let selected = match self.selection_mode {
             SelectionMode::FollowHost => self
-                .host_window_id
-                .as_deref()
-                .and_then(|window_id| row_index_by_window(&self.rows, window_id)),
+                .remembered_host_identity_index()
+                .or_else(|| self.host_window_index()),
             SelectionMode::Manual => Some(self.manual_selection_index().unwrap_or(0)),
         };
         match selected {
@@ -739,6 +754,22 @@ mod tests {
         assert!(app.window_visible());
         assert_eq!(app.selection_mode, SelectionMode::FollowHost);
         assert_eq!(app.active_index(), Some(0));
+        assert_eq!(app.cursor_index(), None);
+    }
+
+    #[test]
+    fn successful_same_window_jump_keeps_logical_session_highlight_sticky() {
+        let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.next();
+        let target = app.rows()[1].clone();
+
+        app.reset_after_successful_jump(&target);
+
+        assert!(app.window_visible());
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(app.active_index(), Some(1));
         assert_eq!(app.cursor_index(), None);
     }
 
