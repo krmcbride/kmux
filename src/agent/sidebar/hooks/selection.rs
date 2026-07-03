@@ -1,29 +1,19 @@
-//! Selection hook payload construction and execution for sidebar rows.
-//!
-//! Hooks are a generic kmux extension point: they receive a versioned JSON
-//! payload about the selected agent row and decide what, if anything, that means
-//! for their own integration.
+//! `sidebar.select` hook payload construction and orchestration.
 
-use std::fs::{self, File, OpenOptions};
-use std::io::{ErrorKind, Read, Seek, SeekFrom, Write};
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::{Context, Result, bail};
-use directories::BaseDirs;
+use anyhow::{Result, bail};
 use serde::Serialize;
 
+use super::diagnostics::{self, HookAttemptLog};
+use super::runner::{self, HookCommand, HookCommandOutcome};
 use crate::agent::sidebar::model::SidebarRow;
 use crate::config::SidebarSelectionHookConfig;
 use crate::state::{AgentLocationHints, AgentObservationState, AgentStatus, StateStore};
 
 const HOOK_EVENT: &str = "sidebar.select";
-const MAX_HOOK_OUTPUT_BYTES: u64 = 8 * 1024;
-const MAX_ERROR_OUTPUT_CHARS: usize = 800;
-static HOOK_STDIN_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Run configured selection hooks that match the selected sidebar row.
 pub(super) fn run_selection_hooks(
@@ -106,41 +96,6 @@ struct SelectionHookObservationPayload {
     target: SelectionHookTargetPayload,
 }
 
-#[derive(Debug, Serialize)]
-struct SelectionHookLogEntry<'a> {
-    timestamp: u64,
-    event: &'static str,
-    command: &'a str,
-    agent_kind: &'a str,
-    agent_session_id: &'a str,
-    status: &'a str,
-    duration_ms: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    exit_status: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    cwd: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stdout: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    stderr: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-enum HookCommandStatus {
-    Exited(ExitStatus),
-    TimedOut,
-}
-
-#[derive(Debug)]
-struct HookOutputFiles {
-    stdout_file: File,
-    stdout_path: PathBuf,
-    stderr_file: File,
-    stderr_path: PathBuf,
-}
-
 fn selected_observations(
     store: &StateStore,
     row: &SidebarRow,
@@ -166,7 +121,7 @@ fn run_hooks_with_observations(
     row: &SidebarRow,
     observations: &[AgentObservationState],
 ) -> Result<()> {
-    let log_path = hook_log_path().ok();
+    let log_path = diagnostics::default_log_path().ok();
     run_hooks_with_observations_and_log_path(hooks, row, observations, log_path.as_deref())
 }
 
@@ -184,7 +139,7 @@ fn run_hooks_with_observations_and_log_path(
         .iter()
         .filter(|hook| hook_matches_payload(hook, &payload))
     {
-        if let Err(error) = run_hook_command(hook, &payload, &payload_json, log_path) {
+        if let Err(error) = run_matching_hook(hook, &payload, &payload_json, log_path) {
             failures.push(format!("{}: {error}", hook.command));
         }
     }
@@ -193,6 +148,81 @@ fn run_hooks_with_observations_and_log_path(
         return Ok(());
     }
     bail!("selection hook failed: {}", failures.join("; "))
+}
+
+fn run_matching_hook(
+    hook: &SidebarSelectionHookConfig,
+    payload: &SelectionHookPayload,
+    payload_json: &[u8],
+    log_path: Option<&Path>,
+) -> Result<()> {
+    let current_dir = hook_current_dir(&payload.target);
+    let command = HookCommand {
+        command: &hook.command,
+        stdin: payload_json,
+        timeout: Duration::from_millis(hook.timeout_ms()),
+        env: hook_env(payload, log_path),
+        cwd: current_dir.clone(),
+    };
+    let started = Instant::now();
+
+    match runner::run(command) {
+        Ok(outcome) => {
+            finish_hook_attempt(log_path, hook, payload, current_dir.as_deref(), outcome)
+        }
+        Err(error) => {
+            let status = error.status_label();
+            let message = error.message();
+            diagnostics::log_attempt(
+                log_path,
+                HookAttemptLog {
+                    event: payload.event,
+                    command: &hook.command,
+                    agent_kind: &payload.agent.kind,
+                    agent_session_id: &payload.agent.session_id,
+                    status,
+                    duration: started.elapsed(),
+                    exit_status: None,
+                    error: Some(message),
+                    cwd: current_dir.map(|path| path.display().to_string()),
+                    stdout: "",
+                    stderr: "",
+                },
+            );
+            Err(error.into_error())
+        }
+    }
+}
+
+fn finish_hook_attempt(
+    log_path: Option<&Path>,
+    hook: &SidebarSelectionHookConfig,
+    payload: &SelectionHookPayload,
+    current_dir: Option<&Path>,
+    outcome: HookCommandOutcome,
+) -> Result<()> {
+    let error = outcome.failure_message();
+    diagnostics::log_attempt(
+        log_path,
+        HookAttemptLog {
+            event: payload.event,
+            command: &hook.command,
+            agent_kind: &payload.agent.kind,
+            agent_session_id: &payload.agent.session_id,
+            status: outcome.status_label(),
+            duration: outcome.duration,
+            exit_status: outcome.exit_status(),
+            error: error.clone(),
+            cwd: current_dir.map(|path| path.display().to_string()),
+            stdout: &outcome.stdout,
+            stderr: &outcome.stderr,
+        },
+    );
+
+    if let Some(error) = error {
+        bail!("{error}")
+    }
+    Ok(())
 }
 
 fn payload_for_row(
@@ -236,132 +266,61 @@ fn hook_matches_payload(hook: &SidebarSelectionHookConfig, payload: &SelectionHo
     true
 }
 
-fn run_hook_command(
-    hook: &SidebarSelectionHookConfig,
-    payload: &SelectionHookPayload,
-    payload_json: &[u8],
-    log_path: Option<&Path>,
-) -> Result<()> {
-    let mut command = Command::new("sh");
-    let (stdin_file, stdin_path) = payload_stdin_file(payload_json)?;
-    let mut output_files = hook_output_files()?;
-    let current_dir = hook_current_dir(&payload.target);
-    command
-        .arg("-c")
-        .arg(&hook.command)
-        .stdin(Stdio::from(stdin_file))
-        .stdout(Stdio::from(output_files.stdout_file.try_clone()?))
-        .stderr(Stdio::from(output_files.stderr_file.try_clone()?))
-        .env("KMUX_HOOK_EVENT", payload.event)
-        .env("KMUX_AGENT_KIND", &payload.agent.kind)
-        .env("KMUX_AGENT_SESSION_ID", &payload.agent.session_id)
-        .env("KMUX_AGENT_STATUS", payload.status.as_str());
-    if let Some(log_path) = log_path {
-        command.env("KMUX_HOOK_LOG", log_path);
-    }
-    set_optional_env(
-        &mut command,
+fn hook_env(payload: &SelectionHookPayload, log_path: Option<&Path>) -> Vec<(OsString, OsString)> {
+    let mut env = Vec::new();
+    push_env(&mut env, "KMUX_HOOK_EVENT", payload.event);
+    push_env(&mut env, "KMUX_AGENT_KIND", &payload.agent.kind);
+    push_env(&mut env, "KMUX_AGENT_SESSION_ID", &payload.agent.session_id);
+    push_env(&mut env, "KMUX_AGENT_STATUS", payload.status.as_str());
+    push_optional_env(
+        &mut env,
         "KMUX_TMUX_INSTANCE",
         &payload.target.tmux_instance,
     );
-    set_optional_env(
-        &mut command,
+    push_optional_env(
+        &mut env,
         "KMUX_TMUX_SESSION_NAME",
         &payload.target.tmux_session_name,
     );
-    set_optional_env(
-        &mut command,
+    push_optional_env(
+        &mut env,
         "KMUX_TMUX_WINDOW_NAME",
         &payload.target.tmux_window_name,
     );
-    set_optional_env(
-        &mut command,
+    push_optional_env(
+        &mut env,
         "KMUX_TMUX_WINDOW_ID",
         &payload.target.tmux_window_id,
     );
-    set_optional_env(
-        &mut command,
-        "KMUX_TMUX_PANE_ID",
-        &payload.target.tmux_pane_id,
-    );
-    set_optional_env(&mut command, "KMUX_DIRECTORY", &payload.target.directory);
-    set_optional_env(
-        &mut command,
+    push_optional_env(&mut env, "KMUX_TMUX_PANE_ID", &payload.target.tmux_pane_id);
+    push_optional_env(&mut env, "KMUX_DIRECTORY", &payload.target.directory);
+    push_optional_env(
+        &mut env,
         "KMUX_GIT_WORKTREE_PATH",
         &payload.target.git_worktree_path,
     );
-    set_optional_env(&mut command, "KMUX_GIT_BRANCH", &payload.target.git_branch);
-    set_optional_env(
-        &mut command,
+    push_optional_env(&mut env, "KMUX_GIT_BRANCH", &payload.target.git_branch);
+    push_optional_env(
+        &mut env,
         "KMUX_WORKSPACE_SLUG",
         &payload.target.kmux_workspace_slug,
     );
-    if let Some(current_dir) = &current_dir {
-        command.current_dir(current_dir);
+    if let Some(log_path) = log_path {
+        env.push((
+            OsString::from("KMUX_HOOK_LOG"),
+            log_path.as_os_str().to_os_string(),
+        ));
     }
-
-    let started = Instant::now();
-    let mut child = match command.spawn() {
-        Ok(child) => child,
-        Err(error) => {
-            let _ = fs::remove_file(&stdin_path);
-            output_files.cleanup();
-            log_hook_attempt(
-                log_path,
-                hook,
-                payload,
-                "spawn_failed",
-                started.elapsed(),
-                None,
-                Some(format!("failed to start selection hook: {error}")),
-                current_dir.as_deref(),
-                "",
-                "",
-            );
-            return Err(error)
-                .with_context(|| format!("failed to start selection hook: {}", hook.command));
-        }
-    };
-    let _ = fs::remove_file(stdin_path);
-    let timeout = Duration::from_millis(hook.timeout_ms());
-    let status = wait_with_timeout(&mut child, timeout)?;
-    let duration = started.elapsed();
-    let stdout = output_files.stdout_tail()?;
-    let stderr = output_files.stderr_tail()?;
-    output_files.cleanup();
-
-    let exit_status = match status {
-        HookCommandStatus::Exited(status) => Some(status.to_string()),
-        HookCommandStatus::TimedOut => None,
-    };
-    let error = hook_failure_message(status, timeout, &stdout, &stderr);
-    let status_label = match status {
-        HookCommandStatus::Exited(status) if status.success() => "ok",
-        HookCommandStatus::Exited(_) => "failed",
-        HookCommandStatus::TimedOut => "timed_out",
-    };
-    log_hook_attempt(
-        log_path,
-        hook,
-        payload,
-        status_label,
-        duration,
-        exit_status,
-        error.clone(),
-        current_dir.as_deref(),
-        &stdout,
-        &stderr,
-    );
-
-    if let Some(error) = error {
-        bail!("{error}")
-    }
-    Ok(())
+    env
 }
 
-fn set_optional_env(command: &mut Command, key: &str, value: &Option<String>) {
+fn push_env(env: &mut Vec<(OsString, OsString)>, key: &str, value: impl Into<OsString>) {
+    env.push((OsString::from(key), value.into()));
+}
+
+fn push_optional_env(env: &mut Vec<(OsString, OsString)>, key: &str, value: &Option<String>) {
     if let Some(value) = value.as_deref() {
-        command.env(key, value);
+        push_env(env, key, value);
     }
 }
 
@@ -375,260 +334,6 @@ fn hook_current_dir(target: &SelectionHookTargetPayload) -> Option<PathBuf> {
     .map(Path::new)
     .find(|path| path.is_dir())
     .map(Path::to_path_buf)
-}
-
-fn payload_stdin_file(payload_json: &[u8]) -> Result<(File, PathBuf)> {
-    for _ in 0..16 {
-        let counter = HOOK_STDIN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "kmux-sidebar-hook-{}-{counter}.json",
-            std::process::id()
-        ));
-
-        match open_payload_file(&path) {
-            Ok(mut file) => {
-                if let Err(error) = write_payload_file(&mut file, payload_json) {
-                    let _ = fs::remove_file(&path);
-                    return Err(error);
-                }
-                return Ok((file, path));
-            }
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to create selection hook stdin file at {}",
-                        path.display()
-                    )
-                });
-            }
-        }
-    }
-
-    bail!("failed to create unique selection hook stdin file")
-}
-
-fn hook_output_files() -> Result<HookOutputFiles> {
-    let (stdout_file, stdout_path) = temporary_hook_file("stdout")?;
-    let (stderr_file, stderr_path) = match temporary_hook_file("stderr") {
-        Ok(file) => file,
-        Err(error) => {
-            let _ = fs::remove_file(&stdout_path);
-            return Err(error);
-        }
-    };
-    Ok(HookOutputFiles {
-        stdout_file,
-        stdout_path,
-        stderr_file,
-        stderr_path,
-    })
-}
-
-fn temporary_hook_file(kind: &str) -> Result<(File, PathBuf)> {
-    for _ in 0..16 {
-        let counter = HOOK_STDIN_COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!(
-            "kmux-sidebar-hook-{kind}-{}-{counter}.log",
-            std::process::id()
-        ));
-
-        match open_payload_file(&path) {
-            Ok(file) => return Ok((file, path)),
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "failed to create selection hook {kind} file at {}",
-                        path.display()
-                    )
-                });
-            }
-        }
-    }
-
-    bail!("failed to create unique selection hook {kind} file")
-}
-
-fn open_payload_file(path: &Path) -> std::io::Result<File> {
-    let mut options = OpenOptions::new();
-    options.read(true).write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    options.open(path)
-}
-
-fn write_payload_file(file: &mut File, payload_json: &[u8]) -> Result<()> {
-    match file.write_all(payload_json) {
-        Ok(()) => {
-            file.seek(SeekFrom::Start(0))?;
-            Ok(())
-        }
-        Err(error) if error.kind() == ErrorKind::BrokenPipe => Ok(()),
-        Err(error) => Err(error).context("failed to write selection hook payload"),
-    }
-}
-
-fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Result<HookCommandStatus> {
-    let started = Instant::now();
-    loop {
-        if let Some(status) = child.try_wait()? {
-            return Ok(HookCommandStatus::Exited(status));
-        }
-        if started.elapsed() >= timeout {
-            let _ = child.kill();
-            let _ = child.wait();
-            return Ok(HookCommandStatus::TimedOut);
-        }
-        thread::sleep(Duration::from_millis(10));
-    }
-}
-
-fn hook_failure_message(
-    status: HookCommandStatus,
-    timeout: Duration,
-    stdout: &str,
-    stderr: &str,
-) -> Option<String> {
-    match status {
-        HookCommandStatus::Exited(status) if status.success() => None,
-        HookCommandStatus::Exited(status) => Some(with_output_summary(
-            format!("exited with status {status}"),
-            stdout,
-            stderr,
-        )),
-        HookCommandStatus::TimedOut => Some(with_output_summary(
-            format!("timed out after {}ms", timeout.as_millis()),
-            stdout,
-            stderr,
-        )),
-    }
-}
-
-fn with_output_summary(message: String, stdout: &str, stderr: &str) -> String {
-    let stderr = stderr.trim();
-    if !stderr.is_empty() {
-        return format!("{message}: stderr: {}", error_output_summary(stderr));
-    }
-    let stdout = stdout.trim();
-    if !stdout.is_empty() {
-        return format!("{message}: stdout: {}", error_output_summary(stdout));
-    }
-    message
-}
-
-fn error_output_summary(output: &str) -> String {
-    let mut summary = String::new();
-    for (index, character) in output.chars().enumerate() {
-        if index == MAX_ERROR_OUTPUT_CHARS {
-            summary.push_str("...");
-            break;
-        }
-        summary.push(character);
-    }
-    summary
-}
-
-fn hook_log_path() -> Result<PathBuf> {
-    let base_dirs = BaseDirs::new().context("could not determine state directory")?;
-    let state_root = base_dirs
-        .state_dir()
-        .unwrap_or_else(|| base_dirs.data_local_dir());
-    Ok(state_root.join("kmux/sidebar-hooks.jsonl"))
-}
-
-#[allow(clippy::too_many_arguments)]
-fn log_hook_attempt(
-    log_path: Option<&Path>,
-    hook: &SidebarSelectionHookConfig,
-    payload: &SelectionHookPayload,
-    status: &str,
-    duration: Duration,
-    exit_status: Option<String>,
-    error: Option<String>,
-    cwd: Option<&Path>,
-    stdout: &str,
-    stderr: &str,
-) {
-    let Some(log_path) = log_path else {
-        return;
-    };
-    let entry = SelectionHookLogEntry {
-        timestamp: crate::state::now_unix_seconds(),
-        event: payload.event,
-        command: &hook.command,
-        agent_kind: &payload.agent.kind,
-        agent_session_id: &payload.agent.session_id,
-        status,
-        duration_ms: duration.as_millis().try_into().unwrap_or(u64::MAX),
-        exit_status,
-        error,
-        cwd: cwd.map(|path| path.display().to_string()),
-        stdout: non_empty_output(stdout),
-        stderr: non_empty_output(stderr),
-    };
-    let _ = append_hook_log(log_path, &entry);
-}
-
-fn append_hook_log(log_path: &Path, entry: &SelectionHookLogEntry<'_>) -> Result<()> {
-    if let Some(parent) = log_path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create hook log directory {}", parent.display()))?;
-    }
-    let mut options = OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let mut file = options
-        .open(log_path)
-        .with_context(|| format!("failed to open hook log {}", log_path.display()))?;
-    serde_json::to_writer(&mut file, entry)?;
-    file.write_all(b"\n")?;
-    Ok(())
-}
-
-fn non_empty_output(output: &str) -> Option<String> {
-    let output = output.trim();
-    if output.is_empty() {
-        None
-    } else {
-        Some(output.to_owned())
-    }
-}
-
-impl HookOutputFiles {
-    fn stdout_tail(&mut self) -> Result<String> {
-        read_file_tail(&mut self.stdout_file)
-    }
-
-    fn stderr_tail(&mut self) -> Result<String> {
-        read_file_tail(&mut self.stderr_file)
-    }
-
-    fn cleanup(&self) {
-        let _ = fs::remove_file(&self.stdout_path);
-        let _ = fs::remove_file(&self.stderr_path);
-    }
-}
-
-fn read_file_tail(file: &mut File) -> Result<String> {
-    let len = file.metadata()?.len();
-    let start = len.saturating_sub(MAX_HOOK_OUTPUT_BYTES);
-    file.seek(SeekFrom::Start(start))?;
-    let mut bytes = Vec::new();
-    file.take(MAX_HOOK_OUTPUT_BYTES).read_to_end(&mut bytes)?;
-    let output = String::from_utf8_lossy(&bytes);
-    if start > 0 {
-        Ok(format!("[truncated]\n{output}"))
-    } else {
-        Ok(output.into_owned())
-    }
 }
 
 impl SelectionHookTargetPayload {
