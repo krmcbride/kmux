@@ -478,7 +478,12 @@ fn list_renders_parent_tree_order_and_json_parent_fields() -> Result<()> {
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
 
-    for branch in ["feature/child", "feature/sibling", "feature/grandchild"] {
+    for branch in [
+        "feature/child",
+        "feature/sibling",
+        "feature/grandchild",
+        "feature/second-child",
+    ] {
         kmux(&repo, &config_home, &tmux)?
             .args(["add", branch, "--background"])
             .assert()
@@ -500,8 +505,9 @@ fn list_renders_parent_tree_order_and_json_parent_fields() -> Result<()> {
         .success();
     let stdout = String::from_utf8_lossy(&list.get_output().stdout);
     assert!(stdout.contains("PARENT"));
-    assert!(stdout.contains("  feature/child"));
-    assert!(stdout.contains("    feature/grandchild"));
+    assert!(stdout.contains("├── feature/child"));
+    assert!(stdout.contains("│   └── feature/grandchild"));
+    assert!(stdout.contains("└── feature/second-child"));
     assert!(stdout.contains("feature/root-only"));
     let main_line = stdout
         .lines()
@@ -519,9 +525,14 @@ fn list_renders_parent_tree_order_and_json_parent_fields() -> Result<()> {
         .lines()
         .position(|line| line.contains("feature/sibling"))
         .expect("sibling row should render");
+    let second_child_line = stdout
+        .lines()
+        .position(|line| line.contains("feature/second-child"))
+        .expect("second child row should render");
     assert!(main_line < child_line);
     assert!(child_line < grandchild_line);
-    assert!(grandchild_line < sibling_line);
+    assert!(grandchild_line < second_child_line);
+    assert!(second_child_line < sibling_line);
 
     kmux(&repo, &config_home, &tmux)?
         .args(["list", "--json"])

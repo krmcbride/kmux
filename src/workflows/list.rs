@@ -42,8 +42,9 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
 
     let rows = items
         .iter()
-        .map(|item| DisplayRow {
-            branch: format_branch(item),
+        .enumerate()
+        .map(|(index, item)| DisplayRow {
+            branch: format_branch(&items, index),
             parent: item.git_parent_branch.as_deref().unwrap_or("-").to_owned(),
             age: format_age(item, now),
             agent: format_agent(item, &agents, &repo.config.status_icons),
@@ -67,13 +68,36 @@ struct DisplayRow {
     path: String,
 }
 
-// Indent by tree depth while keeping parent labels in their own column for scanability.
-fn format_branch(item: &WorkspaceListItem) -> String {
+// Render a depth-first forest using standard tree connectors while keeping
+// parent labels in their own column for scanability.
+fn format_branch(items: &[WorkspaceListItem], index: usize) -> String {
+    let item = &items[index];
     let branch = item.git_branch.as_deref().unwrap_or("-");
     if item.tree_depth == 0 {
         return branch.to_owned();
     }
-    format!("{}{}", "  ".repeat(item.tree_depth), branch)
+
+    let mut prefix = String::new();
+    for depth in 1..item.tree_depth {
+        if has_following_at_depth(items, index, depth) {
+            prefix.push_str("│   ");
+        } else {
+            prefix.push_str("    ");
+        }
+    }
+    if has_following_at_depth(items, index, item.tree_depth) {
+        prefix.push_str("├── ");
+    } else {
+        prefix.push_str("└── ");
+    }
+    format!("{prefix}{branch}")
+}
+
+fn has_following_at_depth(items: &[WorkspaceListItem], index: usize, depth: usize) -> bool {
+    items[index + 1..]
+        .iter()
+        .take_while(|item| item.tree_depth >= depth)
+        .any(|item| item.tree_depth == depth)
 }
 
 // Main worktree age is intentionally omitted because the column describes kmux workspaces.
