@@ -142,7 +142,12 @@ async function main() {
     throw new Error("kmux hook payload is missing agent.session_id");
 
   const serverUrl = serverUrlFromPayload(payload);
-  if (!serverUrl) return;
+  if (!serverUrl) {
+    console.error(
+      "OpenCode select-session skipped: no server producer URL and OPENCODE_SERVER_URL is not set",
+    );
+    return;
+  }
 
   await selectSession(serverUrl, selectedSessionID, selectedDirectory(payload));
 }
