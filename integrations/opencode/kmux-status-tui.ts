@@ -269,6 +269,14 @@ function contextUsage(api: TuiApi): string | undefined {
   return pct ? `${formatNumber(tokens)} (${pct})` : formatNumber(tokens);
 }
 
+function activeSessionDirectory(
+  api: TuiApi,
+  sessionID: string,
+): string | undefined {
+  const session = api.state.session.get(sessionID);
+  return clean(session?.directory) ?? envValue("PWD");
+}
+
 function reportStatus(api: TuiApi, status: KmuxStatus) {
   const sessionID = activeSessionID(api) ?? lastRootSessionID;
   if (!sessionID) return;
@@ -278,7 +286,9 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
   const context = deleting ? undefined : contextUsage(api);
   const paneID = envValue("TMUX_PANE");
   const tmuxInstance = envValue("KMUX_TMUX_SOCKET_NAME");
-  const directory = deleting ? undefined : envValue("PWD");
+  const directory = deleting
+    ? undefined
+    : activeSessionDirectory(api, sessionID);
   const instance = deleting
     ? (reportedProducerInstances.get(sessionID) ?? producerInstance())
     : producerInstance();
