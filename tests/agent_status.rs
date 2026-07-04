@@ -38,6 +38,9 @@ status_icons:
 
     tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
     let main_window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
+    tmux.set_window_option(&main_window_id, "@kmux_workspace_slug", "project")?;
+    tmux.set_window_option(&main_window_id, "@kmux_workspace_path", &repo_path)?;
+    tmux.set_window_option(&main_window_id, "@kmux_workspace_branch", "main")?;
     let main_producer = format!("default/{}", tmux.pane_id);
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
@@ -51,7 +54,6 @@ status_icons:
                 ("--git-repo-name", "project"),
                 ("--git-repo-path", &repo_path),
                 ("--directory", &repo_path),
-                ("--git-worktree-path", &repo_path),
                 ("--git-branch", "main"),
             ],
         ))
@@ -78,7 +80,6 @@ status_icons:
                 ("--git-repo-name", "project"),
                 ("--git-repo-path", &repo_path),
                 ("--directory", &worktree_path),
-                ("--git-worktree-path", &worktree_path),
                 ("--git-branch", "feature/status"),
             ],
         ))
@@ -161,6 +162,10 @@ status_icons:
 "#,
     )?;
     let window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
+    let repo_path = repo.display().to_string();
+    tmux.set_window_option(&window_id, "@kmux_workspace_slug", "project")?;
+    tmux.set_window_option(&window_id, "@kmux_workspace_path", &repo_path)?;
+    tmux.set_window_option(&window_id, "@kmux_workspace_branch", "main")?;
     let producer_instance = format!("default/{}", tmux.pane_id);
 
     kmux(&repo, &config_home, &tmux)?
@@ -172,6 +177,7 @@ status_icons:
             &[
                 ("--tmux-pane-id", &tmux.pane_id),
                 ("--tmux-window-id", &window_id),
+                ("--directory", &repo_path),
                 ("--title", "Implement richer sidebar"),
                 ("--context", "163.2K (41%)"),
             ],
@@ -206,6 +212,7 @@ status_icons:
             &[
                 ("--tmux-pane-id", &tmux.pane_id),
                 ("--tmux-window-id", &window_id),
+                ("--directory", &repo_path),
                 ("--title", "Implement richer sidebar"),
                 ("--context", "170.0K (43%)"),
             ],
@@ -272,7 +279,6 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
                 ("--git-repo-name", "project"),
                 ("--git-repo-path", "/repo/project"),
                 ("--directory", "/repo/project"),
-                ("--git-worktree-path", "/repo/project"),
                 ("--git-branch", "main"),
             ],
         ))
@@ -307,12 +313,7 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
             .and_then(serde_json::Value::as_str),
         Some("/repo/project")
     );
-    assert_eq!(
-        report
-            .pointer("/target/git_worktree_path")
-            .and_then(serde_json::Value::as_str),
-        Some("/repo/project")
-    );
+    assert!(report.pointer("/target/git_worktree_path").is_none());
 
     Command::cargo_bin("kmux")?
         .current_dir(&cwd)
@@ -752,7 +753,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
             "http://127.0.0.1:4096",
             &[
                 ("--title", "Implement producer"),
-                ("--git-worktree-path", &repo_path),
+                ("--directory", &repo_path),
             ],
         ))
         .assert()

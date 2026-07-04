@@ -209,6 +209,11 @@ impl TmuxFixture {
         Ok(Some(output).filter(|value| !value.is_empty()))
     }
 
+    pub fn set_window_option(&self, target: &str, option_name: &str, value: &str) -> Result<()> {
+        self.tmux_output(&["set-option", "-wq", "-t", target, option_name, value])?;
+        Ok(())
+    }
+
     fn apply_env_with_pane(&self, command: &mut Command, pane_id: &str) {
         command
             .env("KMUX_TMUX_SOCKET_NAME", &self.socket_name)

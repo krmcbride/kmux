@@ -341,7 +341,6 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     if (workspaceID) cmd.push("--agent-workspace-id", workspaceID);
     else cmd.push("--clear-agent-workspace-id");
     pushArg(cmd, "--directory", directory);
-    pushArg(cmd, "--git-worktree-path", directory);
   }
 
   spawnKmux(cmd);

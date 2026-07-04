@@ -168,7 +168,7 @@ pub struct SetAgentStatusArgs {
     #[arg(long)]
     pub git_repo_path: Option<String>,
 
-    /// Optional filesystem path to the target Git worktree; preferred when available.
+    /// Optional resolved Git worktree path hint; producers should usually report --directory instead.
     #[arg(long)]
     pub git_worktree_path: Option<String>,
 
@@ -176,7 +176,7 @@ pub struct SetAgentStatusArgs {
     #[arg(long)]
     pub git_branch: Option<String>,
 
-    /// Optional current working directory hint; kmux may infer repository metadata from it.
+    /// Primary current directory hint for attaching the agent session to a kmux workspace/window.
     #[arg(long)]
     pub directory: Option<String>,
 }

@@ -205,7 +205,7 @@ fn apply_location_args(target: &mut AgentLocationHints, args: &cli::SetAgentStat
     apply_optional(&mut target.git_repo_path, &args.git_repo_path);
     apply_optional(&mut target.git_worktree_path, &args.git_worktree_path);
     apply_optional(&mut target.git_branch, &args.git_branch);
-    apply_optional(&mut target.directory, &args.directory);
+    apply_reported_directory(target, args);
 }
 
 fn apply_agent_workspace_id(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
@@ -221,6 +221,10 @@ fn apply_optional(target: &mut Option<String>, value: &Option<String>) {
     if let Some(value) = clean_optional_ref(value.as_ref()) {
         *target = Some(value);
     }
+}
+
+fn apply_reported_directory(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
+    target.directory = clean_optional_ref(args.directory.as_ref());
 }
 
 fn clean_required(value: &str, label: &str) -> Result<String> {
@@ -583,6 +587,19 @@ mod tests {
         apply_location_args(&mut target, &args);
 
         assert_eq!(target.agent_workspace_id, None);
+    }
+
+    #[test]
+    fn apply_location_args_replaces_directory_each_update() {
+        let mut target = AgentLocationHints {
+            directory: Some("/repo/old".to_owned()),
+            ..AgentLocationHints::default()
+        };
+        let args = set_status_args();
+
+        apply_location_args(&mut target, &args);
+
+        assert_eq!(target.directory, None);
     }
 
     fn set_status_args() -> cli::SetAgentStatusArgs {

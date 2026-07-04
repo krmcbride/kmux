@@ -14,6 +14,11 @@ The plugins are intended to be referenced from OpenCode configuration, either
 directly from a checkout during development or from the packaged Nix store path
 in declarative Home Manager configuration.
 
+The status plugins report the active OpenCode session directory as the primary
+kmux location. When OpenCode exposes a workspace ID, the plugins also report it
+as optional routing metadata so the selection hook can scope OpenCode TUI
+navigation safely.
+
 ## Development
 
 The plugin sources are an isolated Bun/TypeScript package:

@@ -1,7 +1,7 @@
 //! Selection policy and tmux option encoding for sidebar rows.
 //!
 //! `SidebarApp` owns tmux side effects and controller flow. This module keeps the
-//! pure row-selection rules and selected-session option contract together.
+//! pure row-selection rules and selected-target option contract together.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
@@ -9,12 +9,11 @@ use serde::{Deserialize, Serialize};
 use crate::agent::sidebar::model::{
     SidebarRow, SidebarRowIdentity, row_index_by_identity, row_index_by_pane, row_index_by_window,
 };
-use crate::state::AgentSessionKey;
 
-const CURRENT_VERSION: u32 = 1;
+const CURRENT_VERSION: u32 = 2;
 
-/// Tmux window option storing the preferred logical sidebar session.
-pub(super) const SELECTED_SESSION_OPTION: &str = "@kmux_sidebar_selected_session";
+/// Tmux window option storing the preferred sidebar target row.
+pub(super) const SELECTED_TARGET_OPTION: &str = "@kmux_sidebar_selected_target";
 
 /// Selection behavior mode for the sidebar list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -23,15 +22,15 @@ pub(super) enum SelectionMode {
     Manual,
 }
 
-/// Data needed to roll back a selected-session option write after focus failure.
+/// Data needed to roll back a selected-target option write after focus failure.
 #[derive(Debug)]
 pub(super) struct PersistedSelectionRollback {
     pub(super) window_id: String,
-    pub(super) attempted: AgentSessionKey,
+    pub(super) attempted: SidebarRowIdentity,
     pub(super) previous: PreviousSelectionOption,
 }
 
-/// Raw previous value for the selected-session tmux window option.
+/// Raw previous value for the selected-target tmux window option.
 #[derive(Debug)]
 pub(super) enum PreviousSelectionOption {
     Unset,
@@ -40,9 +39,9 @@ pub(super) enum PreviousSelectionOption {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SelectedSessionOption {
+struct SelectedTargetOption {
     version: u32,
-    session: AgentSessionKey,
+    target: SidebarRowIdentity,
 }
 
 impl From<Option<String>> for PreviousSelectionOption {
@@ -71,15 +70,13 @@ pub(super) fn remembered_host_identity_index(
     (rows[index].window_id == host_window_id).then_some(index)
 }
 
-/// Return the persisted logical session row index when it still belongs to the host window.
-pub(super) fn persisted_host_session_index(
+/// Return the persisted row identity index when it still belongs to the host window.
+pub(super) fn persisted_host_identity_index(
     rows: &[SidebarRow],
     host_window_id: Option<&str>,
-    session: &AgentSessionKey,
+    identity: &SidebarRowIdentity,
 ) -> Option<usize> {
-    let host_window_id = host_window_id?;
-    rows.iter()
-        .position(|row| row.window_id == host_window_id && row.identity.session_key() == *session)
+    remembered_host_identity_index(rows, host_window_id, Some(identity))
 }
 
 /// Return the best row index for manual selection after row refreshes.
@@ -97,36 +94,36 @@ pub(super) fn manual_selection_index(
         .or_else(|| selected_index.filter(|index| *index < rows.len()))
 }
 
-/// Encode a logical agent session for storage in a tmux window option.
-pub(super) fn encode_selected_session(session: &AgentSessionKey) -> Result<String> {
-    Ok(serde_json::to_string(&SelectedSessionOption {
+/// Encode a sidebar row identity for storage in a tmux window option.
+pub(super) fn encode_selected_target(identity: &SidebarRowIdentity) -> Result<String> {
+    Ok(serde_json::to_string(&SelectedTargetOption {
         version: CURRENT_VERSION,
-        session: session.clone(),
+        target: identity.clone(),
     })?)
 }
 
-/// Decode a logical agent session from a tmux window option value.
-pub(super) fn decode_selected_session(value: &str) -> Option<AgentSessionKey> {
+/// Decode a sidebar row identity from a tmux window option value.
+pub(super) fn decode_selected_target(value: &str) -> Option<SidebarRowIdentity> {
     let value = value.trim();
     if value.is_empty() {
         return None;
     }
 
-    let option = serde_json::from_str::<SelectedSessionOption>(value).ok()?;
+    let option = serde_json::from_str::<SelectedTargetOption>(value).ok()?;
     if option.version != CURRENT_VERSION {
         return None;
     }
-    if option.session.agent_kind.trim().is_empty() || option.session.session_id.trim().is_empty() {
+    if !option.target.is_valid() {
         return None;
     }
-    Some(option.session)
+    Some(option.target)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent::sidebar::test_support::{report_state, row_from_view};
-    use crate::state::AgentStatus;
+    use crate::state::{AgentSessionKey, AgentStatus};
 
     fn session(agent_kind: &str, session_id: &str) -> AgentSessionKey {
         AgentSessionKey {
@@ -175,56 +172,50 @@ mod tests {
             None
         );
         assert_eq!(
-            persisted_host_session_index(&rows, Some("@1"), &session("opencode", "ses_b")),
+            persisted_host_identity_index(&rows, Some("@1"), &rows[1].identity),
             None
         );
         assert_eq!(
-            persisted_host_session_index(&rows, Some("@2"), &session("opencode", "ses_b")),
+            persisted_host_identity_index(&rows, Some("@2"), &rows[1].identity),
             Some(1)
         );
     }
 
     #[test]
-    fn selected_session_option_round_trips_session_key() -> Result<()> {
-        let key = session("other-agent", "ses_123");
+    fn selected_target_option_round_trips_row_identity() -> Result<()> {
+        let row = row("ses_123", "@1", "%1");
 
-        let encoded = encode_selected_session(&key)?;
+        let encoded = encode_selected_target(&row.identity)?;
 
-        assert_eq!(decode_selected_session(&encoded), Some(key));
+        assert_eq!(decode_selected_target(&encoded), Some(row.identity));
         Ok(())
     }
 
     #[test]
-    fn selected_session_option_shape_is_stable() -> Result<()> {
-        let encoded = encode_selected_session(&session("opencode", "ses_123"))?;
+    fn selected_target_option_shape_is_stable() -> Result<()> {
+        let row = row("ses_123", "@1", "%1");
+
+        let encoded = encode_selected_target(&row.identity)?;
         let json: serde_json::Value = serde_json::from_str(&encoded)?;
 
         assert_eq!(json["version"], CURRENT_VERSION);
-        assert_eq!(json["session"]["agent_kind"], "opencode");
-        assert_eq!(json["session"]["session_id"], "ses_123");
+        assert_eq!(
+            json["target"]["key"],
+            "directory:/repo__worktrees/feature-sidebar/@1"
+        );
         Ok(())
     }
 
     #[test]
-    fn selected_session_option_rejects_empty_malformed_and_future_values() {
-        assert_eq!(decode_selected_session(""), None);
-        assert_eq!(decode_selected_session("not json"), None);
+    fn selected_target_option_rejects_empty_malformed_and_future_values() {
+        assert_eq!(decode_selected_target(""), None);
+        assert_eq!(decode_selected_target("not json"), None);
         assert_eq!(
-            decode_selected_session(
-                r#"{"version":999,"session":{"agent_kind":"opencode","session_id":"ses_123"}}"#
-            ),
+            decode_selected_target(r#"{"version":999,"target":{"key":"directory:/repo"}}"#),
             None
         );
         assert_eq!(
-            decode_selected_session(
-                r#"{"version":1,"session":{"agent_kind":"","session_id":"ses_123"}}"#
-            ),
-            None
-        );
-        assert_eq!(
-            decode_selected_session(
-                r#"{"version":1,"session":{"agent_kind":"opencode","session_id":""}}"#
-            ),
+            decode_selected_target(r#"{"version":2,"target":{"key":""}}"#),
             None
         );
     }

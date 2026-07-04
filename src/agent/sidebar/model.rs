@@ -9,6 +9,7 @@ use std::path::Path;
 use crate::agent::sessions::AgentSessionView;
 use crate::config::StatusIcons;
 use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Icon set precomputed for rendering sidebar rows.
@@ -31,26 +32,21 @@ impl SidebarIcons {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 /// Stable logical identity for a sidebar row.
 pub(super) struct SidebarRowIdentity {
-    agent_kind: String,
-    session_id: String,
+    key: String,
 }
 
 impl SidebarRowIdentity {
-    /// Convert row identity back into a store key for session deletion.
-    pub(super) fn session_key(&self) -> AgentSessionKey {
-        AgentSessionKey {
-            agent_kind: self.agent_kind.clone(),
-            session_id: self.session_id.clone(),
-        }
+    /// Return whether this decoded identity is valid for selection state.
+    pub(super) fn is_valid(&self) -> bool {
+        !self.key.trim().is_empty()
     }
 
     fn from_view(view: &AgentSessionView) -> Self {
         Self {
-            agent_kind: view.key.agent_kind.clone(),
-            session_id: view.key.session_id.clone(),
+            key: view_identity_key(view),
         }
     }
 }
@@ -223,15 +219,17 @@ pub(super) fn build_rows_with_working_icon(
             &left.primary,
             &left.secondary,
             left.created_at,
-            &left.identity.agent_kind,
-            &left.identity.session_id,
+            &left.identity.key,
+            &left.selection.key.agent_kind,
+            &left.selection.key.session_id,
         )
             .cmp(&(
                 &right.primary,
                 &right.secondary,
                 right.created_at,
-                &right.identity.agent_kind,
-                &right.identity.session_id,
+                &right.identity.key,
+                &right.selection.key.agent_kind,
+                &right.selection.key.session_id,
             ))
     });
     rows
@@ -330,6 +328,25 @@ fn fallback_session_title(
 
 fn compact_session_id(session_id: &str) -> &str {
     session_id.get(..12).unwrap_or(session_id)
+}
+
+fn view_identity_key(view: &AgentSessionView) -> String {
+    view.directory_key
+        .as_ref()
+        .map(|key| format!("directory:{key}"))
+        .or_else(|| {
+            view.target
+                .tmux_window_id
+                .as_ref()
+                .map(|window_id| format!("window:{window_id}"))
+        })
+        .or_else(|| {
+            view.target
+                .tmux_pane_id
+                .as_ref()
+                .map(|pane_id| format!("pane:{pane_id}"))
+        })
+        .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
 }
 
 #[cfg(test)]
@@ -460,7 +477,7 @@ mod tests {
     }
 
     #[test]
-    fn row_model_keeps_multiple_sessions_for_one_window_distinguishable() {
+    fn row_model_uses_directory_identity_across_primary_session_changes() {
         let mut first = report_state(AgentStatus::Working, 120, "@1", "%1");
         first.key = crate::state::AgentSessionKey {
             agent_kind: "opencode".to_owned(),
@@ -488,7 +505,7 @@ mod tests {
         assert_eq!(rows[1].secondary, "feature/sidebar");
         assert_eq!(rows[0].title, "Implement sidebar rows");
         assert_eq!(rows[1].title, "session ses_second");
-        assert_ne!(rows[0].identity, rows[1].identity);
+        assert_eq!(rows[0].identity, rows[1].identity);
     }
 
     #[test]

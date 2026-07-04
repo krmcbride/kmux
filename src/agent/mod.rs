@@ -3,6 +3,8 @@
 //! This module turns persisted agent observations and live tmux state into user
 //! surfaces such as status output, workspace badges, and the sidebar UI.
 
+mod directory;
+
 pub mod query;
 pub mod sessions;
 pub mod sidebar;

@@ -13,8 +13,8 @@ use crate::agent::sidebar::model::{
     SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
 };
 use crate::agent::sidebar::selection::{
-    self, PersistedSelectionRollback, PreviousSelectionOption, SELECTED_SESSION_OPTION,
-    SelectionMode, decode_selected_session, encode_selected_session,
+    self, PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
+    SelectionMode, decode_selected_target, encode_selected_target,
 };
 use crate::agent::status::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
@@ -174,7 +174,7 @@ impl SidebarApp {
             return;
         };
 
-        if let Err(error) = self.store.delete_session(&row.identity.session_key()) {
+        if let Err(error) = self.store.delete_session(&row.selection.key) {
             self.last_error = Some(format!("delete failed: {error}"));
             return;
         }
@@ -362,12 +362,12 @@ impl SidebarApp {
 
         let previous = PreviousSelectionOption::from(
             self.tmux
-                .show_window_option(&row.window_id, SELECTED_SESSION_OPTION)?,
+                .show_window_option(&row.window_id, SELECTED_TARGET_OPTION)?,
         );
-        let attempted = row.identity.session_key();
-        let encoded = encode_selected_session(&attempted)?;
+        let attempted = row.identity.clone();
+        let encoded = encode_selected_target(&attempted)?;
         self.tmux
-            .set_window_option(&row.window_id, SELECTED_SESSION_OPTION, encoded.as_str())?;
+            .set_window_option(&row.window_id, SELECTED_TARGET_OPTION, encoded.as_str())?;
 
         Ok(Some(PersistedSelectionRollback {
             window_id: row.window_id.clone(),
@@ -379,20 +379,20 @@ impl SidebarApp {
     fn restore_persisted_selection(&self, rollback: PersistedSelectionRollback) -> Result<()> {
         let current = self
             .tmux
-            .show_window_option(&rollback.window_id, SELECTED_SESSION_OPTION)?;
-        if current.as_deref().and_then(decode_selected_session) != Some(rollback.attempted) {
+            .show_window_option(&rollback.window_id, SELECTED_TARGET_OPTION)?;
+        if current.as_deref().and_then(decode_selected_target) != Some(rollback.attempted) {
             return Ok(());
         }
 
         match rollback.previous {
             PreviousSelectionOption::Value(value) => self.tmux.set_window_option(
                 &rollback.window_id,
-                SELECTED_SESSION_OPTION,
+                SELECTED_TARGET_OPTION,
                 value.as_str(),
             ),
             PreviousSelectionOption::Unset => self
                 .tmux
-                .unset_window_option(&rollback.window_id, SELECTED_SESSION_OPTION),
+                .unset_window_option(&rollback.window_id, SELECTED_TARGET_OPTION),
         }
     }
 
@@ -415,14 +415,14 @@ impl SidebarApp {
         let host_window_id = self.host_window_id.as_deref()?;
         let value = self
             .tmux
-            .show_window_option(host_window_id, SELECTED_SESSION_OPTION)
+            .show_window_option(host_window_id, SELECTED_TARGET_OPTION)
             .ok()
             .flatten()?;
-        let session = decode_selected_session(&value)?;
-        selection::persisted_host_session_index(
+        let identity = decode_selected_target(&value)?;
+        selection::persisted_host_identity_index(
             &self.rows,
             self.host_window_id.as_deref(),
-            &session,
+            &identity,
         )
     }
 
@@ -582,28 +582,28 @@ mod tests {
             self.fixture.tmux.clone()
         }
 
-        fn set_selected_session(&self, session: AgentSessionKey) -> Result<()> {
-            let encoded = encode_selected_session(&session)?;
-            self.set_raw_selected_session(&encoded)
+        fn set_selected_row(&self, row: &SidebarRow) -> Result<()> {
+            let encoded = encode_selected_target(&row.identity)?;
+            self.set_raw_selected_target(&encoded)
         }
 
-        fn set_raw_selected_session(&self, value: &str) -> Result<()> {
+        fn set_raw_selected_target(&self, value: &str) -> Result<()> {
             self.fixture
                 .tmux
-                .set_window_option(&self.window_id, SELECTED_SESSION_OPTION, value)
+                .set_window_option(&self.window_id, SELECTED_TARGET_OPTION, value)
         }
 
-        fn raw_selected_session(&self) -> Result<Option<String>> {
+        fn raw_selected_target(&self) -> Result<Option<String>> {
             self.fixture
                 .tmux
-                .show_window_option(&self.window_id, SELECTED_SESSION_OPTION)
+                .show_window_option(&self.window_id, SELECTED_TARGET_OPTION)
         }
 
-        fn selected_session(&self) -> Result<Option<AgentSessionKey>> {
+        fn selected_target(&self) -> Result<Option<SidebarRowIdentity>> {
             Ok(self
-                .raw_selected_session()?
+                .raw_selected_target()?
                 .as_deref()
-                .and_then(decode_selected_session))
+                .and_then(decode_selected_target))
         }
     }
 
@@ -929,7 +929,8 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        fixture.set_selected_session(session_key("opencode", "ses_missing"))?;
+        fixture
+            .set_raw_selected_target(r#"{"version":2,"target":{"key":"directory:/missing"}}"#)?;
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
@@ -950,7 +951,7 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        fixture.set_raw_selected_session("not json")?;
+        fixture.set_raw_selected_target("not json")?;
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
@@ -971,10 +972,11 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        fixture.set_selected_session(session_key("opencode", "ses_a"))?;
+        let other_window_row = server_row_in_window("ses_a", "Other window", "@2");
+        fixture.set_selected_row(&other_window_row)?;
 
         let rows = vec![
-            server_row_in_window("ses_a", "Other window", "@2"),
+            other_window_row,
             server_row_in_window("ses_b", "Host window", &fixture.window_id),
         ];
         let app = SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), rows);
@@ -989,8 +991,8 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        let previous = session_key("opencode", "ses_previous");
-        fixture.set_selected_session(previous.clone())?;
+        let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
+        fixture.set_selected_row(&previous)?;
         let mut row = server_row_in_window("ses_attempted", "Attempted", &fixture.window_id);
         row.session_name = "missing-session".to_owned();
         let mut app =
@@ -998,7 +1000,7 @@ mod tests {
 
         app.jump_to_selected();
 
-        assert_eq!(fixture.selected_session()?, Some(previous));
+        assert_eq!(fixture.selected_target()?, Some(previous.identity));
         assert!(
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
@@ -1011,7 +1013,7 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        fixture.set_raw_selected_session("not json")?;
+        fixture.set_raw_selected_target("not json")?;
         let mut row = server_row_in_window("ses_attempted", "Attempted", &fixture.window_id);
         row.session_name = "missing-session".to_owned();
         let mut app =
@@ -1019,7 +1021,7 @@ mod tests {
 
         app.jump_to_selected();
 
-        assert_eq!(fixture.raw_selected_session()?.as_deref(), Some("not json"));
+        assert_eq!(fixture.raw_selected_target()?.as_deref(), Some("not json"));
         assert!(
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
@@ -1040,7 +1042,7 @@ mod tests {
 
         app.jump_to_selected();
 
-        assert_eq!(fixture.selected_session()?, None);
+        assert_eq!(fixture.selected_target()?, None);
         assert!(
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
@@ -1053,7 +1055,8 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        fixture.set_selected_session(session_key("opencode", "ses_previous"))?;
+        let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
+        fixture.set_selected_row(&previous)?;
         let rows = vec![server_row_in_window(
             "ses_attempted",
             "Attempted",
@@ -1064,12 +1067,12 @@ mod tests {
         let rollback = app
             .persist_selection_before_jump(&rows[0])?
             .ok_or_else(|| anyhow::anyhow!("expected persisted selection rollback"))?;
-        let newer = session_key("opencode", "ses_newer");
-        fixture.set_selected_session(newer.clone())?;
+        let newer = server_row_in_window("ses_newer", "Newer", &fixture.window_id);
+        fixture.set_selected_row(&newer)?;
 
         app.restore_persisted_selection(rollback)?;
 
-        assert_eq!(fixture.selected_session()?, Some(newer));
+        assert_eq!(fixture.selected_target()?, Some(newer.identity));
         Ok(())
     }
 
@@ -1139,6 +1142,7 @@ mod tests {
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
         report.key = session_key("opencode", session_id);
+        report.directory_key = Some(format!("/repo/{window_id}/{session_id}"));
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
         row_from_view(&report, 100)

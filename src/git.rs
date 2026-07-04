@@ -94,7 +94,7 @@ impl Git {
         let common_dir_raw = self
             .stdout(["rev-parse", "--git-common-dir"])
             .context("failed to locate git common dir")?;
-        let git_common_dir = resolve_existing_path(&current_worktree, common_dir_raw.trim())?;
+        let git_common_dir = resolve_existing_path(&self.cwd, common_dir_raw.trim())?;
 
         Ok(RepoInfo {
             current_worktree,

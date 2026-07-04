@@ -1,26 +1,29 @@
 //! Reconciliation of persisted agent observations with live tmux state.
 //!
-//! External producers can report partial or stale location hints, so this module
-//! merges observations for each logical session and resolves the best current
-//! tmux/window/workspace target for status output and sidebar rows.
+//! External producers report a current directory for each logical session. This
+//! module attaches those observations to live kmux tmux windows by matching that
+//! directory to window workspace metadata.
 
-use std::collections::{BTreeMap, HashMap};
-use std::path::Path;
+use std::collections::BTreeMap;
 
 use anyhow::Result;
 
-use crate::paths::{infer_repo_metadata_from_paths, same_path};
+use crate::paths::infer_repo_metadata_from_paths;
 use crate::state::{
     AgentLocationHints, AgentObservationState, AgentSessionKey, AgentStatus, StateStore,
 };
-use crate::tmux::{Tmux, TmuxPaneSnapshot, TmuxWindow};
+use crate::tmux::{Tmux, TmuxWindow};
+
+use super::directory::{AgentDirectoryAttachment, AgentDirectoryResolver};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Reconciled view of one logical agent session for UI and status output.
 pub struct AgentSessionView {
     pub key: AgentSessionKey,
+    pub directory_key: Option<String>,
     pub created_at: u64,
     pub status: AgentStatus,
+    pub status_observed_at: u64,
     pub status_changed_at: u64,
     pub working_elapsed_secs: u64,
     pub observed_at: u64,
@@ -43,7 +46,7 @@ impl AgentSessionView {
     }
 }
 
-/// Reconcile persisted agent observations with live tmux pane/window state.
+/// Reconcile persisted agent observations with live tmux window state.
 pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSessionView>> {
     let tmux_instance = tmux.instance_id();
     let observations = store
@@ -55,11 +58,9 @@ pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSession
         return Ok(Vec::new());
     }
 
-    let panes = tmux.list_pane_snapshots().unwrap_or_default();
     let windows = tmux.list_windows(None).unwrap_or_default();
     Ok(reconcile_session_views(
         observations,
-        &panes,
         &windows,
         &tmux_instance,
     ))
@@ -68,8 +69,8 @@ pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSession
 #[derive(Debug, Clone)]
 struct EnrichedObservation {
     state: AgentObservationState,
+    directory_attachment: Option<AgentDirectoryAttachment>,
     resolved_target: Option<AgentLocationHints>,
-    location_rank: u8,
 }
 
 // Ignore observations scoped to another tmux socket, but accept unscoped legacy
@@ -82,47 +83,40 @@ fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_
         .is_none_or(|target_instance| target_instance == instance_id)
 }
 
-// Group observations by logical agent session after enriching each producer's
-// reported target with the best live tmux match available.
+// Group observations by logical agent session after attaching each reported
+// directory to exactly one live kmux workspace window.
 fn reconcile_session_views(
     observations: Vec<AgentObservationState>,
-    panes: &[TmuxPaneSnapshot],
     windows: &[TmuxWindow],
     tmux_instance: &str,
 ) -> Vec<AgentSessionView> {
-    let pane_by_id = panes
-        .iter()
-        .map(|pane| (pane.pane_id.clone(), pane))
-        .collect::<HashMap<_, _>>();
-    let window_by_id = windows
-        .iter()
-        .map(|window| (window.window_id.clone(), window))
-        .collect::<HashMap<_, _>>();
+    let mut directory_resolver = AgentDirectoryResolver::default();
 
     let mut grouped = BTreeMap::<AgentSessionKey, Vec<EnrichedObservation>>::new();
     for observation in observations {
-        let (resolved_target, location_rank) = resolve_observation_target(
+        let directory_attachment = directory_resolver.attachment_for_hints(&observation.target);
+        let resolved_target = resolve_observation_target(
             &observation,
-            &pane_by_id,
-            &window_by_id,
-            panes,
+            directory_attachment.as_ref(),
             windows,
             tmux_instance,
+            &mut directory_resolver,
         );
         grouped
             .entry(observation.key.session.clone())
             .or_default()
             .push(EnrichedObservation {
                 state: observation,
+                directory_attachment,
                 resolved_target,
-                location_rank,
             });
     }
 
-    grouped
+    let views = grouped
         .into_iter()
         .filter_map(|(key, observations)| session_view_from_observations(key, &observations))
-        .collect()
+        .collect::<Vec<_>>();
+    collapse_directory_views(views)
 }
 
 // Choose one status observation and one location observation for a session, then
@@ -138,27 +132,38 @@ fn session_view_from_observations(
             (
                 observation_status_observed_at(&observation.state),
                 status_priority(observation.state.status),
-                observation.location_rank,
+                observation.state.observed_at,
             )
         })?;
+    let newest_observed_at = observations
+        .iter()
+        .map(|observation| observation.state.observed_at)
+        .max()?;
     let location_observation = observations
         .iter()
-        .filter(|observation| observation.resolved_target.is_some())
-        .max_by_key(|observation| (observation.location_rank, observation.state.observed_at))?;
+        .filter(|observation| observation.state.observed_at == newest_observed_at)
+        .find(|observation| observation.resolved_target.is_some())?;
     let mut target = location_observation.resolved_target.clone()?;
     merge_target_metadata(&mut target, observations);
     target.agent_workspace_id = newest_agent_workspace_id(observations);
     enrich_missing_repo_metadata(&mut target);
 
     let status_changed_at = status_observation.state.status_changed_at?;
+    let status_observed_at = observation_status_observed_at(&status_observation.state);
+    let directory_key = location_observation
+        .directory_attachment
+        .as_ref()
+        .map(|attachment| attachment.key().to_owned());
     Some(AgentSessionView {
         key,
+        directory_key,
         created_at: observations
             .iter()
             .map(|observation| observation.state.effective_created_at())
             .min()
             .unwrap_or(status_changed_at),
         status: status_observation.state.status?,
+        status_observed_at,
         status_changed_at,
         working_elapsed_secs: status_observation.state.working_elapsed_secs,
         observed_at: observations
@@ -174,6 +179,48 @@ fn session_view_from_observations(
         }),
         target,
     })
+}
+
+fn collapse_directory_views(views: Vec<AgentSessionView>) -> Vec<AgentSessionView> {
+    let mut by_target = BTreeMap::<String, AgentSessionView>::new();
+    for view in views {
+        let key = view_group_key(&view);
+        match by_target.get_mut(&key) {
+            Some(current) if primary_view_is_better(&view, current) => {
+                *current = view;
+            }
+            Some(_) => {}
+            None => {
+                by_target.insert(key, view);
+            }
+        }
+    }
+    by_target.into_values().collect()
+}
+
+fn view_group_key(view: &AgentSessionView) -> String {
+    view.directory_key
+        .as_ref()
+        .map(|key| format!("directory:{key}"))
+        .or_else(|| {
+            view.target
+                .tmux_window_id
+                .as_ref()
+                .map(|window_id| format!("window:{window_id}"))
+        })
+        .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
+}
+
+fn primary_view_is_better(candidate: &AgentSessionView, current: &AgentSessionView) -> bool {
+    let candidate_rank = status_priority(Some(candidate.status));
+    let current_rank = status_priority(Some(current.status));
+    candidate_rank > current_rank
+        || candidate_rank == current_rank
+            && (candidate.status_observed_at > current.status_observed_at
+                || candidate.status_observed_at == current.status_observed_at
+                    && (candidate.observed_at > current.observed_at
+                        || candidate.observed_at == current.observed_at
+                            && candidate.key < current.key))
 }
 
 fn observation_status_observed_at(observation: &AgentObservationState) -> u64 {
@@ -228,234 +275,51 @@ fn status_priority(status: Option<AgentStatus>) -> u8 {
     }
 }
 
-// Target resolution is ranked from strongest to weakest identity: exact pane,
-// exact window, unique current path, kmux window metadata, then session/name.
+// A producer-visible row exists only when the reported directory matches exactly
+// one live kmux workspace window.
 fn resolve_observation_target(
     observation: &AgentObservationState,
-    pane_by_id: &HashMap<String, &TmuxPaneSnapshot>,
-    window_by_id: &HashMap<String, &TmuxWindow>,
-    panes: &[TmuxPaneSnapshot],
+    directory_attachment: Option<&AgentDirectoryAttachment>,
     windows: &[TmuxWindow],
     tmux_instance: &str,
-) -> (Option<AgentLocationHints>, u8) {
-    if let Some(pane_id) = observation.target.tmux_pane_id.as_deref()
-        && let Some(pane) = pane_by_id.get(pane_id)
-        && !is_sidebar_pane(pane)
-        && pane_matches_target(
-            &observation.target,
-            pane,
-            window_by_id.get(&pane.window_id).copied(),
-        )
-    {
-        let mut target = observation.target.clone();
-        enrich_target_from_pane(&mut target, pane, tmux_instance);
-        if let Some(window) = window_by_id.get(&pane.window_id) {
-            enrich_target_from_window(&mut target, window, tmux_instance);
-        }
-        enrich_missing_repo_metadata(&mut target);
-        return (Some(target), 5);
-    }
-
-    if let Some(window_id) = observation.target.tmux_window_id.as_deref()
-        && let Some(window) = window_by_id.get(window_id)
-        && window_matches_target(&observation.target, window)
-    {
-        let mut target = observation.target.clone();
-        enrich_target_from_window(&mut target, window, tmux_instance);
-        enrich_missing_repo_metadata(&mut target);
-        return (Some(target), 4);
-    }
-
-    if let Some((window, pane)) =
-        unique_window_pane_by_current_path(&observation.target, panes, windows)
-    {
-        let mut target = observation.target.clone();
-        enrich_target_from_pane(&mut target, pane, tmux_instance);
-        enrich_target_from_window(&mut target, window, tmux_instance);
-        enrich_missing_repo_metadata(&mut target);
-        return (Some(target), 3);
-    }
-
-    if let Some(window) = unique_window_by_worktree_metadata(&observation.target, windows) {
-        let mut target = observation.target.clone();
-        enrich_target_from_window(&mut target, window, tmux_instance);
-        enrich_missing_repo_metadata(&mut target);
-        return (Some(target), 2);
-    }
-
-    if let Some(window) = window_by_session_and_name(&observation.target, windows) {
-        let mut target = observation.target.clone();
-        enrich_target_from_window(&mut target, window, tmux_instance);
-        enrich_missing_repo_metadata(&mut target);
-        return (Some(target), 1);
-    }
-
-    (None, 0)
+    directory_resolver: &mut AgentDirectoryResolver,
+) -> Option<AgentLocationHints> {
+    let attachment = directory_attachment?;
+    let window = unique_window_by_directory_attachment(attachment, windows, directory_resolver)?;
+    let mut target = AgentLocationHints::default();
+    apply_directory_attachment(&mut target, attachment);
+    enrich_target_from_window(&mut target, window, tmux_instance);
+    merge_resolved_observation_metadata(&mut target, &observation.target);
+    enrich_missing_repo_metadata(&mut target);
+    Some(target)
 }
 
-// Match a current pane path only when it identifies one window; otherwise the
-// observation is too ambiguous to enrich from geometry alone.
-fn unique_window_pane_by_current_path<'a>(
-    target: &AgentLocationHints,
-    panes: &'a [TmuxPaneSnapshot],
+fn unique_window_by_directory_attachment<'a>(
+    attachment: &AgentDirectoryAttachment,
     windows: &'a [TmuxWindow],
-) -> Option<(&'a TmuxWindow, &'a TmuxPaneSnapshot)> {
-    let mut by_window = BTreeMap::<&str, (&TmuxWindow, Vec<&TmuxPaneSnapshot>)>::new();
-    for pane in panes {
-        if is_sidebar_pane(pane) || !target_matches_path(target, pane.current_path.as_deref()) {
-            continue;
-        }
-        let window = windows
-            .iter()
-            .find(|window| window.window_id == pane.window_id)?;
-        by_window
-            .entry(window.window_id.as_str())
-            .or_insert_with(|| (window, Vec::new()))
-            .1
-            .push(pane);
-    }
-
-    let mut matches = by_window.into_values();
-    let (window, panes) = matches.next()?;
-    if matches.next().is_some() {
-        return None;
-    }
-
-    panes
+    directory_resolver: &mut AgentDirectoryResolver,
+) -> Option<&'a TmuxWindow> {
+    let workspace_matches = windows
         .iter()
-        .copied()
-        .find(|pane| pane.pane_active)
-        .or_else(|| panes.first().copied())
-        .map(|pane| (window, pane))
-}
-
-fn pane_matches_target(
-    target: &AgentLocationHints,
-    pane: &TmuxPaneSnapshot,
-    window: Option<&TmuxWindow>,
-) -> bool {
-    if target
-        .tmux_window_id
-        .as_deref()
-        .is_some_and(|window_id| window_id != pane.window_id)
-    {
-        return false;
+        .filter(|window| {
+            directory_resolver
+                .attachment_matches_path(attachment, window.kmux_workspace_path.as_deref())
+        })
+        .collect::<Vec<_>>();
+    match workspace_matches.as_slice() {
+        [window] => Some(window),
+        _ => None,
     }
-    if !session_window_hints_match(target, &pane.session_name, &pane.window_name) {
-        return false;
-    }
-
-    path_hints_match(
-        target,
-        [
-            pane.current_path.as_deref(),
-            window.and_then(|window| window.kmux_workspace_path.as_deref()),
-        ],
-    )
 }
 
-fn window_matches_target(target: &AgentLocationHints, window: &TmuxWindow) -> bool {
-    session_window_hints_match(target, &window.session_name, &window.window_name)
-        && path_hints_match(target, [window.kmux_workspace_path.as_deref(), None])
-}
-
-fn session_window_hints_match(
-    target: &AgentLocationHints,
-    session_name: &str,
-    window_name: &str,
-) -> bool {
-    target
-        .tmux_session_name
-        .as_deref()
-        .is_none_or(|target_session| target_session == session_name)
-        && target
-            .tmux_window_name
-            .as_deref()
-            .is_none_or(|target_window| target_window == window_name)
-}
-
-// If the agent supplied path hints, require at least one candidate path to match.
-// Without path hints, tmux session/window hints are enough.
-fn path_hints_match<const N: usize>(
-    target: &AgentLocationHints,
-    candidates: [Option<&str>; N],
-) -> bool {
-    if target.directory.is_none() && target.git_worktree_path.is_none() {
-        return true;
-    }
-
-    candidates
-        .into_iter()
-        .flatten()
-        .any(|candidate| target_matches_path(target, Some(candidate)))
-}
-
-fn unique_window_by_worktree_metadata<'a>(
-    target: &AgentLocationHints,
-    windows: &'a [TmuxWindow],
-) -> Option<&'a TmuxWindow> {
-    unique_window(
-        windows
-            .iter()
-            .filter(|window| target_matches_path(target, window.kmux_workspace_path.as_deref())),
-    )
-}
-
-fn target_matches_path(target: &AgentLocationHints, candidate: Option<&str>) -> bool {
-    let Some(candidate) = candidate else {
-        return false;
-    };
-    [
-        target.directory.as_deref(),
-        target.git_worktree_path.as_deref(),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|path| same_path(Path::new(path), Path::new(candidate)))
-}
-
-fn window_by_session_and_name<'a>(
-    target: &AgentLocationHints,
-    windows: &'a [TmuxWindow],
-) -> Option<&'a TmuxWindow> {
-    let (Some(session_name), Some(window_name)) = (
-        target.tmux_session_name.as_deref(),
-        target.tmux_window_name.as_deref(),
-    ) else {
-        return None;
-    };
-
-    windows.iter().find(|window| {
-        window.session_name == session_name
-            && window.window_name == window_name
-            && window_matches_target(target, window)
-    })
-}
-
-fn unique_window<'a>(mut windows: impl Iterator<Item = &'a TmuxWindow>) -> Option<&'a TmuxWindow> {
-    let window = windows.next()?;
-    windows.next().is_none().then_some(window)
-}
-
-fn enrich_target_from_pane(
+fn apply_directory_attachment(
     target: &mut AgentLocationHints,
-    pane: &TmuxPaneSnapshot,
-    tmux_instance: &str,
+    attachment: &AgentDirectoryAttachment,
 ) {
-    target.tmux_instance = Some(tmux_instance.to_owned());
-    target.tmux_pane_id = Some(pane.pane_id.clone());
-    target.tmux_window_id = Some(pane.window_id.clone());
-    target.tmux_session_name = Some(pane.session_name.clone());
-    target.tmux_window_name = Some(pane.window_name.clone());
-    if pane.title.is_some() {
-        target.tmux_pane_title = pane.title.clone();
+    if target.directory.is_none() {
+        target.directory = Some(attachment.reported_path().to_owned());
     }
-    if pane.current_command.is_some() {
-        target.tmux_pane_current_command = pane.current_command.clone();
-    }
-    if pane.current_path.is_some() {
-        target.tmux_pane_current_path = pane.current_path.clone();
-    }
+    target.git_worktree_path = Some(attachment.path().to_owned());
 }
 
 fn enrich_target_from_window(
@@ -478,43 +342,20 @@ fn enrich_target_from_window(
     }
 }
 
-// Merge newest metadata first so old sparse observations only fill remaining gaps.
+// Merge newest display/routing metadata first. Live tmux target fields come only
+// from the matched kmux window, not from producer hints.
 fn merge_target_metadata(target: &mut AgentLocationHints, observations: &[EnrichedObservation]) {
     let mut sorted = observations.iter().collect::<Vec<_>>();
     sorted.sort_by_key(|observation| observation.state.observed_at);
     for observation in sorted.into_iter().rev() {
-        fill_missing_target_metadata(target, &observation.state.target);
-        if let Some(resolved) = &observation.resolved_target {
-            fill_missing_target_metadata(target, resolved);
-        }
+        merge_resolved_observation_metadata(target, &observation.state.target);
     }
 }
 
-fn fill_missing_target_metadata(target: &mut AgentLocationHints, fallback: &AgentLocationHints) {
-    if target.tmux_instance.is_none() {
-        target.tmux_instance = fallback.tmux_instance.clone();
-    }
-    if target.tmux_pane_id.is_none() {
-        target.tmux_pane_id = fallback.tmux_pane_id.clone();
-    }
-    if target.tmux_window_id.is_none() {
-        target.tmux_window_id = fallback.tmux_window_id.clone();
-    }
-    if target.tmux_session_name.is_none() {
-        target.tmux_session_name = fallback.tmux_session_name.clone();
-    }
-    if target.tmux_window_name.is_none() {
-        target.tmux_window_name = fallback.tmux_window_name.clone();
-    }
-    if target.tmux_pane_title.is_none() {
-        target.tmux_pane_title = fallback.tmux_pane_title.clone();
-    }
-    if target.tmux_pane_current_command.is_none() {
-        target.tmux_pane_current_command = fallback.tmux_pane_current_command.clone();
-    }
-    if target.tmux_pane_current_path.is_none() {
-        target.tmux_pane_current_path = fallback.tmux_pane_current_path.clone();
-    }
+fn merge_resolved_observation_metadata(
+    target: &mut AgentLocationHints,
+    fallback: &AgentLocationHints,
+) {
     if target.git_repo_name.is_none() {
         target.git_repo_name = fallback.git_repo_name.clone();
     }
@@ -564,23 +405,23 @@ fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
     }
 }
 
-fn is_sidebar_pane(pane: &TmuxPaneSnapshot) -> bool {
-    pane.kmux_role.as_deref() == Some("sidebar")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::state::{AgentObservationKey, AgentObservationState};
+    use tempfile::tempdir;
 
     #[test]
     fn merges_tui_and_server_observations_into_one_session_view() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let tui = observation(
             "tui",
             "default/%1",
             Some(AgentStatus::Done),
             100,
             Some("Pane title"),
+            &directory,
         );
         let mut server = observation(
             "server",
@@ -588,6 +429,7 @@ mod tests {
             Some(AgentStatus::Waiting),
             200,
             Some("Server title"),
+            &directory,
         );
         server.context = Some("55.2K".to_owned());
         server.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
@@ -596,8 +438,7 @@ mod tests {
 
         let views = reconcile_session_views(
             vec![tui, server],
-            &[pane_snapshot("%1", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -609,155 +450,130 @@ mod tests {
             views[0].target.agent_workspace_id.as_deref(),
             Some("wrk_01KTEST")
         );
-        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
+        assert_eq!(views[0].target.tmux_pane_id, None);
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
-    fn keeps_four_sessions_from_two_directories_as_four_views() {
+    fn collapses_multiple_sessions_in_one_directory_to_one_primary_view() {
+        let root = tempdir().expect("root temp directory should be created");
+        let root = root.path().display().to_string();
+        let feature = tempdir().expect("feature temp directory should be created");
+        let feature = feature.path().display().to_string();
         let observations = [
-            observation_for_session("ses_a", "tui", "default/%1", "/repo/project", "A"),
-            observation_for_session("ses_a", "server", "server", "/repo/project", "A server"),
-            observation_for_session("ses_b", "tui", "default/%1", "/repo/project", "B"),
-            observation_for_session("ses_b", "server", "server", "/repo/project", "B server"),
-            observation_for_session(
-                "ses_c",
-                "tui",
-                "default/%2",
-                "/repo/project__worktrees/feature",
-                "C",
-            ),
-            observation_for_session(
-                "ses_c",
-                "server",
-                "server",
-                "/repo/project__worktrees/feature",
-                "C server",
-            ),
-            observation_for_session(
-                "ses_d",
-                "tui",
-                "default/%2",
-                "/repo/project__worktrees/feature",
-                "D",
-            ),
-            observation_for_session(
-                "ses_d",
-                "server",
-                "server",
-                "/repo/project__worktrees/feature",
-                "D server",
-            ),
+            observation_for_session("ses_a", "tui", "default/%1", &root, "A"),
+            observation_for_session("ses_a", "server", "server", &root, "A server"),
+            observation_for_session("ses_b", "tui", "default/%1", &root, "B"),
+            observation_for_session("ses_b", "server", "server", &root, "B server"),
+            observation_for_session("ses_c", "tui", "default/%2", &feature, "C"),
+            observation_for_session("ses_c", "server", "server", &feature, "C server"),
+            observation_for_session("ses_d", "tui", "default/%2", &feature, "D"),
+            observation_for_session("ses_d", "server", "server", &feature, "D server"),
         ];
 
         let views = reconcile_session_views(
             observations.into_iter().collect(),
             &[
-                pane_snapshot("%1", "@1", "/repo/project", None),
-                pane_snapshot("%2", "@2", "/repo/project__worktrees/feature", None),
-            ],
-            &[
-                window_snapshot("@1", "project", Some("/repo/project")),
-                window_snapshot("@2", "feature", Some("/repo/project__worktrees/feature")),
+                window_snapshot("@1", "project", Some(&root)),
+                window_snapshot("@2", "feature", Some(&feature)),
             ],
             "default",
         );
 
-        assert_eq!(views.len(), 4);
+        assert_eq!(views.len(), 2);
+        assert!(views.iter().any(|view| {
+            view.key.session_id == "ses_a" && view.target.tmux_window_id.as_deref() == Some("@1")
+        }));
+        assert!(views.iter().any(|view| {
+            view.key.session_id == "ses_c" && view.target.tmux_window_id.as_deref() == Some("@2")
+        }));
         assert_eq!(
             views
                 .iter()
                 .filter(|view| view.target.tmux_window_id.as_deref() == Some("@1"))
                 .count(),
-            2
+            1
         );
         assert_eq!(
             views
                 .iter()
                 .filter(|view| view.target.tmux_window_id.as_deref() == Some("@2"))
                 .count(),
-            2
+            1
         );
     }
 
     #[test]
-    fn resolves_server_only_observation_by_non_sidebar_pane_current_path() {
+    fn same_directory_primary_view_prefers_waiting_status() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
+        let mut done = observation_for_session("ses_done", "tui", "default/%1", &directory, "Done");
+        done.status = Some(AgentStatus::Done);
+        done.status_observed_at = Some(300);
+        done.status_changed_at = Some(300);
+        done.observed_at = 300;
+        let mut waiting =
+            observation_for_session("ses_waiting", "tui", "default/%1", &directory, "Waiting");
+        waiting.status = Some(AgentStatus::Waiting);
+        waiting.status_observed_at = Some(100);
+        waiting.status_changed_at = Some(100);
+
+        let views = reconcile_session_views(
+            vec![done, waiting],
+            &[window_snapshot("@1", "project", Some(&directory))],
+            "default",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].key.session_id, "ses_waiting");
+        assert_eq!(views[0].status, AgentStatus::Waiting);
+    }
+
+    #[test]
+    fn directory_only_observation_attaches_to_matching_kmux_window() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let mut server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
+            &directory,
         );
         server.target.tmux_pane_id = None;
         server.target.tmux_window_id = None;
-        server.target.directory = Some("/repo/project__worktrees/feature".to_owned());
         server.target.git_worktree_path = None;
 
         let views = reconcile_session_views(
             vec![server],
-            &[
-                pane_snapshot("%sidebar", "@1", "/repo/project", Some("sidebar")),
-                pane_snapshot("%2", "@1", "/repo/project__worktrees/feature", None),
-            ],
-            &[window_snapshot("@1", "feature", None)],
+            &[window_snapshot("@1", "feature", Some(&directory))],
             "default",
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%2"));
+        assert_eq!(views[0].target.tmux_pane_id, None);
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
-    fn resolves_server_only_observation_when_one_window_has_multiple_matching_panes() {
+    fn git_worktree_path_without_directory_does_not_attach() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let mut server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
+            &directory,
         );
-        server.target.tmux_pane_id = None;
-        server.target.tmux_window_id = None;
-        server.target.tmux_session_name = None;
-        server.target.tmux_window_name = None;
-        server.target.directory = Some("/repo/project".to_owned());
-        server.target.git_worktree_path = None;
-        let mut inactive = pane_snapshot("%2", "@1", "/repo/project", None);
-        inactive.pane_active = false;
-        let active = pane_snapshot("%3", "@1", "/repo/project", None);
+        server.target.directory = None;
+        server.target.git_worktree_path = Some(directory.clone());
 
         let views = reconcile_session_views(
             vec![server],
-            &[inactive, active],
-            &[window_snapshot("@1", "project", None)],
-            "default",
-        );
-
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%3"));
-        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
-    }
-
-    #[test]
-    fn stale_exact_pane_hint_is_rejected_when_path_hints_conflict() {
-        let mut stale = observation(
-            "tui",
-            "default/%1",
-            Some(AgentStatus::Working),
-            100,
-            Some("Stale pane"),
-        );
-        stale.target.tmux_session_name = None;
-        stale.target.tmux_window_name = None;
-        stale.target.directory = Some("/repo/old".to_owned());
-        stale.target.git_worktree_path = Some("/repo/old".to_owned());
-
-        let views = reconcile_session_views(
-            vec![stale],
-            &[pane_snapshot("%1", "@1", "/repo/new", None)],
-            &[window_snapshot("@1", "project", Some("/repo/new"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -765,23 +581,89 @@ mod tests {
     }
 
     #[test]
-    fn session_window_name_fallback_rejects_conflicting_path_hints() {
-        let mut stale = observation(
+    fn codex_like_directory_only_observation_attaches_by_window_path() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
+        let mut server = observation(
             "server",
-            "server",
-            Some(AgentStatus::Working),
+            "codex-app-server",
+            Some(AgentStatus::Waiting),
             100,
-            Some("Stale window"),
+            Some("Codex task"),
+            &directory,
         );
-        stale.target.tmux_pane_id = None;
-        stale.target.tmux_window_id = None;
-        stale.target.directory = Some("/repo/old".to_owned());
-        stale.target.git_worktree_path = Some("/repo/old".to_owned());
+        server.key.session.agent_kind = "codex".to_owned();
+        server.key.session.session_id = "thread_123".to_owned();
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
+        server.target.tmux_session_name = None;
+        server.target.tmux_window_name = None;
+        server.target.git_worktree_path = None;
 
         let views = reconcile_session_views(
-            vec![stale],
-            &[pane_snapshot("%1", "@1", "/repo/new", None)],
-            &[window_snapshot("@1", "project", Some("/repo/new"))],
+            vec![server],
+            &[window_snapshot("@1", "codex", Some(&directory))],
+            "default",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].key.agent_kind, "codex");
+        assert_eq!(views[0].key.session_id, "thread_123");
+        assert_eq!(views[0].target.tmux_pane_id, None);
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
+    }
+
+    #[test]
+    fn duplicate_windows_for_directory_are_ambiguous_without_exact_pane() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
+        let mut server = observation(
+            "server",
+            "http://127.0.0.1:4096",
+            Some(AgentStatus::Working),
+            100,
+            Some("Server only"),
+            &directory,
+        );
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
+        server.target.tmux_session_name = None;
+        server.target.tmux_window_name = None;
+        server.target.git_worktree_path = None;
+
+        let views = reconcile_session_views(
+            vec![server],
+            &[
+                window_snapshot("@1", "project-a", Some(&directory)),
+                window_snapshot("@2", "project-b", Some(&directory)),
+            ],
+            "default",
+        );
+
+        assert!(views.is_empty());
+    }
+
+    #[test]
+    fn observation_without_matching_kmux_window_is_hidden() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
+        let mut server = observation(
+            "server",
+            "http://127.0.0.1:4096",
+            Some(AgentStatus::Working),
+            100,
+            Some("Server only"),
+            &directory,
+        );
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
+        server.target.tmux_session_name = None;
+        server.target.tmux_window_name = None;
+        server.target.git_worktree_path = None;
+
+        let views = reconcile_session_views(
+            vec![server],
+            &[window_snapshot("@1", "project", None)],
             "default",
         );
 
@@ -796,18 +678,43 @@ mod tests {
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
+            "/tmp/does-not-exist/kmux-agent",
         );
         server.target.tmux_pane_id = None;
         server.target.tmux_window_id = None;
         server.target.tmux_session_name = None;
         server.target.tmux_window_name = None;
-        server.target.directory = Some("/repo/missing".to_owned());
         server.target.git_worktree_path = None;
 
+        let views = reconcile_session_views(vec![server], &[], "default");
+
+        assert!(views.is_empty());
+    }
+
+    #[test]
+    fn latest_observation_must_resolve_to_live_window() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
+        let old = observation(
+            "tui",
+            "default/%1",
+            Some(AgentStatus::Working),
+            100,
+            Some("Old"),
+            &directory,
+        );
+        let newest = observation(
+            "server",
+            "http://127.0.0.1:4096",
+            Some(AgentStatus::Working),
+            200,
+            Some("Newest"),
+            "/tmp/does-not-exist/kmux-agent",
+        );
+
         let views = reconcile_session_views(
-            vec![server],
-            &[pane_snapshot("%2", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", None)],
+            vec![old, newest],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -816,21 +723,23 @@ mod tests {
 
     #[test]
     fn metadata_only_observations_can_update_title_without_status() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let status = observation(
             "tui",
             "default/%1",
             Some(AgentStatus::Working),
             100,
             Some("Old"),
+            &directory,
         );
-        let mut metadata = observation("server", "server", None, 200, Some("Renamed"));
+        let mut metadata = observation("server", "server", None, 200, Some("Renamed"), &directory);
         metadata.target.tmux_pane_id = None;
         metadata.target.tmux_window_id = None;
 
         let views = reconcile_session_views(
             vec![status, metadata],
-            &[pane_snapshot("%1", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -841,12 +750,15 @@ mod tests {
 
     #[test]
     fn metadata_only_update_does_not_refresh_status_precedence() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let mut stale_working = observation(
             "tui",
             "default/%1",
             Some(AgentStatus::Working),
             100,
             Some("Renamed"),
+            &directory,
         );
         stale_working.observed_at = 300;
         let waiting = observation(
@@ -855,12 +767,12 @@ mod tests {
             Some(AgentStatus::Waiting),
             200,
             Some("Waiting"),
+            &directory,
         );
 
         let views = reconcile_session_views(
             vec![stale_working, waiting],
-            &[pane_snapshot("%1", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -871,22 +783,25 @@ mod tests {
 
     #[test]
     fn newer_missing_agent_workspace_id_clears_stale_scope() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let mut old_workspace = observation(
             "tui",
             "default/%1",
             Some(AgentStatus::Working),
             100,
             Some("Old workspace"),
+            &directory,
         );
         old_workspace.target.agent_workspace_id = Some("wrk_old".to_owned());
-        let mut cleared_workspace = observation("server", "server", None, 200, Some("Cleared"));
+        let mut cleared_workspace =
+            observation("server", "server", None, 200, Some("Cleared"), &directory);
         cleared_workspace.target.tmux_pane_id = None;
         cleared_workspace.target.tmux_window_id = None;
 
         let views = reconcile_session_views(
             vec![old_workspace, cleared_workspace],
-            &[pane_snapshot("%1", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -896,22 +811,25 @@ mod tests {
 
     #[test]
     fn equal_timestamp_missing_agent_workspace_id_clears_stale_scope() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let mut old_workspace = observation(
             "tui",
             "default/%1",
             Some(AgentStatus::Working),
             100,
             Some("Old workspace"),
+            &directory,
         );
         old_workspace.target.agent_workspace_id = Some("wrk_old".to_owned());
-        let mut cleared_workspace = observation("server", "server", None, 100, Some("Cleared"));
+        let mut cleared_workspace =
+            observation("server", "server", None, 100, Some("Cleared"), &directory);
         cleared_workspace.target.tmux_pane_id = None;
         cleared_workspace.target.tmux_window_id = None;
 
         let views = reconcile_session_views(
             vec![old_workspace, cleared_workspace],
-            &[pane_snapshot("%1", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -921,23 +839,26 @@ mod tests {
 
     #[test]
     fn equal_timestamp_conflicting_agent_workspace_ids_clear_scope() {
+        let directory = tempdir().expect("temp directory should be created");
+        let directory = directory.path().display().to_string();
         let mut first_workspace = observation(
             "tui",
             "default/%1",
             Some(AgentStatus::Working),
             100,
             Some("First workspace"),
+            &directory,
         );
         first_workspace.target.agent_workspace_id = Some("wrk_first".to_owned());
-        let mut second_workspace = observation("server", "server", None, 100, Some("Second"));
+        let mut second_workspace =
+            observation("server", "server", None, 100, Some("Second"), &directory);
         second_workspace.target.agent_workspace_id = Some("wrk_second".to_owned());
         second_workspace.target.tmux_pane_id = None;
         second_workspace.target.tmux_window_id = None;
 
         let views = reconcile_session_views(
             vec![first_workspace, second_workspace],
-            &[pane_snapshot("%1", "@1", "/repo/project", None)],
-            &[window_snapshot("@1", "project", Some("/repo/project"))],
+            &[window_snapshot("@1", "project", Some(&directory))],
             "default",
         );
 
@@ -951,6 +872,7 @@ mod tests {
         status: Option<AgentStatus>,
         observed_at: u64,
         title: Option<&str>,
+        directory: &str,
     ) -> AgentObservationState {
         let status_changed_at = status.map(|_| observed_at);
         AgentObservationState {
@@ -976,8 +898,8 @@ mod tests {
                 tmux_window_id: Some("@1".to_owned()),
                 tmux_session_name: Some("project".to_owned()),
                 tmux_window_name: Some("project".to_owned()),
-                directory: Some("/repo/project".to_owned()),
-                git_worktree_path: Some("/repo/project".to_owned()),
+                directory: Some(directory.to_owned()),
+                git_worktree_path: Some(directory.to_owned()),
                 ..AgentLocationHints::default()
             },
         }
@@ -996,51 +918,16 @@ mod tests {
             Some(AgentStatus::Working),
             100,
             Some(title),
+            directory,
         );
         observation.key.session.session_id = session_id.to_owned();
         observation.target.directory = Some(directory.to_owned());
         observation.target.git_worktree_path = Some(directory.to_owned());
-        if directory.contains("feature") {
-            observation.target.tmux_pane_id = Some("%2".to_owned());
-            observation.target.tmux_window_id = Some("@2".to_owned());
-            observation.target.tmux_window_name = Some("feature".to_owned());
-        }
         if producer_kind == "server" {
             observation.target.tmux_pane_id = None;
             observation.target.tmux_window_id = None;
         }
         observation
-    }
-
-    fn pane_snapshot(
-        pane_id: &str,
-        window_id: &str,
-        current_path: &str,
-        kmux_role: Option<&str>,
-    ) -> TmuxPaneSnapshot {
-        TmuxPaneSnapshot {
-            session_name: "project".to_owned(),
-            window_id: window_id.to_owned(),
-            window_index: "1".to_owned(),
-            window_name: if window_id == "@2" {
-                "feature"
-            } else {
-                "project"
-            }
-            .to_owned(),
-            pane_id: pane_id.to_owned(),
-            pane_index: "1".to_owned(),
-            pane_left: 0,
-            pane_width: 80,
-            window_width: 120,
-            title: Some("pane title".to_owned()),
-            current_command: Some("opencode".to_owned()),
-            current_path: Some(current_path.to_owned()),
-            pane_active: true,
-            window_active: true,
-            session_attached: true,
-            kmux_role: kmux_role.map(str::to_owned),
-        }
     }
 
     fn window_snapshot(
