@@ -9,6 +9,8 @@ use support::{
     write_config,
 };
 
+const IDLE_PANE_COMMAND: &str = "sh -c 'while :; do sleep 60; done'";
+
 #[test]
 fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
     let (temp, repo) = init_repo()?;
@@ -83,7 +85,49 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
 }
 
 #[test]
-fn sidebar_on_reuses_restored_sidebar_pane() -> Result<()> {
+fn sidebar_on_reuses_unmarked_sidebar_shaped_pane() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
+    let window_id = tmux.tmux_output(&["display-message", "-p", "#{window_id}"])?;
+    let restored_pane = tmux.tmux_output(&[
+        "split-window",
+        "-d",
+        "-h",
+        "-b",
+        "-t",
+        &window_id,
+        "-l",
+        "30",
+        "-P",
+        "-F",
+        "#{pane_id}",
+        IDLE_PANE_COMMAND,
+    ])?;
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_left}", "0")?);
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_width}", "30")?);
+
+    assert_eq!(tmux.sidebar_pane_count()?, 0);
+    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "on"])
+        .assert()
+        .success();
+
+    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
+    assert_eq!(tmux.sidebar_pane_count()?, 1);
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{@kmux_role}", "sidebar")?);
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_width}", "30")?);
+    assert!(tmux.wait_for_pane_command(&restored_pane, "kmux")?);
+
+    Ok(())
+}
+
+#[test]
+fn sidebar_on_ignores_unmarked_left_pane_with_different_width() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -102,78 +146,12 @@ fn sidebar_on_reuses_restored_sidebar_pane() -> Result<()> {
         "-P",
         "-F",
         "#{pane_id}",
-        "while :; do sleep 60; done",
+        IDLE_PANE_COMMAND,
     ])?;
-    tmux.set_pane_title(&restored_pane, "kmux")?;
-
-    assert_eq!(tmux.sidebar_pane_count()?, 0);
-    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
-
-    kmux(&repo, &config_home, &tmux)?
-        .args(["sidebar", "on"])
-        .assert()
-        .success();
-
-    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
-    assert_eq!(tmux.sidebar_pane_count()?, 1);
-    assert_eq!(
-        tmux.pane_format(&restored_pane, "#{@kmux_role}")?.as_str(),
-        "sidebar"
-    );
-    assert_eq!(
-        tmux.pane_format(&restored_pane, "#{pane_width}")?
-            .parse::<u16>()?,
-        30
-    );
-    assert!(tmux.wait_for_pane_command(&restored_pane, "kmux")?);
-
-    Ok(())
-}
-
-#[test]
-fn sidebar_on_reuses_resurrect_restored_sidebar_without_pane_metadata() -> Result<()> {
-    let (temp, repo) = init_repo()?;
-    let Some(tmux) = TmuxFixture::new(&repo)? else {
-        return Ok(());
-    };
-    let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
-    let window_id = tmux.tmux_output(&["display-message", "-p", "#{window_id}"])?;
-    let window_index = tmux.tmux_output(&["display-message", "-p", "#{window_index}"])?;
-    let restored_pane = tmux.tmux_output(&[
-        "split-window",
-        "-d",
-        "-h",
-        "-b",
-        "-t",
-        &window_id,
-        "-l",
-        "30",
-        "-P",
-        "-F",
-        "#{pane_id}",
-        "while :; do sleep 60; done",
-    ])?;
-    tmux.set_pane_title(&restored_pane, "fish")?;
-    let pane_index = tmux.pane_format(&restored_pane, "#{pane_index}")?;
-
-    let resurrect_dir = temp.path().join("resurrect");
-    fs::create_dir(&resurrect_dir)?;
-    fs::write(
-        resurrect_dir.join("last"),
-        format!(
-            "pane\tproject\t{window_index}\t1\t:*\t{pane_index}\tkmux\t:{}\t0\tkmux\t:\n",
-            repo.display()
-        ),
-    )?;
-    tmux.tmux_output(&[
-        "set-option",
-        "-g",
-        "@resurrect-dir",
-        &resurrect_dir.display().to_string(),
-    ])?;
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_left}", "0")?);
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_width}", "10")?);
 
     assert_eq!(tmux.pane_format(&restored_pane, "#{@kmux_role}")?, "");
-    assert_eq!(tmux.pane_format(&restored_pane, "#{pane_title}")?, "fish");
     assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
 
     kmux(&repo, &config_home, &tmux)?
@@ -181,26 +159,21 @@ fn sidebar_on_reuses_resurrect_restored_sidebar_without_pane_metadata() -> Resul
         .assert()
         .success();
 
-    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
+    assert_eq!(tmux.pane_count_for_window(&window_id)?, 3);
     assert_eq!(tmux.sidebar_pane_count()?, 1);
-    assert_eq!(
-        tmux.pane_format(&restored_pane, "#{@kmux_role}")?.as_str(),
-        "sidebar"
-    );
-    assert!(tmux.wait_for_pane_command(&restored_pane, "kmux")?);
+    assert_eq!(tmux.pane_format(&restored_pane, "#{@kmux_role}")?, "");
 
     Ok(())
 }
 
 #[test]
-fn sidebar_off_removes_resurrect_restored_sidebar_without_pane_metadata() -> Result<()> {
+fn sidebar_off_preserves_unmarked_sidebar_shaped_pane() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
     };
     let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
     let window_id = tmux.tmux_output(&["display-message", "-p", "#{window_id}"])?;
-    let window_index = tmux.tmux_output(&["display-message", "-p", "#{window_index}"])?;
     let restored_pane = tmux.tmux_output(&[
         "split-window",
         "-d",
@@ -213,26 +186,10 @@ fn sidebar_off_removes_resurrect_restored_sidebar_without_pane_metadata() -> Res
         "-P",
         "-F",
         "#{pane_id}",
-        "while :; do sleep 60; done",
+        IDLE_PANE_COMMAND,
     ])?;
-    tmux.set_pane_title(&restored_pane, "fish")?;
-    let pane_index = tmux.pane_format(&restored_pane, "#{pane_index}")?;
-
-    let resurrect_dir = temp.path().join("resurrect");
-    fs::create_dir(&resurrect_dir)?;
-    fs::write(
-        resurrect_dir.join("last"),
-        format!(
-            "pane\tproject\t{window_index}\t1\t:*\t{pane_index}\tkmux\t:{}\t0\tkmux\t:\n",
-            repo.display()
-        ),
-    )?;
-    tmux.tmux_output(&[
-        "set-option",
-        "-g",
-        "@resurrect-dir",
-        &resurrect_dir.display().to_string(),
-    ])?;
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_left}", "0")?);
+    assert!(tmux.wait_for_pane_format(&restored_pane, "#{pane_width}", "30")?);
 
     assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
 
@@ -241,7 +198,8 @@ fn sidebar_off_removes_resurrect_restored_sidebar_without_pane_metadata() -> Res
         .assert()
         .success();
 
-    assert_eq!(tmux.pane_count_for_window(&window_id)?, 1);
+    assert_eq!(tmux.pane_count_for_window(&window_id)?, 2);
+    assert_eq!(tmux.pane_format(&restored_pane, "#{@kmux_role}")?, "");
 
     Ok(())
 }

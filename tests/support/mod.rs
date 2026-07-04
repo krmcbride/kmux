@@ -48,11 +48,20 @@ impl TmuxFixture {
             );
         }
 
-        Ok(Some(Self {
+        let fixture = Self {
             socket_name,
             socket_dir,
             pane_id: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
-        }))
+        };
+        if !fixture.wait_for_pane_current_path(&fixture.pane_id, cwd)? {
+            bail!(
+                "tmux pane '{}' did not report current path '{}'",
+                fixture.pane_id,
+                cwd.display()
+            );
+        }
+
+        Ok(Some(fixture))
     }
 
     pub fn tmux_output(&self, args: &[&str]) -> Result<String> {
@@ -162,6 +171,27 @@ impl TmuxFixture {
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             if self.pane_format(pane_id, "#{pane_current_command}")? == command {
+                return Ok(true);
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        Ok(false)
+    }
+
+    pub fn wait_for_pane_current_path(&self, pane_id: &str, path: &Path) -> Result<bool> {
+        let expected = path.display().to_string();
+        self.wait_for_pane_format(pane_id, "#{pane_current_path}", &expected)
+    }
+
+    pub fn wait_for_pane_format(
+        &self,
+        pane_id: &str,
+        format: &str,
+        expected: &str,
+    ) -> Result<bool> {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if self.pane_format(pane_id, format)? == expected {
                 return Ok(true);
             }
             thread::sleep(Duration::from_millis(25));
@@ -331,7 +361,7 @@ pub fn write_config(root: &Path, content: &str) -> Result<PathBuf> {
 
 pub fn raw_key_capture_command(capture_path: &Path, ready_path: &Path) -> String {
     format!(
-        "stty raw -echo; : > {}; dd bs=1 count=16 of={} 2>/dev/null; sleep 5",
+        "sh -c 'stty raw -echo; : > \"$1\"; dd bs=1 count=16 of=\"$2\" 2>/dev/null; sleep 5' sh {} {}",
         shell_quote(&ready_path.display().to_string()),
         shell_quote(&capture_path.display().to_string())
     )

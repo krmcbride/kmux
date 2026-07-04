@@ -63,12 +63,11 @@ pub(super) fn enable() -> Result<()> {
 pub(super) fn disable() -> Result<()> {
     let tmux = Tmux::from_env();
     let _lock = SidebarLock::acquire(&tmux)?;
-    let size = Config::load().ok().map(|config| split_size(&config));
     tmux.unset_global_option(SIDEBAR_ENABLED_OPTION)?;
     remove_hooks(&tmux)?;
     tmux.unset_global_option(SIDEBAR_WIDTH_OPTION)?;
     let panes = tmux.list_pane_snapshots()?;
-    let matcher = SidebarCandidateMatcher::new(&tmux, &panes, size, false);
+    let matcher = SidebarCandidateMatcher::new(None);
     for pane in sidebar_candidate_snapshots(&panes, &matcher) {
         let _ = tmux.kill_pane(&pane.pane_id);
     }
@@ -124,8 +123,7 @@ pub(super) fn run_tui() -> Result<()> {
     Ok(())
 }
 
-// Mark the current pane so tmux-resurrect can identify it before kmux options
-// are restored.
+// Give the hidden sidebar pane a stable title in tmux UI surfaces.
 fn set_current_sidebar_pane_title(tmux: &Tmux) {
     if let Ok(pane_id) = std::env::var("TMUX_PANE") {
         let _ = tmux.set_pane_title(&pane_id, "kmux");
@@ -146,9 +144,9 @@ fn reconcile_locked(tmux: &Tmux, config: &Config) -> Result<()> {
     let windows = unique_windows(tmux.list_windows(None)?);
     let command = sidebar_tui_command()?;
     let size = split_size(config);
-    prune_extra_sidebars(tmux, size)?;
+    prune_extra_sidebars(tmux)?;
     let panes = tmux.list_pane_snapshots()?;
-    let matcher = SidebarCandidateMatcher::new(tmux, &panes, Some(size), true);
+    let matcher = SidebarCandidateMatcher::new(Some(size));
     let mut sidebars_by_window = sidebar_candidates_by_window(&panes, &matcher);
 
     for window in windows {
@@ -171,10 +169,10 @@ fn unique_windows(windows: Vec<TmuxWindow>) -> Vec<TmuxWindow> {
         .collect()
 }
 
-// Keep the highest-scoring sidebar candidate per window and remove the rest.
-fn prune_extra_sidebars(tmux: &Tmux, size: TmuxSplitSize) -> Result<()> {
+// Remove duplicate sidebars only when kmux marked them in this tmux server lifetime.
+fn prune_extra_sidebars(tmux: &Tmux) -> Result<()> {
     let panes = tmux.list_pane_snapshots()?;
-    let matcher = SidebarCandidateMatcher::new(tmux, &panes, Some(size), true);
+    let matcher = SidebarCandidateMatcher::new(None);
     let keep = sidebar_candidates_by_window(&panes, &matcher)
         .into_values()
         .map(|pane| pane.pane_id.clone())
@@ -194,15 +192,22 @@ fn heal_sidebar_pane(
     size: TmuxSplitSize,
     command: &str,
 ) -> Result<()> {
-    tmux.set_pane_option(&pane.pane_id, SIDEBAR_ROLE_OPTION, SIDEBAR_ROLE)?;
     let width = sidebar_width_cells(size, pane.window_width);
     if width > 0 && pane.pane_width != width {
         let _ = tmux.resize_pane_width(&pane.pane_id, width);
     }
-    if pane.current_command.as_deref() != Some("kmux") {
+    if should_respawn_sidebar_pane(pane) {
         tmux.respawn_pane(&pane.pane_id, command)?;
     }
+    tmux.set_pane_option(&pane.pane_id, SIDEBAR_ROLE_OPTION, SIDEBAR_ROLE)?;
     Ok(())
+}
+
+// Geometry-only matches are just claimable space; respawn before marking so an
+// unrelated `kmux` process cannot become a sidebar by command name alone.
+fn should_respawn_sidebar_pane(pane: &TmuxPaneSnapshot) -> bool {
+    pane.kmux_role.as_deref() != Some(SIDEBAR_ROLE)
+        || pane.current_command.as_deref() != Some("kmux")
 }
 
 // Install hooks that create sidebars for new windows and wake hidden panes when
@@ -321,5 +326,37 @@ mod tests {
 
         assert_eq!(sidebar_pane_for_window(&panes, "@2"), Some("%3"));
         assert_eq!(sidebar_pane_for_window(&panes, "@missing"), None);
+    }
+
+    #[test]
+    fn unmarked_geometry_candidate_respawns_even_when_command_is_kmux() {
+        let marked_running = pane_snapshot(Some(SIDEBAR_ROLE), Some("kmux"));
+        let marked_stale = pane_snapshot(Some(SIDEBAR_ROLE), Some("fish"));
+        let unmarked_running_kmux = pane_snapshot(None, Some("kmux"));
+
+        assert!(!should_respawn_sidebar_pane(&marked_running));
+        assert!(should_respawn_sidebar_pane(&marked_stale));
+        assert!(should_respawn_sidebar_pane(&unmarked_running_kmux));
+    }
+
+    fn pane_snapshot(kmux_role: Option<&str>, current_command: Option<&str>) -> TmuxPaneSnapshot {
+        TmuxPaneSnapshot {
+            session_name: "project".to_owned(),
+            window_id: "@1".to_owned(),
+            window_index: "1".to_owned(),
+            window_name: "main".to_owned(),
+            pane_id: "%1".to_owned(),
+            pane_index: "1".to_owned(),
+            pane_left: 0,
+            pane_width: DEFAULT_WIDTH,
+            window_width: 120,
+            title: None,
+            current_command: current_command.map(str::to_owned),
+            current_path: None,
+            pane_active: false,
+            window_active: false,
+            session_attached: false,
+            kmux_role: kmux_role.map(str::to_owned),
+        }
     }
 }

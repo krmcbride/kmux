@@ -3,17 +3,12 @@
 //! This module owns tmux target syntax, format-string parsing, user-option
 //! access, and socket/environment handling. Higher-level workflows should use
 //! this boundary instead of constructing tmux commands or parsing tmux output.
-//! The `resurrect` child module handles tmux-resurrect save-file integration.
 
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
-
-mod resurrect;
-
-pub use resurrect::TmuxResurrectPane;
 
 #[derive(Debug, Clone, Default)]
 /// Thin adapter for running tmux commands, optionally against a specific socket.

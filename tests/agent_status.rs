@@ -792,6 +792,7 @@ status_icons:
     ])?;
     let duplicate_pane = tmux.pane_for_window("repo-duplicate")?;
     let duplicate_window_id = tmux.pane_format(&duplicate_pane, "#{window_id}")?;
+    assert!(tmux.wait_for_pane_current_path(&duplicate_pane, &repo)?);
 
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
