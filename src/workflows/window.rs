@@ -4,7 +4,7 @@ use anyhow::{Result, bail};
 
 use super::context::{RepoContext, TmuxContext};
 use super::files::startup_command;
-use super::metadata::{set_workspace_metadata, set_workspace_metadata_target};
+use super::metadata::{set_workspace_path_marker, set_workspace_path_marker_target};
 use super::resolve::ResolvedWorkspace;
 use crate::paths::same_path;
 use crate::tmux::TmuxWindow;
@@ -35,7 +35,7 @@ pub(super) fn create_resolved(
         &resolved.path,
         command,
     )?;
-    set_workspace_metadata(&tmux.tmux, &tmux.session_name, &window_name, resolved)?;
+    set_workspace_path_marker(&tmux.tmux, &tmux.session_name, &window_name, resolved)?;
     if focus {
         tmux.tmux.select_window(&tmux.session_name, &window_name)?;
     }
@@ -78,7 +78,7 @@ pub(super) fn restore_resolved(
                 resolved.workspace_slug
             );
         }
-        set_workspace_metadata_target(&tmux.tmux, &expected_window.window_id, resolved)?;
+        set_workspace_path_marker_target(&tmux.tmux, &expected_window.window_id, resolved)?;
         return Ok(());
     }
 
@@ -91,11 +91,11 @@ pub(super) fn restore_resolved(
                 &resolved.path,
                 command,
             )?;
-            set_workspace_metadata(&tmux.tmux, &tmux.session_name, &window_name, resolved)?;
+            set_workspace_path_marker(&tmux.tmux, &tmux.session_name, &window_name, resolved)?;
         }
         [window] => {
             tmux.tmux.rename_window(&window.window_id, &window_name)?;
-            set_workspace_metadata_target(&tmux.tmux, &window.window_id, resolved)?;
+            set_workspace_path_marker_target(&tmux.tmux, &window.window_id, resolved)?;
         }
         _ => bail!(
             "multiple tmux windows match workspace '{}'; remove duplicates before restoring",
@@ -106,13 +106,11 @@ pub(super) fn restore_resolved(
     Ok(())
 }
 
-// Restore accepts old metadata matches so windows created by previous kmux versions
-// can be renamed and refreshed instead of duplicated.
+// Restore accepts the live path marker as a repair hint. Git worktree state and
+// the configured window name remain the source of truth for workspace identity.
 fn window_matches_workspace(window: &TmuxWindow, resolved: &ResolvedWorkspace) -> bool {
-    window.kmux_workspace_slug.as_deref() == Some(resolved.workspace_slug.as_str())
-        || window.kmux_workspace_branch.as_deref() == resolved.branch.as_deref()
-        || window
-            .kmux_workspace_path
-            .as_deref()
-            .is_some_and(|path| same_path(Path::new(path), &resolved.path))
+    window
+        .kmux_workspace_path
+        .as_deref()
+        .is_some_and(|path| same_path(Path::new(path), &resolved.path))
 }

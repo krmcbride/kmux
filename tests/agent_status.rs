@@ -38,9 +38,7 @@ status_icons:
 
     tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
     let main_window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
-    tmux.set_window_option(&main_window_id, "@kmux_workspace_slug", "project")?;
     tmux.set_window_option(&main_window_id, "@kmux_workspace_path", &repo_path)?;
-    tmux.set_window_option(&main_window_id, "@kmux_workspace_branch", "main")?;
     let main_producer = format!("default/{}", tmux.pane_id);
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
@@ -163,9 +161,7 @@ status_icons:
     )?;
     let window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
     let repo_path = repo.display().to_string();
-    tmux.set_window_option(&window_id, "@kmux_workspace_slug", "project")?;
     tmux.set_window_option(&window_id, "@kmux_workspace_path", &repo_path)?;
-    tmux.set_window_option(&window_id, "@kmux_workspace_branch", "main")?;
     let producer_instance = format!("default/{}", tmux.pane_id);
 
     kmux(&repo, &config_home, &tmux)?
@@ -718,24 +714,8 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
         "-w",
         "-t",
         &tmux.pane_id,
-        "@kmux_workspace_slug",
-        "project",
-    ])?;
-    tmux.tmux_output(&[
-        "set-option",
-        "-w",
-        "-t",
-        &tmux.pane_id,
         "@kmux_workspace_path",
         &repo_path,
-    ])?;
-    tmux.tmux_output(&[
-        "set-option",
-        "-w",
-        "-t",
-        &tmux.pane_id,
-        "@kmux_workspace_branch",
-        "main",
     ])?;
 
     Command::cargo_bin("kmux")?
