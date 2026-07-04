@@ -134,18 +134,6 @@ status_icons:
             "\"workspace_slug\": \"feature-auth\"",
         ));
 
-    tmux.tmux_output(&[
-        "set-option",
-        "-uw",
-        "-t",
-        "kmux-feature-auth",
-        "@kmux_workspace_path",
-    ])?;
-    assert_eq!(
-        tmux.window_option("kmux-feature-auth", "@kmux_workspace_path")?,
-        None
-    );
-
     let active_window_before_restore = tmux.current_window_id()?;
     kmux(&repo, &config_home, &tmux)?
         .arg("restore")
@@ -153,10 +141,6 @@ status_icons:
         .success()
         .stdout(predicate::str::contains("restored feature-auth"));
     assert_eq!(tmux.current_window_id()?, active_window_before_restore);
-    assert_eq!(
-        tmux.window_option("kmux-feature-auth", "@kmux_workspace_path")?,
-        Some(worktree.display().to_string())
-    );
 
     kmux_with_pane(&repo, &config_home, &tmux, &worktree_pane)?
         .args(delete_opencode_agent_observation_args(
@@ -646,7 +630,7 @@ fn restore_recreates_all_workspace_windows_without_duplicates() -> Result<()> {
 }
 
 #[test]
-fn restore_reuses_resurrected_window_with_workspace_path_marker() -> Result<()> {
+fn restore_creates_expected_window_when_only_untracked_window_exists() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -670,14 +654,6 @@ fn restore_reuses_resurrected_window_with_workspace_path_marker() -> Result<()> 
         "-c",
         worktree_path.as_str(),
     ])?;
-    tmux.tmux_output(&[
-        "set-option",
-        "-w",
-        "-t",
-        "resurrected-feature",
-        "@kmux_workspace_path",
-        worktree_path.as_str(),
-    ])?;
     let active_window_before_restore = tmux.current_window_id()?;
 
     kmux(&repo, &config_home, &tmux)?
@@ -687,17 +663,13 @@ fn restore_reuses_resurrected_window_with_workspace_path_marker() -> Result<()> 
         .stdout(predicate::str::contains("restored feature-resurrected"));
     assert_eq!(tmux.current_window_id()?, active_window_before_restore);
     assert!(tmux.window_exists("kmux-feature-resurrected")?);
-    assert!(!tmux.window_exists("resurrected-feature")?);
-    assert_eq!(
-        tmux.window_option("kmux-feature-resurrected", "@kmux_workspace_path")?,
-        Some(worktree_path)
-    );
+    assert!(tmux.window_exists("resurrected-feature")?);
 
     Ok(())
 }
 
 #[test]
-fn restore_rejects_duplicate_workspace_path_markers() -> Result<()> {
+fn restore_rejects_duplicate_expected_window_names() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -716,16 +688,8 @@ fn restore_rejects_duplicate_workspace_path_markers() -> Result<()> {
         "-t",
         "project:",
         "-n",
-        "duplicate-feature",
+        "kmux-feature-duplicate",
         "-c",
-        worktree_path.as_str(),
-    ])?;
-    tmux.tmux_output(&[
-        "set-option",
-        "-w",
-        "-t",
-        "duplicate-feature",
-        "@kmux_workspace_path",
         worktree_path.as_str(),
     ])?;
 
@@ -734,7 +698,7 @@ fn restore_rejects_duplicate_workspace_path_markers() -> Result<()> {
         .assert()
         .failure()
         .stderr(predicate::str::contains(
-            "multiple tmux windows match workspace 'feature-duplicate'",
+            "multiple tmux windows are named 'kmux-feature-duplicate'",
         ));
 
     Ok(())

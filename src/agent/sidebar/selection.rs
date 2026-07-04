@@ -201,7 +201,7 @@ mod tests {
         assert_eq!(json["version"], CURRENT_VERSION);
         assert_eq!(
             json["target"]["key"],
-            "directory:/repo__worktrees/feature-sidebar/@1"
+            "workspace:/repo__worktrees/feature-sidebar/@1"
         );
         Ok(())
     }

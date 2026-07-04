@@ -10,7 +10,7 @@ use ratatui::widgets::ListState;
 use crate::agent::sessions::session_views;
 use crate::agent::sidebar::hooks::run_selection_hooks;
 use crate::agent::sidebar::model::{
-    SidebarIcons, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
+    SidebarIcons, SidebarJumpTarget, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
 };
 use crate::agent::sidebar::selection::{
     self, PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
@@ -344,10 +344,22 @@ impl SidebarApp {
     }
 
     fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
-        self.tmux.select_window_id(&row.window_id)?;
-        self.tmux.switch_client_to_session(&row.session_name)?;
-        if let Some(pane_id) = &row.pane_id {
-            self.tmux.select_pane(pane_id)?;
+        match &row.jump_target {
+            SidebarJumpTarget::Window {
+                session_name,
+                window_id,
+                pane_id,
+            } => {
+                self.tmux.select_window_id(window_id)?;
+                self.tmux.switch_client_to_session(session_name)?;
+                if let Some(pane_id) = pane_id {
+                    self.tmux.select_pane(pane_id)?;
+                }
+            }
+            SidebarJumpTarget::Session { session_name } => {
+                self.tmux.switch_client_to_session(session_name)?;
+            }
+            SidebarJumpTarget::None => {}
         }
         Ok(())
     }
@@ -429,10 +441,11 @@ impl SidebarApp {
     fn reset_after_successful_jump(&mut self, row: &SidebarRow) {
         self.selection_mode = SelectionMode::FollowHost;
         self.sidebar_has_focus = false;
-        if self
-            .host_window_id
-            .as_deref()
-            .is_some_and(|host_window_id| host_window_id != row.window_id)
+        if matches!(row.jump_target, SidebarJumpTarget::Window { .. })
+            && self
+                .host_window_id
+                .as_deref()
+                .is_some_and(|host_window_id| host_window_id != row.window_id)
         {
             self.window_visible = false;
         }
@@ -451,7 +464,8 @@ impl SidebarApp {
         if let Some(row) = self.rows.get(index) {
             self.selected_identity = Some(row.identity.clone());
             self.selected_pane_id = row.pane_id.clone();
-            self.selected_window_id = Some(row.window_id.clone());
+            self.selected_window_id =
+                (!row.window_id.trim().is_empty()).then(|| row.window_id.clone());
         }
     }
 
@@ -536,6 +550,7 @@ impl SidebarApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::sessions::AgentTmuxTarget;
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, agent_state, report_state, row_from_view,
     };
@@ -993,8 +1008,11 @@ mod tests {
         };
         let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
         fixture.set_selected_row(&previous)?;
-        let mut row = server_row_in_window("ses_attempted", "Attempted", &fixture.window_id);
-        row.session_name = "missing-session".to_owned();
+        let row = row_with_missing_jump_session(server_row_in_window(
+            "ses_attempted",
+            "Attempted",
+            &fixture.window_id,
+        ));
         let mut app =
             SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), vec![row]);
 
@@ -1014,8 +1032,11 @@ mod tests {
             return Ok(());
         };
         fixture.set_raw_selected_target("not json")?;
-        let mut row = server_row_in_window("ses_attempted", "Attempted", &fixture.window_id);
-        row.session_name = "missing-session".to_owned();
+        let row = row_with_missing_jump_session(server_row_in_window(
+            "ses_attempted",
+            "Attempted",
+            &fixture.window_id,
+        ));
         let mut app =
             SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), vec![row]);
 
@@ -1035,8 +1056,11 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        let mut row = server_row_in_window("ses_attempted", "Attempted", &fixture.window_id);
-        row.session_name = "missing-session".to_owned();
+        let row = row_with_missing_jump_session(server_row_in_window(
+            "ses_attempted",
+            "Attempted",
+            &fixture.window_id,
+        ));
         let mut app =
             SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), vec![row]);
 
@@ -1121,6 +1145,32 @@ mod tests {
     }
 
     #[test]
+    fn no_jump_target_still_runs_selection_hooks() -> Result<()> {
+        let dir = tempdir()?;
+        let marker = dir.path().join("marker");
+        let rows = vec![no_jump_row(
+            "ses_no_jump",
+            "No jump",
+            dir.path().to_string_lossy().as_ref(),
+        )];
+        let mut app = SidebarApp::test(None, rows);
+        app.select_index_manual(0);
+        app.selection_hooks = vec![SidebarSelectionHookConfig {
+            command: format!("touch '{}'", marker.display()),
+            agent_kind: Some("opencode".to_owned()),
+            producer_kind: None,
+            timeout_ms: Some(1000),
+        }];
+
+        app.jump_to_selected();
+
+        assert!(marker.exists());
+        assert!(!app.should_quit());
+        assert_eq!(app.last_error(), None);
+        Ok(())
+    }
+
+    #[test]
     fn delete_selected_session_removes_row_without_quitting_sidebar() {
         let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -1142,10 +1192,38 @@ mod tests {
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
         report.key = session_key("opencode", session_id);
-        report.directory_key = Some(format!("/repo/{window_id}/{session_id}"));
+        report.workspace_key = Some(format!("/repo/{window_id}/{session_id}"));
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
         row_from_view(&report, 100)
+    }
+
+    fn no_jump_row(session_id: &str, title: &str, directory: &str) -> SidebarRow {
+        let mut report = report_state(AgentStatus::Working, 100, "", "");
+        report.key = session_key("opencode", session_id);
+        report.workspace_key = Some(directory.to_owned());
+        report.tmux_target = AgentTmuxTarget::None;
+        report.title = Some(title.to_owned());
+        report.target.tmux_instance = None;
+        report.target.tmux_pane_id = None;
+        report.target.tmux_window_id = None;
+        report.target.tmux_session_name = None;
+        report.target.tmux_window_name = None;
+        report.target.tmux_pane_title = None;
+        report.target.tmux_pane_current_command = None;
+        report.target.git_worktree_path = None;
+        report.target.directory = Some(directory.to_owned());
+        row_from_view(&report, 100)
+    }
+
+    fn row_with_missing_jump_session(mut row: SidebarRow) -> SidebarRow {
+        row.session_name = "missing-session".to_owned();
+        row.jump_target = SidebarJumpTarget::Window {
+            session_name: "missing-session".to_owned(),
+            window_id: row.window_id.clone(),
+            pane_id: row.pane_id.clone(),
+        };
+        row
     }
 
     fn session_key(agent_kind: &str, session_id: &str) -> AgentSessionKey {

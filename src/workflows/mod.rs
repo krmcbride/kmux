@@ -12,7 +12,6 @@ mod add;
 mod context;
 mod files;
 mod list;
-mod metadata;
 mod parent;
 mod remove;
 mod resolve;

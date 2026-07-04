@@ -1,4 +1,4 @@
-use crate::agent::sessions::AgentSessionView;
+use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget};
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
 use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus, StateStore};
@@ -42,7 +42,8 @@ pub(super) fn report_state(
             agent_kind: "opencode".to_owned(),
             session_id: format!("ses_{pane_id}"),
         },
-        directory_key: Some(format!("/repo__worktrees/feature-sidebar/{window_id}")),
+        workspace_key: Some(format!("/repo__worktrees/feature-sidebar/{window_id}")),
+        tmux_target: AgentTmuxTarget::Window,
         created_at: status_changed_at,
         status,
         status_observed_at: status_changed_at,

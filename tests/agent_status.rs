@@ -38,7 +38,6 @@ status_icons:
 
     tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
     let main_window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
-    tmux.set_window_option(&main_window_id, "@kmux_workspace_path", &repo_path)?;
     let main_producer = format!("default/{}", tmux.pane_id);
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
@@ -161,7 +160,6 @@ status_icons:
     )?;
     let window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
     let repo_path = repo.display().to_string();
-    tmux.set_window_option(&window_id, "@kmux_workspace_path", &repo_path)?;
     let producer_instance = format!("default/{}", tmux.pane_id);
 
     kmux(&repo, &config_home, &tmux)?
@@ -709,15 +707,6 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
     let config_home = write_config(temp.path(), "")?;
     let repo_path = repo.display().to_string();
 
-    tmux.tmux_output(&[
-        "set-option",
-        "-w",
-        "-t",
-        &tmux.pane_id,
-        "@kmux_workspace_path",
-        &repo_path,
-    ])?;
-
     Command::cargo_bin("kmux")?
         .current_dir(&repo)
         .env("XDG_CONFIG_HOME", &config_home)
@@ -773,6 +762,60 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
     assert!(stdout.contains("project"));
     assert!(stdout.contains("working"));
     assert!(stdout.contains("Implement producer"));
+    Ok(())
+}
+
+#[test]
+fn ambiguous_agent_target_does_not_set_window_status_option() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        r#"
+status_icons:
+  working: W
+"#,
+    )?;
+    let repo_path = repo.display().to_string();
+    let main_window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "repo-duplicate",
+        "-c",
+        &repo_path,
+    ])?;
+    let duplicate_pane = tmux.pane_for_window("repo-duplicate")?;
+    let duplicate_window_id = tmux.pane_format(&duplicate_pane, "#{window_id}")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(set_opencode_status_args(
+            Some("working"),
+            "ses_ambiguous_root",
+            "server",
+            "http://127.0.0.1:4096",
+            &[("--title", "Ambiguous root"), ("--directory", &repo_path)],
+        ))
+        .assert()
+        .success();
+
+    assert_eq!(tmux.window_option(&main_window_id, "@kmux_status")?, None);
+    assert_eq!(
+        tmux.window_option(&duplicate_window_id, "@kmux_status")?,
+        None
+    );
+    let status = kmux(&repo, &config_home, &tmux)?
+        .arg("status")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&status.get_output().stdout);
+    assert!(stdout.contains("working"));
+    assert!(stdout.contains("Ambiguous root"));
     Ok(())
 }
 

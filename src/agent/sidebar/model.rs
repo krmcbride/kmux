@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use crate::agent::sessions::AgentSessionView;
+use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget};
 use crate::config::StatusIcons;
 use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
 use serde::{Deserialize, Serialize};
@@ -117,6 +117,21 @@ pub(super) struct SidebarRow {
     pub(super) session_name: String,
     pub(super) window_id: String,
     pub(super) pane_id: Option<String>,
+    pub(super) jump_target: SidebarJumpTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Honest tmux navigation target for a sidebar row.
+pub(super) enum SidebarJumpTarget {
+    Window {
+        session_name: String,
+        window_id: String,
+        pane_id: Option<String>,
+    },
+    Session {
+        session_name: String,
+    },
+    None,
 }
 
 impl SidebarRow {
@@ -176,6 +191,11 @@ impl SidebarRow {
             }
         };
 
+        let session_name = target.tmux_session_name.clone().unwrap_or_default();
+        let window_id = target.tmux_window_id.clone().unwrap_or_default();
+        let pane_id = target.tmux_pane_id.clone();
+        let jump_target = jump_target_for_view(view);
+
         Self {
             identity: SidebarRowIdentity::from_view(view),
             selection: SidebarRowSelection::from_view(view),
@@ -187,9 +207,10 @@ impl SidebarRow {
             secondary_right,
             title,
             elapsed: compact_elapsed(elapsed),
-            session_name: target.tmux_session_name.clone().unwrap_or_default(),
-            window_id: target.tmux_window_id.clone().unwrap_or_default(),
-            pane_id: target.tmux_pane_id.clone(),
+            session_name,
+            window_id,
+            pane_id,
+            jump_target,
         }
     }
 }
@@ -331,9 +352,9 @@ fn compact_session_id(session_id: &str) -> &str {
 }
 
 fn view_identity_key(view: &AgentSessionView) -> String {
-    view.directory_key
+    view.workspace_key
         .as_ref()
-        .map(|key| format!("directory:{key}"))
+        .map(|key| format!("workspace:{key}"))
         .or_else(|| {
             view.target
                 .tmux_window_id
@@ -347,6 +368,31 @@ fn view_identity_key(view: &AgentSessionView) -> String {
                 .map(|pane_id| format!("pane:{pane_id}"))
         })
         .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
+}
+
+fn jump_target_for_view(view: &AgentSessionView) -> SidebarJumpTarget {
+    match view.tmux_target {
+        AgentTmuxTarget::Window => {
+            let Some(session_name) = view.target.tmux_session_name.clone() else {
+                return SidebarJumpTarget::None;
+            };
+            let Some(window_id) = view.target.tmux_window_id.clone() else {
+                return SidebarJumpTarget::None;
+            };
+            SidebarJumpTarget::Window {
+                session_name,
+                window_id,
+                pane_id: view.target.tmux_pane_id.clone(),
+            }
+        }
+        AgentTmuxTarget::Session => view
+            .target
+            .tmux_session_name
+            .clone()
+            .map(|session_name| SidebarJumpTarget::Session { session_name })
+            .unwrap_or(SidebarJumpTarget::None),
+        AgentTmuxTarget::None => SidebarJumpTarget::None,
+    }
 }
 
 #[cfg(test)]

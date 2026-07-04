@@ -15,26 +15,20 @@ pub enum WorkspaceMatchMode {
     /// Match the workspace identified by a status view without falling back from
     /// conflicting path hints to looser branch or slug metadata.
     Identity,
-    /// Match any workspace hint supplied by an agent view for summary badges.
+    /// Match the resolved Git-root identity for summary badges.
     AnyHint,
 }
 
 #[derive(Debug, Clone)]
 /// Workspace identity used when matching agent observations.
 pub struct WorkspaceTarget<'a> {
-    workspace_slug: Option<String>,
-    branch: Option<String>,
     path: &'a Path,
 }
 
 impl<'a> WorkspaceTarget<'a> {
     /// Build a workspace target from the identifiers known for a Git worktree.
-    pub fn new(workspace_slug: Option<String>, branch: Option<String>, path: &'a Path) -> Self {
-        Self {
-            workspace_slug,
-            branch,
-            path,
-        }
+    pub fn new(_workspace_slug: Option<String>, _branch: Option<String>, path: &'a Path) -> Self {
+        Self { path }
     }
 }
 
@@ -60,27 +54,10 @@ fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTa
         .is_some_and(|path| path_matches(path, target.path))
 }
 
-// Summary mode is intentionally looser so list/status badges still show agents
-// that only reported one useful workspace hint.
+// Summary mode uses the same Git-root identity. Branches, slugs, and raw
+// directories are display hints rather than workspace identity.
 fn view_has_any_workspace_hint(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
-    target
-        .workspace_slug
-        .as_deref()
-        .is_some_and(|slug| view.target.kmux_workspace_slug.as_deref() == Some(slug))
-        || target
-            .branch
-            .as_deref()
-            .is_some_and(|branch| view.target.git_branch.as_deref() == Some(branch))
-        || view
-            .target
-            .git_worktree_path
-            .as_deref()
-            .is_some_and(|path| path_matches(path, target.path))
-        || view
-            .target
-            .directory
-            .as_deref()
-            .is_some_and(|path| path_matches(path, target.path))
+    view_matches_workspace_identity(view, target)
 }
 
 fn path_matches(path: &str, target: &Path) -> bool {
@@ -137,7 +114,7 @@ mod tests {
     }
 
     #[test]
-    fn any_hint_match_accepts_slug_branch_worktree_path_or_directory() {
+    fn any_hint_match_accepts_worktree_path_or_directory() {
         let target = target(
             "feature",
             "feature/auth",
@@ -160,8 +137,15 @@ mod tests {
             ..AgentLocationHints::default()
         });
 
-        for view in [&slug, &branch, &worktree_path, &directory] {
+        for view in [&worktree_path, &directory] {
             assert!(view_matches_workspace(
+                view,
+                &target,
+                WorkspaceMatchMode::AnyHint
+            ));
+        }
+        for view in [&slug, &branch] {
+            assert!(!view_matches_workspace(
                 view,
                 &target,
                 WorkspaceMatchMode::AnyHint
@@ -170,7 +154,7 @@ mod tests {
     }
 
     #[test]
-    fn any_hint_match_requires_present_branch_hint() {
+    fn any_hint_match_requires_path_hint() {
         let target = WorkspaceTarget::new(None, None, Path::new("/repo/project"));
         let view = view_with_target(AgentLocationHints::default());
 
@@ -195,7 +179,8 @@ mod tests {
                 agent_kind: "opencode".to_owned(),
                 session_id: "ses".to_owned(),
             },
-            directory_key: None,
+            workspace_key: None,
+            tmux_target: crate::agent::sessions::AgentTmuxTarget::None,
             created_at: 100,
             status: AgentStatus::Working,
             status_observed_at: 100,

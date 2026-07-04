@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 
 use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
-use crate::agent::sessions::{AgentSessionView, session_views};
+use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget, session_views};
 use crate::cli;
 use crate::config::{Config, StatusIcons};
 use crate::git::{Git, WorktreeInfo};
@@ -112,6 +112,9 @@ pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIc
     let views = session_views(store, tmux)?;
     let mut by_window = HashMap::<String, StoredAgentStatus>::new();
     for view in views {
+        if view.tmux_target != AgentTmuxTarget::Window {
+            continue;
+        }
         let Some(window_id) = view.target.tmux_window_id else {
             continue;
         };
