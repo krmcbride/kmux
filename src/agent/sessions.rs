@@ -150,14 +150,7 @@ fn session_view_from_observations(
                 observation.state.observed_at,
             )
         })?;
-    let newest_observed_at = observations
-        .iter()
-        .map(|observation| observation.state.observed_at)
-        .max()?;
-    let location_observation = observations
-        .iter()
-        .filter(|observation| observation.state.observed_at == newest_observed_at)
-        .find(|observation| observation.resolved_target.is_some())?;
+    let location_observation = best_location_observation(observations)?;
     let resolved_target = location_observation.resolved_target.clone()?;
     let mut target = resolved_target.target;
     merge_target_metadata(&mut target, observations);
@@ -196,6 +189,49 @@ fn session_view_from_observations(
         }),
         target,
     })
+}
+
+fn best_location_observation(observations: &[EnrichedObservation]) -> Option<&EnrichedObservation> {
+    let newest_observed_at = observations
+        .iter()
+        .map(|observation| observation.state.observed_at)
+        .max()?;
+    let latest_workspace_key = observations
+        .iter()
+        .filter(|observation| observation.state.observed_at == newest_observed_at)
+        .find(|observation| observation.resolved_target.is_some())?
+        .workspace_attachment
+        .as_ref()?
+        .key()
+        .to_owned();
+
+    observations
+        .iter()
+        .filter(|observation| observation.resolved_target.is_some())
+        .filter(|observation| {
+            observation
+                .workspace_attachment
+                .as_ref()
+                .is_some_and(|attachment| attachment.key() == latest_workspace_key)
+        })
+        .max_by_key(|observation| {
+            (
+                observation_location_precision(observation),
+                observation.state.observed_at,
+            )
+        })
+}
+
+fn observation_location_precision(observation: &EnrichedObservation) -> u8 {
+    let Some(resolved) = &observation.resolved_target else {
+        return 0;
+    };
+    match resolved.tmux_target {
+        AgentTmuxTarget::Window if resolved.target.tmux_pane_id.is_some() => 4,
+        AgentTmuxTarget::Window => 3,
+        AgentTmuxTarget::Session => 2,
+        AgentTmuxTarget::None => 1,
+    }
 }
 
 fn collapse_workspace_views(views: Vec<AgentSessionView>) -> Vec<AgentSessionView> {
@@ -584,7 +620,7 @@ mod tests {
             views[0].target.agent_workspace_id.as_deref(),
             Some("wrk_01KTEST")
         );
-        assert_eq!(views[0].target.tmux_pane_id, None);
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
@@ -654,6 +690,44 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].key.session_id, "ses_waiting");
         assert_eq!(views[0].status, AgentStatus::Waiting);
+    }
+
+    #[test]
+    fn precise_live_pane_location_beats_newer_directory_only_observation() {
+        let (_directory_temp, directory) = git_repo_path();
+        let tui = observation(
+            "tui",
+            "default/%1",
+            Some(AgentStatus::Working),
+            100,
+            Some("TUI"),
+            &directory,
+        );
+        let mut server = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            200,
+            Some("Server"),
+            &directory,
+        );
+        server.target.tmux_pane_id = None;
+        server.target.tmux_window_id = None;
+
+        let views = reconcile_session_views(
+            vec![tui, server],
+            &[
+                pane_snapshot("%1", "@1", &directory, None),
+                pane_snapshot("%2", "@2", &directory, None),
+            ],
+            "default",
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
+        assert_eq!(views[0].title.as_deref(), Some("Server"));
     }
 
     #[test]
