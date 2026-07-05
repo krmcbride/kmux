@@ -10,6 +10,7 @@ import type { Plugin } from "@opencode-ai/plugin";
 import type {
   GlobalEvent,
   Message,
+  Provider,
   Session,
   SessionStatus,
 } from "@opencode-ai/sdk";
@@ -34,6 +35,8 @@ type TokenUsage = {
     write: number;
   };
 };
+
+type AssistantMessage = Extract<Message, { role: "assistant" }>;
 
 declare const Bun: {
   env: Record<string, string | undefined>;
@@ -159,8 +162,7 @@ function formatNumber(num: number): string {
   return num.toString();
 }
 
-function messageTokens(message: Message): number | undefined {
-  if (message.role !== "assistant") return undefined;
+function messageTokens(message: AssistantMessage): number | undefined {
   if (message.tokens.output <= 0) return undefined;
   return (
     message.tokens.input +
@@ -171,12 +173,18 @@ function messageTokens(message: Message): number | undefined {
   );
 }
 
+function isAssistantWithOutputTokens(
+  message: Message,
+): message is AssistantMessage {
+  return message.role === "assistant" && message.tokens.output > 0;
+}
+
 function lastAssistantMessageWithTokens(
   messages: ReadonlyArray<Message>,
-): Message | undefined {
+): AssistantMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
-    if (message && messageTokens(message) !== undefined) return message;
+    if (message && isAssistantWithOutputTokens(message)) return message;
   }
 }
 
@@ -200,6 +208,10 @@ class KmuxServerReporter {
   private readonly statuses = new Map<string, KmuxStatus>();
   private readonly lastReport = new Map<string, string>();
   private readonly reportedRoots = new Set<string>();
+  private readonly modelLimits = new Map<
+    string,
+    Promise<Map<string, number>>
+  >();
   private readonly pendingReports = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -509,7 +521,52 @@ class KmuxServerReporter {
     const tokens = lastAssistant
       ? messageTokens(lastAssistant)
       : sessionTokens(root);
-    return tokens ? formatNumber(tokens) : undefined;
+    if (!tokens) return undefined;
+
+    const limit = lastAssistant
+      ? await this.contextLimit(
+          root.directory,
+          lastAssistant.providerID,
+          lastAssistant.modelID,
+        )
+      : undefined;
+    const pct = limit ? `${Math.round((tokens / limit) * 100)}%` : undefined;
+    return pct ? `${formatNumber(tokens)} (${pct})` : formatNumber(tokens);
+  }
+
+  private async contextLimit(
+    directory: string | undefined,
+    providerID: string,
+    modelID: string,
+  ): Promise<number | undefined> {
+    const limits = await this.contextLimits(directory).catch(() => undefined);
+    return limits?.get(`${providerID}/${modelID}`);
+  }
+
+  private contextLimits(directory: string | undefined) {
+    const key = clean(directory) ?? "";
+    let limits = this.modelLimits.get(key);
+    if (!limits) {
+      limits = this.loadContextLimits(key || undefined);
+      this.modelLimits.set(key, limits);
+    }
+    return limits;
+  }
+
+  private async loadContextLimits(directory: string | undefined) {
+    const response = await this.client.config.providers(
+      directory ? { query: { directory } } : undefined,
+    );
+    const providers =
+      responseData<{ providers: Provider[] }>(response)?.providers ?? [];
+    const limits = new Map<string, number>();
+    for (const provider of providers) {
+      for (const [modelID, model] of Object.entries(provider.models)) {
+        const limit = model.limit.context;
+        if (limit > 0) limits.set(`${provider.id}/${modelID}`, limit);
+      }
+    }
+    return limits;
   }
 
   private spawnKmux(cmd: string[]) {
