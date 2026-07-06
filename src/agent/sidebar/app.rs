@@ -161,6 +161,7 @@ impl SidebarApp {
             let _ = self.refresh_rows();
             self.last_error = Some(format!("jump failed: {error}{rollback_error}"));
         } else {
+            self.clear_other_persisted_selections(&row.window_id);
             self.wake_row_sidebar(&row);
             let hook_result = self.run_selection_hooks_for_row(&row);
             self.reset_after_successful_jump(&row);
@@ -226,12 +227,7 @@ impl SidebarApp {
     /// Return the row index for the host window the sidebar is attached to.
     pub(super) fn active_index(&self) -> Option<usize> {
         if self.selection_mode == SelectionMode::FollowHost {
-            selection::remembered_host_identity_index(
-                &self.rows,
-                self.host_window_id.as_deref(),
-                self.selected_identity.as_ref(),
-            )
-            .or_else(|| selection::host_window_index(&self.rows, self.host_window_id.as_deref()))
+            self.host_selection_index()
         } else {
             selection::host_window_index(&self.rows, self.host_window_id.as_deref())
         }
@@ -413,6 +409,23 @@ impl SidebarApp {
             PreviousSelectionOption::Unset => self
                 .tmux
                 .unset_window_option(&rollback.window_id, SELECTED_TARGET_OPTION),
+        }
+    }
+
+    fn clear_other_persisted_selections(&self, selected_window_id: &str) {
+        if selected_window_id.trim().is_empty() {
+            return;
+        }
+
+        let Ok(windows) = self.tmux.list_windows(None) else {
+            return;
+        };
+        for window in windows {
+            if window.window_id != selected_window_id {
+                let _ = self
+                    .tmux
+                    .unset_window_option(&window.window_id, SELECTED_TARGET_OPTION);
+            }
         }
     }
 
@@ -1173,6 +1186,54 @@ mod tests {
         app.restore_persisted_selection(rollback)?;
 
         assert_eq!(fixture.selected_target()?, Some(newer.identity));
+        Ok(())
+    }
+
+    #[test]
+    fn successful_selection_clears_other_window_persisted_targets() -> Result<()> {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
+            return Ok(());
+        };
+        let other_window_id = fixture
+            .tmux()
+            .list_windows(None)?
+            .into_iter()
+            .map(|window| window.window_id)
+            .find(|window_id| window_id != &fixture.window_id)
+            .ok_or_else(|| anyhow::anyhow!("expected a second fixture window"))?;
+        let selected = server_row_in_window("ses_selected", "Selected", &fixture.window_id);
+        let stale = server_row_in_window("ses_stale", "Stale", &other_window_id);
+        let selected_encoded = encode_selected_target(&selected.identity)?;
+        let stale_encoded = encode_selected_target(&stale.identity)?;
+        let tmux = fixture.tmux();
+        tmux.set_window_option(
+            &fixture.window_id,
+            SELECTED_TARGET_OPTION,
+            selected_encoded.as_str(),
+        )?;
+        tmux.set_window_option(
+            &other_window_id,
+            SELECTED_TARGET_OPTION,
+            stale_encoded.as_str(),
+        )?;
+        let app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some(&fixture.window_id),
+            vec![selected, stale],
+        );
+
+        app.clear_other_persisted_selections(&fixture.window_id);
+
+        assert_eq!(
+            fixture.raw_selected_target()?.as_deref(),
+            Some(selected_encoded.as_str())
+        );
+        assert_eq!(
+            fixture
+                .tmux()
+                .show_window_option(&other_window_id, SELECTED_TARGET_OPTION)?,
+            None
+        );
         Ok(())
     }
 
