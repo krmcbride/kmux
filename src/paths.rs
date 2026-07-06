@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 
 use crate::git::Git;
+use crate::telemetry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Resolved filesystem layout for a Git repo and its kmux worktree area.
@@ -35,52 +36,60 @@ impl RepoPaths {
     /// common metadata so new kmux worktrees are still created beside the primary checkout.
     pub fn discover(cwd: impl AsRef<Path>) -> Result<Self> {
         let cwd = cwd.as_ref();
-        let git = Git::new(cwd);
-        let repo_info = git.repo_info()?;
-        let current_worktree = repo_info.current_worktree;
-        let git_common_dir = repo_info.git_common_dir;
-
-        // Resolve the main worktree before choosing the kmux worktree base, so
-        // running inside a linked worktree still creates siblings under the
-        // primary repo's `<repo>__worktrees/` directory instead of nesting
-        // another worktree base.
-        let main_worktree = if git_common_dir
-            .file_name()
-            .is_some_and(|name| name == ".git")
-        {
-            let parent = git_common_dir.parent().ok_or_else(|| {
-                anyhow!(
-                    "could not determine parent directory for git common dir {}",
-                    git_common_dir.display()
-                )
-            })?;
-            normalize_existing(parent)?
-        } else {
-            git.main_worktree_from_list()
-                .context("failed to list git worktrees")?
-                .map(|path| normalize_existing(&path))
-                .transpose()?
-                .ok_or_else(|| {
-                    anyhow!(
-                        "could not determine main worktree from git common dir {}",
-                        git_common_dir.display()
-                    )
-                })?
-        };
-        let worktree_base_dir = default_worktree_base_dir(&main_worktree)?;
-
-        Ok(Self {
-            current_worktree,
-            main_worktree,
-            git_common_dir,
-            worktree_base_dir,
-        })
+        telemetry::timed_result_event!(
+            "repo_paths.discover",
+            { cwd = %cwd.display(), },
+            || discover_repo_paths(cwd),
+        )
     }
 
     /// Return the filesystem path for a kmux workspace slug under this repo's worktree base.
     pub fn workspace_path(&self, workspace_slug: &str) -> PathBuf {
         self.worktree_base_dir.join(workspace_slug)
     }
+}
+
+fn discover_repo_paths(cwd: &Path) -> Result<RepoPaths> {
+    let git = Git::new(cwd);
+    let repo_info = git.repo_info()?;
+    let current_worktree = repo_info.current_worktree;
+    let git_common_dir = repo_info.git_common_dir;
+
+    // Resolve the main worktree before choosing the kmux worktree base, so
+    // running inside a linked worktree still creates siblings under the
+    // primary repo's `<repo>__worktrees/` directory instead of nesting
+    // another worktree base.
+    let main_worktree = if git_common_dir
+        .file_name()
+        .is_some_and(|name| name == ".git")
+    {
+        let parent = git_common_dir.parent().ok_or_else(|| {
+            anyhow!(
+                "could not determine parent directory for git common dir {}",
+                git_common_dir.display()
+            )
+        })?;
+        normalize_existing(parent)?
+    } else {
+        git.main_worktree_from_list()
+            .context("failed to list git worktrees")?
+            .map(|path| normalize_existing(&path))
+            .transpose()?
+            .ok_or_else(|| {
+                anyhow!(
+                    "could not determine main worktree from git common dir {}",
+                    git_common_dir.display()
+                )
+            })?
+    };
+    let worktree_base_dir = default_worktree_base_dir(&main_worktree)?;
+
+    Ok(RepoPaths {
+        current_worktree,
+        main_worktree,
+        git_common_dir,
+        worktree_base_dir,
+    })
 }
 
 /// Compare paths after canonicalization when possible, falling back to literal comparison.

@@ -10,6 +10,8 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, bail};
 
+use crate::telemetry;
+
 #[derive(Debug, Clone, Default)]
 /// Thin adapter for running tmux commands, optionally against a specific socket.
 pub struct Tmux {
@@ -132,21 +134,37 @@ impl Tmux {
     {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
         let display_args = display_args(&args);
-        let mut command = Command::new("tmux");
-        if let Some(socket_name) = &self.socket_name {
-            command.arg("-L").arg(socket_name);
-        }
-        if self.clear_client_env {
-            command.env_remove("TMUX");
-            command.env_remove("TMUX_PANE");
-        }
-        for (key, value) in &self.env {
-            command.env(key, value);
-        }
-        let output = command
-            .args(&args)
-            .output()
-            .with_context(|| format!("failed to run tmux {display_args}"))?;
+        let command_name = command_name(&args);
+        let output = telemetry::timed_result_event!(
+            "subprocess",
+            {
+                program = "tmux",
+                command = %command_name,
+            },
+            || {
+                let mut command = Command::new("tmux");
+                if let Some(socket_name) = &self.socket_name {
+                    command.arg("-L").arg(socket_name);
+                }
+                if self.clear_client_env {
+                    command.env_remove("TMUX");
+                    command.env_remove("TMUX_PANE");
+                }
+                for (key, value) in &self.env {
+                    command.env(key, value);
+                }
+                command
+                    .args(&args)
+                    .output()
+                    .with_context(|| format!("failed to run tmux {display_args}"))
+            },
+            ok |output| {
+                status_code = output.status.code().unwrap_or(-1),
+                success = output.status.success(),
+                stdout_bytes = output.stdout.len(),
+                stderr_bytes = output.stderr.len(),
+            },
+        )?;
 
         Ok(TmuxOutput {
             status: output.status,
@@ -641,6 +659,12 @@ fn display_args(args: &[OsString]) -> String {
         display.push_str(&arg.to_string_lossy());
     }
     display
+}
+
+fn command_name(args: &[OsString]) -> String {
+    args.first()
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 fn bail_tmux<T>(output: TmuxOutput) -> Result<T> {

@@ -12,6 +12,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use directories::BaseDirs;
 
+use crate::telemetry;
+
 use super::model::{AgentObservationKey, AgentObservationState, AgentSessionKey};
 
 #[derive(Debug, Clone)]
@@ -56,49 +58,73 @@ impl StateStore {
     /// List valid observations, migrating legacy filenames and pruning unreadable files.
     pub fn list_observations(&self) -> Result<Vec<AgentObservationState>> {
         let observations_dir = self.observations_dir();
-        if !observations_dir.exists() {
-            return Ok(Vec::new());
-        }
-
-        let mut observations = Vec::new();
-        for entry in fs::read_dir(&observations_dir).with_context(|| {
-            format!(
-                "failed to read state directory {}",
-                observations_dir.display()
-            )
-        })? {
-            let entry = entry?;
-            let path = entry.path();
-            if path
-                .extension()
-                .is_some_and(|extension| extension == "json")
-            {
-                match read_observation_file(&path)? {
-                    Some(observation) => {
-                        let canonical_path = self.observation_path(&observation.key);
-                        if path != canonical_path {
-                            if canonical_path.exists() {
-                                delete_file_if_exists(&path)?;
-                                continue;
-                            }
-                            fs::rename(&path, &canonical_path).with_context(|| {
-                                format!(
-                                    "failed to migrate observation state file {} to {}",
-                                    path.display(),
-                                    canonical_path.display()
-                                )
-                            })?;
-                        }
-                        observations.push(observation);
-                    }
-                    None => delete_file_if_exists(&path)?,
+        let result = telemetry::timed_result_event!(
+            "agent_observations.list",
+            { dir = %observations_dir.display(), },
+            || {
+                if !observations_dir.exists() {
+                    return Ok(ObservationListTelemetry::default());
                 }
-            }
-        }
 
-        observations.sort_by(|left, right| left.key.cmp(&right.key));
-        observations.dedup_by(|left, right| left.key == right.key);
-        Ok(observations)
+                let mut telemetry = ObservationListTelemetry::default();
+                for entry in fs::read_dir(&observations_dir).with_context(|| {
+                    format!(
+                        "failed to read state directory {}",
+                        observations_dir.display()
+                    )
+                })? {
+                    let entry = entry?;
+                    let path = entry.path();
+                    if path
+                        .extension()
+                        .is_some_and(|extension| extension == "json")
+                    {
+                        telemetry.files += 1;
+                        match read_observation_file(&path)? {
+                            Some(observation) => {
+                                let canonical_path = self.observation_path(&observation.key);
+                                if path != canonical_path {
+                                    if canonical_path.exists() {
+                                        telemetry.pruned += 1;
+                                        delete_file_if_exists(&path)?;
+                                        continue;
+                                    }
+                                    fs::rename(&path, &canonical_path).with_context(|| {
+                                        format!(
+                                            "failed to migrate observation state file {} to {}",
+                                            path.display(),
+                                            canonical_path.display()
+                                        )
+                                    })?;
+                                    telemetry.migrated += 1;
+                                }
+                                telemetry.observations.push(observation);
+                            }
+                            None => {
+                                telemetry.pruned += 1;
+                                delete_file_if_exists(&path)?;
+                            }
+                        }
+                    }
+                }
+
+                telemetry
+                    .observations
+                    .sort_by(|left, right| left.key.cmp(&right.key));
+                telemetry
+                    .observations
+                    .dedup_by(|left, right| left.key == right.key);
+                Ok(telemetry)
+            },
+            ok |telemetry| {
+                files = telemetry.files,
+                observations = telemetry.observations.len(),
+                migrated = telemetry.migrated,
+                pruned = telemetry.pruned,
+            },
+        );
+
+        result.map(|telemetry| telemetry.observations)
     }
 
     /// Delete a single observation file if it exists.
@@ -131,6 +157,14 @@ impl StateStore {
     fn observation_path(&self, key: &AgentObservationKey) -> PathBuf {
         self.observations_dir().join(observation_filename(key))
     }
+}
+
+#[derive(Default)]
+struct ObservationListTelemetry {
+    observations: Vec<AgentObservationState>,
+    files: usize,
+    migrated: usize,
+    pruned: usize,
 }
 
 // Agent observation files are external-agent telemetry. Invalid JSON is treated

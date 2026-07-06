@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 
 use crate::paths::RepoPaths;
 use crate::state::AgentLocationHints;
+use crate::telemetry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Resolved Git worktree root used to attach agent sessions to live tmux state.
@@ -78,13 +79,60 @@ impl AgentWorkspaceResolver {
 }
 
 fn resolve_path(path: &str) -> Option<AgentWorkspaceAttachment> {
-    let resolved = normalize_existing(Path::new(path))?;
-    if !resolved.is_dir() {
-        return None;
+    let (result, elapsed_ms) = telemetry::timed(|| {
+        let Some(resolved) = normalize_existing(Path::new(path)) else {
+            return WorkspaceResolveTelemetry::unattached("missing");
+        };
+        if !resolved.is_dir() {
+            return WorkspaceResolveTelemetry::unattached("not_dir");
+        }
+
+        match RepoPaths::discover(&resolved) {
+            Ok(paths) => {
+                WorkspaceResolveTelemetry::attached(attachment(path, paths.current_worktree))
+            }
+            Err(_) => WorkspaceResolveTelemetry::unattached("not_git"),
+        }
+    });
+
+    match &result.attachment {
+        Some(attachment) => tracing::debug!(
+            event = "workspace.resolve",
+            elapsed_ms,
+            path,
+            attached = true,
+            workspace = %attachment.key(),
+        ),
+        None => tracing::debug!(
+            event = "workspace.resolve",
+            elapsed_ms,
+            path,
+            attached = false,
+            reason = result.reason.unwrap_or("unknown"),
+        ),
+    };
+    result.attachment
+}
+
+struct WorkspaceResolveTelemetry {
+    attachment: Option<AgentWorkspaceAttachment>,
+    reason: Option<&'static str>,
+}
+
+impl WorkspaceResolveTelemetry {
+    fn attached(attachment: AgentWorkspaceAttachment) -> Self {
+        Self {
+            attachment: Some(attachment),
+            reason: None,
+        }
     }
 
-    let workspace_root = RepoPaths::discover(&resolved).ok()?.current_worktree;
-    Some(attachment(path, workspace_root))
+    fn unattached(reason: &'static str) -> Self {
+        Self {
+            attachment: None,
+            reason: Some(reason),
+        }
+    }
 }
 
 fn attachment(reported_path: impl ToString, path: PathBuf) -> AgentWorkspaceAttachment {

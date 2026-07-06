@@ -12,6 +12,8 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use crate::telemetry;
+
 #[derive(Debug, Clone)]
 /// Thin adapter for running Git commands from a fixed working directory.
 pub struct Git {
@@ -357,11 +359,27 @@ impl Git {
     {
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
         let display_args = display_args(&args);
-        let output = Command::new("git")
-            .args(&args)
-            .current_dir(&self.cwd)
-            .output()
-            .with_context(|| format!("failed to run git {display_args}"))?;
+        let output = telemetry::timed_result_event!(
+            "subprocess",
+            {
+                program = "git",
+                args = %display_args,
+                cwd = %self.cwd.display(),
+            },
+            || {
+                Command::new("git")
+                    .args(&args)
+                    .current_dir(&self.cwd)
+                    .output()
+                    .with_context(|| format!("failed to run git {display_args}"))
+            },
+            ok |output| {
+                status_code = output.status.code().unwrap_or(-1),
+                success = output.status.success(),
+                stdout_bytes = output.stdout.len(),
+                stderr_bytes = output.stderr.len(),
+            },
+        )?;
 
         Ok(GitOutput {
             status: output.status,

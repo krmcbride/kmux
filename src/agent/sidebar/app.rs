@@ -21,6 +21,7 @@ use crate::agent::sidebar::selection::{
 use crate::agent::status::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
 use crate::state::StateStore;
+use crate::telemetry;
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
 /// Mutable state for the sidebar terminal UI.
@@ -269,11 +270,19 @@ impl SidebarApp {
     }
 
     fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
-        self.window_visible = visibility.window_visible;
-        self.update_selection_mode_for_focus(visibility.pane_has_focus);
+        let result = telemetry::timed_result_event!(
+            "sidebar.refresh",
+            {
+                rows = self.rows.len(),
+                visible = self.window_visible,
+                focused = self.sidebar_has_focus,
+            },
+            || {
+                self.window_visible = visibility.window_visible;
+                self.update_selection_mode_for_focus(visibility.pane_has_focus);
 
-        match session_views(&self.store, &self.tmux) {
-            Ok(views) => {
+                let views = session_views(&self.store, &self.tmux)?;
+                let view_count = views.len();
                 let working_icon = self.working_icon().map(str::to_owned);
                 self.rows = build_rows_with_working_icon(
                     &views,
@@ -284,10 +293,13 @@ impl SidebarApp {
                 );
                 self.last_error = None;
                 self.sync_selection();
-            }
-            Err(error) => {
-                self.last_error = Some(error.to_string());
-            }
+                Ok::<usize, anyhow::Error>(view_count)
+            },
+            ok |view_count| { views = *view_count, },
+        );
+
+        if let Err(error) = result {
+            self.last_error = Some(error.to_string());
         }
         true
     }

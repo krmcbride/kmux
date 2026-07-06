@@ -12,6 +12,7 @@ use crate::paths::infer_repo_metadata_from_paths;
 use crate::state::{
     AgentLocationHints, AgentObservationState, AgentSessionKey, AgentStatus, StateStore,
 };
+use crate::telemetry;
 use crate::tmux::{Tmux, TmuxPaneSnapshot};
 
 use super::workspace::{AgentWorkspaceAttachment, AgentWorkspaceResolver};
@@ -57,22 +58,54 @@ impl AgentSessionView {
 
 /// Reconcile persisted agent observations with live tmux window state.
 pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSessionView>> {
-    let tmux_instance = tmux.instance_id();
-    let observations = store
-        .list_observations()?
-        .into_iter()
-        .filter(|observation| is_candidate_for_tmux_instance(observation, &tmux_instance))
-        .collect::<Vec<_>>();
-    if observations.is_empty() {
-        return Ok(Vec::new());
-    }
+    let result = telemetry::timed_result_event!(
+        "session_views",
+        {},
+        || {
+            let tmux_instance = tmux.instance_id();
+            let observations = store
+                .list_observations()?
+                .into_iter()
+                .filter(|observation| is_candidate_for_tmux_instance(observation, &tmux_instance))
+                .collect::<Vec<_>>();
+            let observation_count = observations.len();
+            if observations.is_empty() {
+                return Ok(SessionViewsTelemetry {
+                    views: Vec::new(),
+                    observations: 0,
+                    panes: 0,
+                    tmux_snapshot_ok: true,
+                });
+            }
 
-    let panes = tmux.list_pane_snapshots().unwrap_or_default();
-    Ok(reconcile_session_views(
-        observations,
-        &panes,
-        &tmux_instance,
-    ))
+            let panes_result = tmux.list_pane_snapshots();
+            let tmux_snapshot_ok = panes_result.is_ok();
+            let panes = panes_result.unwrap_or_default();
+            let pane_count = panes.len();
+            let views = reconcile_session_views(observations, &panes, &tmux_instance);
+            Ok(SessionViewsTelemetry {
+                views,
+                observations: observation_count,
+                panes: pane_count,
+                tmux_snapshot_ok,
+            })
+        },
+        ok |telemetry_result| {
+            observations = telemetry_result.observations,
+            panes = telemetry_result.panes,
+            views = telemetry_result.views.len(),
+            tmux_snapshot_ok = telemetry_result.tmux_snapshot_ok,
+        },
+    );
+
+    result.map(|telemetry_result| telemetry_result.views)
+}
+
+struct SessionViewsTelemetry {
+    views: Vec<AgentSessionView>,
+    observations: usize,
+    panes: usize,
+    tmux_snapshot_ok: bool,
 }
 
 #[derive(Debug, Clone)]

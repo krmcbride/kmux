@@ -7,6 +7,7 @@ pub(crate) mod git;
 pub(crate) mod paths;
 pub(crate) mod slug;
 pub(crate) mod state;
+pub(crate) mod telemetry;
 pub(crate) mod tmux;
 pub(crate) mod workflows;
 
@@ -15,6 +16,7 @@ use clap::Parser;
 
 /// Parse the CLI and dispatch the selected kmux command.
 pub fn run() -> Result<()> {
+    telemetry::init();
     let args = cli::Cli::parse();
 
     commands::dispatch(args.command)
