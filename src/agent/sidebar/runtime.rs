@@ -19,7 +19,7 @@ use crate::agent::sidebar::app::SidebarApp;
 use crate::agent::sidebar::render::render_sidebar_tui;
 
 const MODEL_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
-const MODEL_REFRESH_PUSH_DELAY: Duration = Duration::from_millis(250);
+const MODEL_REFRESH_PUSH_INTERVAL: Duration = Duration::from_millis(250);
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
 
 /// Run the sidebar terminal UI until it exits, returning whether disable was requested.
@@ -31,7 +31,8 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    app.refresh_rows();
+    app.refresh_rows_now();
+    terminal.draw(|frame| render_sidebar_tui(frame, app))?;
     let mut schedule = RefreshSchedule::new(Instant::now());
 
     loop {
@@ -90,6 +91,7 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
 struct RefreshSchedule {
     next_model_refresh: Instant,
     next_spinner_tick: Instant,
+    next_push_refresh_allowed: Instant,
 }
 
 impl RefreshSchedule {
@@ -97,6 +99,7 @@ impl RefreshSchedule {
         Self {
             next_model_refresh: now + MODEL_REFRESH_INTERVAL,
             next_spinner_tick: now + SPINNER_INTERVAL,
+            next_push_refresh_allowed: now,
         }
     }
 
@@ -113,7 +116,12 @@ impl RefreshSchedule {
     }
 
     fn request_model_refresh(&mut self, now: Instant) {
-        let requested = now + MODEL_REFRESH_PUSH_DELAY;
+        let requested = if now >= self.next_push_refresh_allowed {
+            self.next_push_refresh_allowed = now + MODEL_REFRESH_PUSH_INTERVAL;
+            now
+        } else {
+            self.next_push_refresh_allowed
+        };
         if requested < self.next_model_refresh {
             self.next_model_refresh = requested;
         }
@@ -234,18 +242,20 @@ mod tests {
     }
 
     #[test]
-    fn schedule_coalesces_requested_model_refreshes() {
+    fn schedule_throttles_requested_model_refreshes() {
         let now = Instant::now();
         let mut schedule = RefreshSchedule::new(now);
 
         schedule.request_model_refresh(now);
-        assert_eq!(schedule.next_timeout(now, false), MODEL_REFRESH_PUSH_DELAY);
+        assert_eq!(schedule.next_timeout(now, false), Duration::ZERO);
+
+        schedule.reset_model(now);
 
         let later = now + Duration::from_millis(100);
         schedule.request_model_refresh(later);
         assert_eq!(
             schedule.next_timeout(later, false),
-            MODEL_REFRESH_PUSH_DELAY - Duration::from_millis(100)
+            MODEL_REFRESH_PUSH_INTERVAL - Duration::from_millis(100)
         );
     }
 

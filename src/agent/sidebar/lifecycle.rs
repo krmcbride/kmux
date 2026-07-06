@@ -89,6 +89,11 @@ pub(super) fn refresh() -> Result<()> {
 /// Wake the sidebar pane associated with a tmux window id.
 pub(super) fn wake(window_id: &str) -> Result<()> {
     let tmux = Tmux::from_env();
+    wake_window(&tmux, window_id)
+}
+
+/// Wake the sidebar pane associated with a tmux window id.
+pub(super) fn wake_window(tmux: &Tmux, window_id: &str) -> Result<()> {
     let panes = tmux.list_panes()?;
     if let Some(pane_id) = sidebar_pane_for_window(&panes, window_id) {
         let _ = tmux.send_key(pane_id, SIDEBAR_WAKE_KEY);
