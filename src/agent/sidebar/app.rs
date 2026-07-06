@@ -87,16 +87,10 @@ impl SidebarApp {
         }
     }
 
-    /// Refresh rows from current agent/tmux state when visibility policy allows it.
+    /// Refresh rows from current agent/tmux state.
     pub(super) fn refresh_rows(&mut self) -> bool {
         let visibility = self.sidebar_visibility();
-        self.refresh_rows_for_visibility_with_policy(visibility, RefreshPolicy::VisibilityGated)
-    }
-
-    /// Refresh rows from current agent/tmux state regardless of visibility policy.
-    pub(super) fn refresh_rows_now(&mut self) -> bool {
-        let visibility = self.sidebar_visibility();
-        self.refresh_rows_for_visibility_with_policy(visibility, RefreshPolicy::Forced)
+        self.refresh_rows_for_visibility(visibility)
     }
 
     /// Request that the TUI exit and that the sidebar be disabled afterward.
@@ -274,19 +268,9 @@ impl SidebarApp {
         }
     }
 
-    // Hidden sidebars keep lightweight state fresh but avoid full model refreshes
-    // while invisible unless focus/visibility changes require it.
-    fn refresh_rows_for_visibility_with_policy(
-        &mut self,
-        visibility: TmuxPaneVisibility,
-        policy: RefreshPolicy,
-    ) -> bool {
+    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
         self.window_visible = visibility.window_visible;
         self.update_selection_mode_for_focus(visibility.pane_has_focus);
-        if policy == RefreshPolicy::VisibilityGated && !self.should_refresh_model(visibility) {
-            self.sync_selection();
-            return false;
-        }
 
         match session_views(&self.store, &self.tmux) {
             Ok(views) => {
@@ -306,15 +290,6 @@ impl SidebarApp {
             }
         }
         true
-    }
-
-    fn should_refresh_model(&self, visibility: TmuxPaneVisibility) -> bool {
-        visibility.window_visible || self.host_row().is_some_and(|row| !row.is_idle())
-    }
-
-    fn host_row(&self) -> Option<&SidebarRow> {
-        let host_window_id = self.host_window_id.as_deref()?;
-        self.rows.iter().find(|row| row.window_id == host_window_id)
     }
 
     fn sync_selection(&mut self) {
@@ -534,12 +509,6 @@ impl SidebarApp {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum RefreshPolicy {
-    VisibilityGated,
-    Forced,
-}
-
 #[cfg(test)]
 impl SidebarApp {
     /// Build a sidebar app with injected rows for unit tests.
@@ -729,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_idle_refresh_skips_model_rebuild() {
+    fn hidden_idle_refresh_rebuilds_rows() {
         let rows = vec![
             row_from_view(
                 &agent_state(AgentStatus::Done, 0, "@1", "%1"),
@@ -742,37 +711,10 @@ mod tests {
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(selected_index(&app), Some(1));
 
-        let refreshed = app.refresh_rows_for_visibility_with_policy(
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: false,
-            },
-            RefreshPolicy::VisibilityGated,
-        );
-
-        assert!(!refreshed);
-        assert!(!app.window_visible());
-        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
-        assert_eq!(selected_index(&app), Some(0));
-        assert_eq!(app.rows().len(), 2);
-        assert_eq!(app.rows()[0].primary, "kmux");
-    }
-
-    #[test]
-    fn forced_hidden_idle_refresh_bypasses_visibility_gate() {
-        let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Done, 0, "@1", "%1"),
-            DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
-        )];
-        let mut app = SidebarApp::test(Some("@1"), rows);
-
-        let refreshed = app.refresh_rows_for_visibility_with_policy(
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: false,
-            },
-            RefreshPolicy::Forced,
-        );
+        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
+            pane_has_focus: false,
+            window_visible: false,
+        });
 
         assert!(refreshed);
         assert!(!app.window_visible());
@@ -780,25 +722,21 @@ mod tests {
     }
 
     #[test]
-    fn hidden_missing_host_refresh_skips_model_rebuild() {
+    fn hidden_missing_host_refresh_rebuilds_rows() {
         let rows = vec![row_from_view(
             &agent_state(AgentStatus::Working, 100, "@other", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
 
-        let refreshed = app.refresh_rows_for_visibility_with_policy(
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: false,
-            },
-            RefreshPolicy::VisibilityGated,
-        );
+        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
+            pane_has_focus: false,
+            window_visible: false,
+        });
 
-        assert!(!refreshed);
+        assert!(refreshed);
         assert!(!app.window_visible());
-        assert_eq!(app.rows().len(), 1);
-        assert_eq!(app.rows()[0].window_id, "@other");
+        assert!(app.rows().is_empty());
     }
 
     #[test]
@@ -809,13 +747,10 @@ mod tests {
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
-        let refreshed = app.refresh_rows_for_visibility_with_policy(
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: false,
-            },
-            RefreshPolicy::VisibilityGated,
-        );
+        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
+            pane_has_focus: false,
+            window_visible: false,
+        });
 
         assert!(refreshed);
         assert!(!app.window_visible());

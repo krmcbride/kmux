@@ -31,7 +31,7 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    app.refresh_rows_now();
+    app.refresh_rows();
     terminal.draw(|frame| render_sidebar_tui(frame, app))?;
     let mut schedule = RefreshSchedule::new(Instant::now());
 
@@ -170,7 +170,10 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
             KeyCode::Char('k') | KeyCode::Up => app.previous(),
             KeyCode::Char('g') => app.select_first(),
             KeyCode::Char('G') => app.select_last(),
-            KeyCode::Enter => app.jump_to_selected(),
+            KeyCode::Enter => {
+                app.jump_to_selected();
+                return EventOutcome::RedrawRequested;
+            }
             KeyCode::Char('x') => {
                 app.delete_selected_session();
                 return EventOutcome::RedrawRequested;
@@ -286,6 +289,23 @@ mod tests {
         );
 
         assert_eq!(outcome, EventOutcome::ModelRefreshRequested);
+        assert!(!app.should_quit());
+    }
+
+    #[test]
+    fn enter_event_reports_redraw_request_after_jump_handling() {
+        let rows = Vec::new();
+        let mut app = SidebarApp::test(None, rows);
+
+        let outcome = process_tui_event(
+            Event::Key(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                KeyModifiers::NONE,
+            )),
+            &mut app,
+        );
+
+        assert_eq!(outcome, EventOutcome::RedrawRequested);
         assert!(!app.should_quit());
     }
 
