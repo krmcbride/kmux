@@ -13,6 +13,7 @@ use serde::Serialize;
 
 use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
 use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget, session_views};
+use crate::agent::sidebar;
 use crate::cli;
 use crate::config::{Config, StatusIcons};
 use crate::git::{Git, WorktreeInfo};
@@ -56,12 +57,12 @@ pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
 
     if args.delete_session {
         store.delete_session(&key.session)?;
-        let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
+        notify_observation_changed(&store, &tmux, &config.status_icons);
         return Ok(());
     }
     if args.delete {
         store.delete_observation(&key)?;
-        let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
+        notify_observation_changed(&store, &tmux, &config.status_icons);
         return Ok(());
     }
 
@@ -103,8 +104,13 @@ pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
     enrich_missing_repo_metadata(&mut state.target);
 
     store.upsert_observation(&state)?;
-    let _ = refresh_window_statuses(&store, &tmux, &config.status_icons);
+    notify_observation_changed(&store, &tmux, &config.status_icons);
     Ok(())
+}
+
+fn notify_observation_changed(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) {
+    let _ = refresh_window_statuses(store, tmux, icons);
+    let _ = sidebar::notify_observation_changed(tmux);
 }
 
 /// Refresh each tmux window's kmux status option from the highest-priority agent in it.

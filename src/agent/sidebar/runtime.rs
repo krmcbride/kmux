@@ -18,7 +18,8 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 use crate::agent::sidebar::app::SidebarApp;
 use crate::agent::sidebar::render::render_sidebar_tui;
 
-const MODEL_REFRESH_INTERVAL: Duration = Duration::from_millis(750);
+const MODEL_REFRESH_INTERVAL: Duration = Duration::from_secs(15);
+const MODEL_REFRESH_PUSH_DELAY: Duration = Duration::from_millis(250);
 const SPINNER_INTERVAL: Duration = Duration::from_millis(80);
 
 /// Run the sidebar terminal UI until it exits, returning whether disable was requested.
@@ -70,13 +71,17 @@ pub(super) fn run_terminal_app(app: &mut SidebarApp) -> Result<bool> {
 
         if event::poll(timeout)? {
             let outcome = process_tui_event(event::read()?, app);
-            if outcome == EventOutcome::RedrawRequested {
-                terminal.draw(|frame| render_sidebar_tui(frame, app))?;
-            }
             let now = Instant::now();
-            if outcome == EventOutcome::RedrawRequested {
-                schedule.reset_model(now);
-                schedule.reset_spinner(now);
+            match outcome {
+                EventOutcome::None => {}
+                EventOutcome::RedrawRequested => {
+                    terminal.draw(|frame| render_sidebar_tui(frame, app))?;
+                    schedule.reset_model(now);
+                    schedule.reset_spinner(now);
+                }
+                EventOutcome::ModelRefreshRequested => {
+                    schedule.request_model_refresh(now);
+                }
             }
         }
     }
@@ -107,6 +112,13 @@ impl RefreshSchedule {
         self.next_model_refresh = now + MODEL_REFRESH_INTERVAL;
     }
 
+    fn request_model_refresh(&mut self, now: Instant) {
+        let requested = now + MODEL_REFRESH_PUSH_DELAY;
+        if requested < self.next_model_refresh {
+            self.next_model_refresh = requested;
+        }
+    }
+
     fn reset_spinner(&mut self, now: Instant) {
         self.next_spinner_tick = now + SPINNER_INTERVAL;
     }
@@ -135,6 +147,7 @@ impl Drop for TerminalGuard {
 enum EventOutcome {
     None,
     RedrawRequested,
+    ModelRefreshRequested,
 }
 
 // Key handling returns whether the caller should redraw immediately.
@@ -155,8 +168,7 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
                 return EventOutcome::RedrawRequested;
             }
             KeyCode::F(5) => {
-                app.refresh_rows();
-                return EventOutcome::RedrawRequested;
+                return EventOutcome::ModelRefreshRequested;
             }
             _ => {}
         },
@@ -222,6 +234,22 @@ mod tests {
     }
 
     #[test]
+    fn schedule_coalesces_requested_model_refreshes() {
+        let now = Instant::now();
+        let mut schedule = RefreshSchedule::new(now);
+
+        schedule.request_model_refresh(now);
+        assert_eq!(schedule.next_timeout(now, false), MODEL_REFRESH_PUSH_DELAY);
+
+        let later = now + Duration::from_millis(100);
+        schedule.request_model_refresh(later);
+        assert_eq!(
+            schedule.next_timeout(later, false),
+            MODEL_REFRESH_PUSH_DELAY - Duration::from_millis(100)
+        );
+    }
+
+    #[test]
     fn resize_event_reports_redraw_request_for_deadline_reset() {
         let rows = Vec::new();
         let mut app = SidebarApp::test(None, rows);
@@ -232,7 +260,7 @@ mod tests {
     }
 
     #[test]
-    fn f5_event_reports_redraw_request_for_wake_signal() {
+    fn f5_event_requests_coalesced_model_refresh_for_wake_signal() {
         let rows = vec![row_from_view(
             &report_state(AgentStatus::Done, 100, "@1", "%1"),
             100,
@@ -247,7 +275,7 @@ mod tests {
             &mut app,
         );
 
-        assert_eq!(outcome, EventOutcome::RedrawRequested);
+        assert_eq!(outcome, EventOutcome::ModelRefreshRequested);
         assert!(!app.should_quit());
     }
 

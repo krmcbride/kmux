@@ -96,6 +96,14 @@ pub(super) fn wake(window_id: &str) -> Result<()> {
     Ok(())
 }
 
+/// Notify all live sidebar panes that agent observations changed.
+pub(super) fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
+    for pane in sidebar_panes(&tmux.list_panes()?) {
+        let _ = tmux.send_key(&pane.pane_id, SIDEBAR_WAKE_KEY);
+    }
+    Ok(())
+}
+
 /// Run the hidden sidebar TUI process inside a tmux pane.
 pub(super) fn run_tui() -> Result<()> {
     let tmux = Tmux::from_env();

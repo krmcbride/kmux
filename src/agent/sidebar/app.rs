@@ -179,6 +179,7 @@ impl SidebarApp {
             return;
         }
         let _ = refresh_window_statuses(&self.store, &self.tmux, &self.status_icons);
+        let _ = super::notify_observation_changed(&self.tmux);
 
         self.rows
             .retain(|candidate| candidate.identity != row.identity);

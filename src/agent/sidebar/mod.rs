@@ -18,6 +18,12 @@ mod test_support;
 use anyhow::Result;
 
 use crate::cli::{SidebarArgs, SidebarCommand};
+use crate::tmux::Tmux;
+
+/// Notify live sidebar panes that external agent observation state changed.
+pub(super) fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
+    lifecycle::notify_observation_changed(tmux)
+}
 
 /// Dispatch sidebar lifecycle commands or toggle the sidebar when no subcommand is provided.
 pub fn run(args: SidebarArgs) -> Result<()> {

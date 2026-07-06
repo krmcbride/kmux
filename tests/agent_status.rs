@@ -12,8 +12,8 @@ use tempfile::TempDir;
 use support::{
     TmuxFixture, agent_observation_for_key, agent_observation_for_pane, agent_observations_dir,
     delete_opencode_agent_observation_args, delete_opencode_agent_session_args, git, init_repo,
-    kmux, kmux_with_pane, set_agent_status_args, set_opencode_status_args, state_timestamp,
-    state_u64, write_config,
+    kmux, kmux_with_pane, raw_key_capture_command, set_agent_status_args, set_opencode_status_args,
+    state_timestamp, state_u64, wait_for_file_bytes, wait_for_path, write_config,
 };
 
 #[test]
@@ -817,6 +817,46 @@ status_icons:
     let stdout = String::from_utf8_lossy(&status.get_output().stdout);
     assert!(stdout.contains("working"));
     assert!(stdout.contains("Ambiguous root"));
+    Ok(())
+}
+
+#[test]
+fn set_agent_status_notifies_live_sidebar_panes() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "")?;
+    let window_id = tmux.pane_format(&tmux.pane_id, "#{window_id}")?;
+    let capture = temp.path().join("sidebar-refresh.bin");
+    let ready = temp.path().join("sidebar-refresh.ready");
+    let command = raw_key_capture_command(&capture, &ready);
+    let sidebar = tmux.tmux_output(&[
+        "split-window",
+        "-d",
+        "-t",
+        &window_id,
+        "-P",
+        "-F",
+        "#{pane_id}",
+        &command,
+    ])?;
+    tmux.tmux_output(&["set-option", "-p", "-t", &sidebar, "@kmux_role", "sidebar"])?;
+    assert!(wait_for_path(&ready)?);
+
+    let repo_path = repo.display().to_string();
+    kmux(&repo, &config_home, &tmux)?
+        .args(set_opencode_status_args(
+            Some("working"),
+            "ses_notify_sidebar",
+            "server",
+            "server",
+            &[("--directory", &repo_path)],
+        ))
+        .assert()
+        .success();
+
+    assert!(wait_for_file_bytes(&capture)?);
     Ok(())
 }
 
