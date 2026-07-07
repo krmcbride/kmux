@@ -1,151 +1,37 @@
-//! Agent status command workflows and tmux status option updates.
+//! Status query and presentation for resolved agent sessions.
 //!
-//! This module handles both sides of the status surface: external producers call
-//! `set-agent-status` to persist observations, while users call `status` to view
-//! reconciled sessions, optional Git context, and per-window tmux status badges.
+//! Workflows own command orchestration. This module turns already resolved agent
+//! sessions into the stable table and JSON status surface.
 
-use std::collections::HashMap;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
-use crate::agent::sessions::{AgentSessionView, session_views};
-use crate::agent::sidebar;
-use crate::cli;
-use crate::config::{Config, StatusIcons};
+use crate::agent::sessions::AgentSessionView;
+use crate::config::StatusIcons;
 use crate::git::{Git, WorktreeInfo};
-use crate::paths::{RepoPaths, infer_repo_metadata_from_paths, path_basename};
-use crate::state::{
-    AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
-    AgentStatus as StoredAgentStatus, StateStore, next_observation_timing, now_unix_seconds,
-};
-use crate::tmux::Tmux;
+use crate::paths::RepoPaths;
+use crate::state::AgentStatus as StoredAgentStatus;
 
-const KMUX_STATUS_OPTION: &str = "@kmux_status";
-
-/// Print active agent sessions, optionally scoped to the current repo and enriched with Git state.
-pub fn run(args: cli::StatusArgs) -> Result<()> {
-    let store = StateStore::new()?;
-    let tmux = Tmux::from_env();
-    let config = Config::load()?;
-    let views = session_views(&store, &tmux)?;
-    let entries = status_entries(&views, &args, &config.status_icons)?;
-
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&entries)?);
-    } else if entries.is_empty() {
-        println!("No active agents");
-    } else {
-        print_table(&entries, args.git);
-    }
-    Ok(())
+/// Input for querying the status surface from resolved sessions.
+pub(crate) struct StatusQuery {
+    filters: Vec<String>,
+    show_git: bool,
 }
 
-/// Record or delete one agent status observation from an external producer.
-pub fn set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
-    if std::env::var_os("KMUX_DISABLE_SET_AGENT_STATUS").is_some() {
-        return Ok(());
+impl StatusQuery {
+    /// Build a status query from command-boundary input.
+    pub(crate) fn new(filters: Vec<String>, show_git: bool) -> Self {
+        Self { filters, show_git }
     }
 
-    let config = Config::load()?;
-    let tmux = Tmux::from_env();
-    let store = StateStore::new()?;
-    let key = observation_key(&args)?;
-
-    if args.delete_session {
-        store.delete_session(&key.session)?;
-        notify_observation_changed(&store, &tmux, &config.status_icons);
-        return Ok(());
+    /// Return whether Git status decoration should be included.
+    pub(crate) fn show_git(&self) -> bool {
+        self.show_git
     }
-    if args.delete {
-        store.delete_observation(&key)?;
-        notify_observation_changed(&store, &tmux, &config.status_icons);
-        return Ok(());
-    }
-
-    let now = now_unix_seconds();
-    let previous = store.get_observation(&key)?;
-    let status = args.status.map(stored_status);
-    let status_supplied = status.is_some();
-    let timing = next_observation_timing(previous.as_ref(), status, now);
-    let mut state = previous.unwrap_or_else(|| AgentObservationState {
-        key: key.clone(),
-        created_at: now,
-        status: None,
-        status_observed_at: None,
-        status_changed_at: None,
-        working_elapsed_secs: 0,
-        observed_at: now,
-        title: None,
-        context: None,
-        target: AgentLocationHints::default(),
-    });
-    if state.created_at == 0 {
-        state.created_at = state.effective_created_at();
-    }
-    state.key = key;
-    if status_supplied {
-        state.status = status;
-        state.status_observed_at = Some(now);
-    }
-    state.status_changed_at = timing.status_changed_at;
-    state.working_elapsed_secs = timing.working_elapsed_secs;
-    state.observed_at = now;
-    if let Some(title) = clean_optional_ref(args.title.as_ref()) {
-        state.title = Some(title);
-    }
-    if let Some(context) = clean_optional_ref(args.context.as_ref()) {
-        state.context = Some(context);
-    }
-    apply_location_args(&mut state.target, &args);
-    enrich_missing_repo_metadata(&mut state.target);
-
-    store.upsert_observation(&state)?;
-    notify_observation_changed(&store, &tmux, &config.status_icons);
-    Ok(())
-}
-
-fn notify_observation_changed(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) {
-    let _ = refresh_window_statuses(store, tmux, icons);
-    let _ = sidebar::notify_observation_changed(tmux);
-}
-
-/// Refresh each tmux window's kmux status option from the highest-priority agent in it.
-pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
-    let views = session_views(store, tmux)?;
-    let mut by_window = HashMap::<String, StoredAgentStatus>::new();
-    for view in views {
-        if !view.is_window_tmux_target() {
-            continue;
-        }
-        let Some(window_id) = view.tmux_window_id().map(str::to_owned) else {
-            continue;
-        };
-        by_window
-            .entry(window_id)
-            .and_modify(|status| {
-                if status_rank(view.status) > status_rank(*status) {
-                    *status = view.status;
-                }
-            })
-            .or_insert(view.status);
-    }
-
-    for window in tmux.list_windows(None)? {
-        if let Some(status) = by_window.get(&window.window_id).copied() {
-            tmux.set_window_option(
-                &window.window_id,
-                KMUX_STATUS_OPTION,
-                status_icon(status, icons),
-            )?;
-        } else {
-            tmux.unset_window_option(&window.window_id, KMUX_STATUS_OPTION)?;
-        }
-    }
-    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -156,7 +42,7 @@ struct GitInfo {
 }
 
 #[derive(Debug, Serialize)]
-struct StatusEntry {
+pub(crate) struct StatusEntry {
     agent_kind: String,
     session_id: String,
     workspace: String,
@@ -184,122 +70,34 @@ struct DisplayRow {
     title: String,
 }
 
-// The observation key identifies both the logical agent session and the producer
-// that reported it, so TUI and server observations can coexist for one session.
-fn observation_key(args: &cli::SetAgentStatusArgs) -> Result<AgentObservationKey> {
-    Ok(AgentObservationKey {
-        session: AgentSessionKey {
-            agent_kind: clean_required(&args.agent_kind, "--agent-kind")?,
-            session_id: clean_required(&args.session_id, "--session-id")?,
-        },
-        producer_kind: clean_required(&args.producer_kind, "--producer-kind")?,
-        producer_instance: clean_required(&args.producer_instance, "--producer-instance")?,
-    })
-}
-
-fn stored_status(status: cli::AgentStatus) -> StoredAgentStatus {
-    match status {
-        cli::AgentStatus::Working => StoredAgentStatus::Working,
-        cli::AgentStatus::Waiting => StoredAgentStatus::Waiting,
-        cli::AgentStatus::Done => StoredAgentStatus::Done,
-    }
-}
-
-fn apply_location_args(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
-    apply_optional(&mut target.tmux_instance, &args.tmux_instance);
-    apply_optional(&mut target.tmux_pane_id, &args.tmux_pane_id);
-    apply_optional(&mut target.tmux_window_id, &args.tmux_window_id);
-    apply_agent_workspace_id(target, args);
-    apply_optional(&mut target.git_repo_name, &args.git_repo_name);
-    apply_optional(&mut target.git_repo_path, &args.git_repo_path);
-    apply_optional(&mut target.git_worktree_path, &args.git_worktree_path);
-    apply_optional(&mut target.git_branch, &args.git_branch);
-    apply_reported_directory(target, args);
-}
-
-fn apply_agent_workspace_id(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
-    if let Some(value) = clean_optional_ref(args.agent_workspace_id.as_ref()) {
-        target.agent_workspace_id = Some(value);
-    } else if args.clear_agent_workspace_id {
-        target.agent_workspace_id = None;
-    }
-}
-
-// Metadata-only updates should not erase existing fields with empty strings.
-fn apply_optional(target: &mut Option<String>, value: &Option<String>) {
-    if let Some(value) = clean_optional_ref(value.as_ref()) {
-        *target = Some(value);
-    }
-}
-
-fn apply_reported_directory(target: &mut AgentLocationHints, args: &cli::SetAgentStatusArgs) {
-    target.directory = clean_optional_ref(args.directory.as_ref());
-}
-
-fn clean_required(value: &str, label: &str) -> Result<String> {
-    clean_str(value)
-        .map(str::to_owned)
-        .ok_or_else(|| anyhow!("{label} cannot be empty"))
-}
-
-fn clean_optional_ref(value: Option<&String>) -> Option<String> {
-    value.and_then(|value| clean_str(value).map(str::to_owned))
-}
-
-fn clean_str(value: &str) -> Option<&str> {
-    let value = value.trim();
-    (!value.is_empty()).then_some(value)
-}
-
-// Fill missing repo fields opportunistically from path hints so older or sparse
-// producers still show useful repo/branch labels.
-fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
-    let metadata = infer_repo_metadata_from_paths(&[
-        target.directory.as_deref(),
-        target.git_worktree_path.as_deref(),
-    ]);
-    if target.git_repo_path.is_none() {
-        target.git_repo_path = metadata.repo_path.clone();
-    }
-    if target.git_repo_name.is_none() {
-        target.git_repo_name = target
-            .git_repo_path
-            .as_deref()
-            .and_then(path_basename)
-            .or(metadata.repo_name);
-    }
-    if target.git_branch.is_none() {
-        target.git_branch = metadata.branch;
-    }
-}
-
 // Without filters, prefer views for the current repo when the command is run
 // inside a Git repository; otherwise show all known agent sessions.
-fn status_entries(
+pub(crate) fn status_entries(
     views: &[AgentSessionView],
-    args: &cli::StatusArgs,
+    query: &StatusQuery,
     icons: &StatusIcons,
 ) -> Result<Vec<StatusEntry>> {
     let now = unix_now();
-    if !args.filters.is_empty() {
+    if !query.filters.is_empty() {
         return Ok(views
             .iter()
             .filter(|view| {
-                args.filters
+                query
+                    .filters
                     .iter()
                     .any(|filter| view_matches_filter(view, filter))
             })
-            .map(|view| entry_for_view(view, None, now, args.git, icons))
+            .map(|view| entry_for_view(view, None, now, query.show_git, icons))
             .collect());
     }
 
-    if let Some(entries) = current_repo_entries(views, now, args.git, icons)? {
+    if let Some(entries) = current_repo_entries(views, now, query.show_git, icons)? {
         return Ok(entries);
     }
 
     Ok(views
         .iter()
-        .map(|view| entry_for_view(view, None, now, args.git, icons))
+        .map(|view| entry_for_view(view, None, now, query.show_git, icons))
         .collect())
 }
 
@@ -427,16 +225,8 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
     }
 }
 
-// Higher ranks win when multiple agents report different states in one window.
-fn status_rank(status: StoredAgentStatus) -> u8 {
-    match status {
-        StoredAgentStatus::Waiting => 3,
-        StoredAgentStatus::Working => 2,
-        StoredAgentStatus::Done => 1,
-    }
-}
-
-fn print_table(entries: &[StatusEntry], show_git: bool) {
+/// Print status entries in the stable human-readable table format.
+pub(crate) fn print_table(entries: &[StatusEntry], show_git: bool) {
     let rows = entries
         .iter()
         .map(|entry| DisplayRow {
@@ -551,80 +341,93 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession};
+    use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
 
     #[test]
-    fn apply_location_args_records_agent_workspace_id() {
-        let mut target = AgentLocationHints::default();
-        let mut args = set_status_args();
-        args.agent_workspace_id = Some("  wrk_01KTEST  ".to_owned());
+    fn status_entries_filter_by_branch_without_current_repo_scope() -> Result<()> {
+        let views = vec![
+            session_view("opencode", "ses_feature", "feature/auth", "Feature"),
+            session_view("codex", "ses_other", "main", "Other"),
+        ];
+        let query = StatusQuery::new(vec!["feature/auth".to_owned()], false);
 
-        apply_location_args(&mut target, &args);
+        let entries = status_entries(&views, &query, &StatusIcons::default())?;
 
-        assert_eq!(target.agent_workspace_id.as_deref(), Some("wrk_01KTEST"));
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].agent_kind, "opencode");
+        assert_eq!(entries[0].session_id, "ses_feature");
+        assert_eq!(entries[0].git_branch, "feature/auth");
+        Ok(())
     }
 
     #[test]
-    fn apply_location_args_ignores_empty_agent_workspace_id() {
-        let mut target = AgentLocationHints {
-            agent_workspace_id: Some("wrk_existing".to_owned()),
-            ..AgentLocationHints::default()
-        };
-        let mut args = set_status_args();
-        args.agent_workspace_id = Some("   ".to_owned());
+    fn status_entries_serialize_existing_json_field_names() -> Result<()> {
+        let views = vec![session_view(
+            "opencode",
+            "ses_feature",
+            "feature/auth",
+            "Feature",
+        )];
+        let query = StatusQuery::new(vec!["Feature".to_owned()], false);
 
-        apply_location_args(&mut target, &args);
+        let entries = status_entries(&views, &query, &StatusIcons::default())?;
+        let json = serde_json::to_value(&entries)?;
+        let first = json
+            .as_array()
+            .and_then(|entries| entries.first())
+            .ok_or_else(|| anyhow::anyhow!("expected one serialized status entry"))?;
 
-        assert_eq!(target.agent_workspace_id.as_deref(), Some("wrk_existing"));
+        assert_eq!(
+            first.get("agent_kind").and_then(|value| value.as_str()),
+            Some("opencode")
+        );
+        assert_eq!(
+            first.get("session_id").and_then(|value| value.as_str()),
+            Some("ses_feature")
+        );
+        assert_eq!(
+            first.get("workspace_slug").and_then(|value| value.as_str()),
+            Some("feature-auth")
+        );
+        assert_eq!(
+            first.get("git_branch").and_then(|value| value.as_str()),
+            Some("feature/auth")
+        );
+        Ok(())
     }
 
-    #[test]
-    fn apply_location_args_clears_agent_workspace_id() {
-        let mut target = AgentLocationHints {
-            agent_workspace_id: Some("wrk_existing".to_owned()),
-            ..AgentLocationHints::default()
-        };
-        let mut args = set_status_args();
-        args.clear_agent_workspace_id = true;
-
-        apply_location_args(&mut target, &args);
-
-        assert_eq!(target.agent_workspace_id, None);
-    }
-
-    #[test]
-    fn apply_location_args_replaces_directory_each_update() {
-        let mut target = AgentLocationHints {
-            directory: Some("/repo/old".to_owned()),
-            ..AgentLocationHints::default()
-        };
-        let args = set_status_args();
-
-        apply_location_args(&mut target, &args);
-
-        assert_eq!(target.directory, None);
-    }
-
-    fn set_status_args() -> cli::SetAgentStatusArgs {
-        cli::SetAgentStatusArgs {
-            status: Some(cli::AgentStatus::Working),
-            agent_kind: "opencode".to_owned(),
-            session_id: "ses_root".to_owned(),
-            producer_kind: "tui".to_owned(),
-            producer_instance: "default/%1".to_owned(),
-            delete: false,
-            delete_session: false,
-            title: None,
+    fn session_view(
+        agent_kind: &str,
+        session_id: &str,
+        git_branch: &str,
+        title: &str,
+    ) -> AgentSessionView {
+        ResolvedAgentSession {
+            key: AgentSessionKey {
+                agent_kind: agent_kind.to_owned(),
+                session_id: session_id.to_owned(),
+            },
+            workspace: None,
+            workspace_key: Some(format!("/repo/{session_id}")),
+            tmux_target: AgentTmuxTarget::Window,
+            created_at: 100,
+            status: AgentStatus::Working,
+            status_observed_at: 100,
+            status_changed_at: 100,
+            working_elapsed_secs: 0,
+            observed_at: 100,
+            title: Some(title.to_owned()),
             context: None,
-            tmux_instance: None,
-            tmux_pane_id: None,
-            tmux_window_id: None,
-            agent_workspace_id: None,
-            clear_agent_workspace_id: false,
-            git_repo_name: None,
-            git_repo_path: None,
-            git_worktree_path: None,
-            git_branch: None,
-            directory: None,
+            target: AgentLocationHints {
+                kmux_workspace_slug: Some(git_branch.replace('/', "-")),
+                git_worktree_path: Some(format!("/repo/{session_id}")),
+                git_branch: Some(git_branch.to_owned()),
+                tmux_session_name: Some("project".to_owned()),
+                tmux_window_id: Some("@1".to_owned()),
+                tmux_window_name: Some(format!("kmux-{}", git_branch.replace('/', "-"))),
+                ..AgentLocationHints::default()
+            },
         }
     }
 }

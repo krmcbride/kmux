@@ -12,8 +12,8 @@ pub fn dispatch(command: cli::Command) -> Result<()> {
         cli::Command::Remove(args) => workflows::run_remove(args),
 
         cli::Command::Sidebar(args) => agent::sidebar::run(args),
-        cli::Command::Status(args) => agent::status::run(args),
-        cli::Command::SetAgentStatus(args) => agent::status::set_agent_status(*args),
+        cli::Command::Status(args) => workflows::run_status(args),
+        cli::Command::SetAgentStatus(args) => workflows::run_set_agent_status(*args),
 
         cli::Command::Completions { shell } => completions::generate(shell),
         cli::Command::CompleteWorkspaces => completions::complete_workspaces(),

@@ -16,6 +16,7 @@ mod parent;
 mod remove;
 mod resolve;
 mod restore;
+mod status;
 mod window;
 
 /// Run the workspace creation workflow.
@@ -41,4 +42,14 @@ pub fn run_list(args: cli::JsonArgs) -> Result<()> {
 /// Remove one kmux workspace and its local branch.
 pub fn run_remove(args: cli::RemoveArgs) -> Result<()> {
     remove::run(args)
+}
+
+/// Print tracked external agent status.
+pub fn run_status(args: cli::StatusArgs) -> Result<()> {
+    status::run_status(args)
+}
+
+/// Record or delete external agent status observations.
+pub fn run_set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
+    status::run_set_agent_status(args)
 }

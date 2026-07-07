@@ -333,6 +333,34 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
 }
 
 #[test]
+fn disabled_set_agent_status_does_not_write_observation() -> Result<()> {
+    let temp = TempDir::new()?;
+    let config_home = write_config(temp.path(), "")?;
+    let cwd = temp.path().join("workspace");
+    fs::create_dir(&cwd)?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(&cwd)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("KMUX_DISABLE_SET_AGENT_STATUS", "1")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .args(set_opencode_status_args(
+            Some("working"),
+            "ses_disabled",
+            "server",
+            "default",
+            &[("--title", "Ignored")],
+        ))
+        .assert()
+        .success();
+
+    assert!(!agent_observations_dir(&config_home).exists());
+    Ok(())
+}
+
+#[test]
 fn set_agent_status_persists_agent_workspace_id() -> Result<()> {
     let temp = TempDir::new()?;
     let config_home = write_config(temp.path(), "")?;

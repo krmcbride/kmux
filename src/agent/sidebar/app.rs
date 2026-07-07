@@ -18,7 +18,7 @@ use crate::agent::sidebar::selection::{
     self, PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
     SelectionMode, decode_selected_target, encode_selected_target,
 };
-use crate::agent::status::refresh_window_statuses;
+use crate::agent::status_badges::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
 use crate::state::StateStore;
 use crate::telemetry;
