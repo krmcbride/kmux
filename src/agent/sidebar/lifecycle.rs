@@ -2,7 +2,8 @@
 //!
 //! This module enables, disables, refreshes, wakes, and runs the hidden sidebar
 //! pane. It owns tmux hooks, global sidebar options, reconciliation locking, and
-//! pane repair while keeping row modeling and rendering in sibling modules.
+//! pane repair as sidebar/tmux lifecycle orchestration, not presentation, while
+//! keeping row modeling and rendering in sibling modules.
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
@@ -365,6 +366,21 @@ mod tests {
         assert!(!should_respawn_sidebar_pane(&marked_running));
         assert!(should_respawn_sidebar_pane(&marked_stale));
         assert!(should_respawn_sidebar_pane(&unmarked_running_kmux));
+    }
+
+    #[test]
+    fn configured_width_supports_absolute_and_percent_sizes() {
+        let mut config = Config::default();
+        config.sidebar.width = Some(SidebarSize::Absolute(30));
+
+        assert_eq!(split_size(&config), TmuxSplitSize::Cells(30));
+        assert_eq!(configured_width_label(&config), "30");
+
+        config.sidebar.width = Some(SidebarSize::Percent(25));
+
+        assert_eq!(split_size(&config), TmuxSplitSize::Percent(25));
+        assert_eq!(configured_width_label(&config), "25%");
+        assert_eq!(sidebar_width_cells(split_size(&config), 120), 30);
     }
 
     fn pane_snapshot(kmux_role: Option<&str>, current_command: Option<&str>) -> TmuxPaneSnapshot {

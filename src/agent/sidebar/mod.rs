@@ -1,7 +1,9 @@
-//! Hidden tmux sidebar UI for monitoring active agent sessions.
+//! Hidden tmux sidebar capability for monitoring active agent sessions.
 //!
-//! Sidebar lifecycle and rendering stay here so presentation, tmux pane repair,
-//! and keyboard navigation do not leak into workspace lifecycle workflows.
+//! This module is the thin inbound CLI adapter for sidebar commands. Tmux hook,
+//! pane lifecycle, row-query, action, runtime, and rendering concerns stay in
+//! focused sibling modules so workspace lifecycle workflows do not own sidebar
+//! presentation or tmux pane repair details.
 
 mod actions;
 mod app;

@@ -85,6 +85,24 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
 }
 
 #[test]
+fn sidebar_refresh_is_noop_when_sidebar_is_disabled() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "refresh"])
+        .assert()
+        .success();
+
+    assert_eq!(tmux.sidebar_pane_count()?, 0);
+    assert_eq!(tmux.global_option("@kmux_sidebar_enabled")?, None);
+    Ok(())
+}
+
+#[test]
 fn sidebar_on_reuses_unmarked_sidebar_shaped_pane() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {

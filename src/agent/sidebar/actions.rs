@@ -6,7 +6,7 @@
 
 use anyhow::Result;
 
-use super::hooks::run_selection_hooks;
+use super::hooks::{SelectionHookInput, run_selection_hooks};
 use super::lifecycle;
 use super::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity};
 use super::selection::{
@@ -15,7 +15,7 @@ use super::selection::{
 };
 use crate::agent::status_badges::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
-use crate::state::StateStore;
+use crate::state::{AgentObservationState, AgentSessionKey, StateStore};
 use crate::tmux::Tmux;
 
 /// Intent to disable the sidebar after the current TUI process exits.
@@ -292,12 +292,47 @@ impl SidebarActions {
     }
 
     fn execute_selection_hooks(&self, intent: SidebarHookIntent) -> Result<()> {
-        run_selection_hooks(
-            &self.selection_hooks,
-            &self.store,
-            &self.tmux.instance_id(),
-            &intent.row,
-        )
+        if self.selection_hooks.is_empty() {
+            return Ok(());
+        }
+
+        let selected = self.selection_hook_input(&intent.row)?;
+        run_selection_hooks(&self.selection_hooks, &selected)
+    }
+
+    fn selection_hook_input(&self, row: &SidebarRow) -> Result<SelectionHookInput> {
+        let selection = &row.selection;
+        let observations = self.selected_observations(&selection.key)?;
+        Ok(SelectionHookInput::new(
+            selection.key.clone(),
+            selection.status,
+            selection.title.clone(),
+            selection.context.clone(),
+            selection.target.clone(),
+            observations,
+        ))
+    }
+
+    fn selected_observations(
+        &self,
+        session: &AgentSessionKey,
+    ) -> Result<Vec<AgentObservationState>> {
+        let tmux_instance = self.tmux.instance_id();
+        Ok(self
+            .store
+            .list_observations()?
+            .into_iter()
+            // Preserve hook scoping: selected session, current tmux instance,
+            // plus unscoped legacy observations from older producers.
+            .filter(|observation| {
+                observation.key.session == *session
+                    && observation
+                        .target
+                        .tmux_instance
+                        .as_deref()
+                        .is_none_or(|target_instance| target_instance == tmux_instance)
+            })
+            .collect())
     }
 }
 
@@ -305,9 +340,10 @@ impl SidebarActions {
 mod tests {
     use super::*;
     use crate::agent::sidebar::test_support::{report_state, row_from_view};
-    use crate::state::{AgentSessionKey, AgentStatus};
+    use crate::state::{AgentObservationKey, AgentObservationState, AgentSessionKey, AgentStatus};
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
     use anyhow::Result;
+    use std::fs;
     use tempfile::{TempDir, tempdir};
 
     struct SidebarActionFixture {
@@ -444,6 +480,92 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn selection_hooks_receive_selected_observations_for_current_tmux_instance() -> Result<()> {
+        let dir = tempdir()?;
+        let payload_path = dir.path().join("payload.json");
+        let store = crate::agent::sidebar::test_support::empty_state_store();
+        let mut row = server_row_in_window("ses_selected", "Selected", "@1");
+        row.selection.target.tmux_instance = Some("default".to_owned());
+        let mut selected_server = observation_for_row(&row, "server", "default-server");
+        selected_server.target.tmux_instance = Some("default".to_owned());
+        let mut selected_legacy = observation_for_row(&row, "tui", "legacy-pane");
+        selected_legacy.target.tmux_instance = None;
+        let mut selected_other_instance = observation_for_row(&row, "server", "other-instance");
+        selected_other_instance.target.tmux_instance = Some("other".to_owned());
+        let mut other_session = observation_for_row(
+            &server_row_in_window("ses_other", "Other", "@1"),
+            "server",
+            "other-session",
+        );
+        other_session.target.tmux_instance = Some("default".to_owned());
+        for observation in [
+            selected_server,
+            selected_legacy,
+            selected_other_instance,
+            other_session,
+        ] {
+            store.upsert_observation(&observation)?;
+        }
+        let command = format!("cat > '{}'", payload_path.display());
+        let actions = SidebarActions::new(
+            Tmux::new(),
+            store,
+            StatusIcons::default(),
+            vec![hook_config(&command, Some("opencode"), None, Some(1000))],
+        );
+
+        actions.execute_selection_hooks(SidebarHookIntent::new(row))?;
+
+        let payload: serde_json::Value = serde_json::from_str(&fs::read_to_string(payload_path)?)?;
+        let producers = payload["observations"]
+            .as_array()
+            .expect("observations should be an array")
+            .iter()
+            .map(|observation| {
+                observation["producer_instance"]
+                    .as_str()
+                    .expect("producer instance should be a string")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(producers, vec!["default-server", "legacy-pane"]);
+        Ok(())
+    }
+
+    #[test]
+    fn producer_kind_hooks_ignore_observations_outside_current_tmux_instance() -> Result<()> {
+        let dir = tempdir()?;
+        let marker_path = dir.path().join("marker");
+        let store = crate::agent::sidebar::test_support::empty_state_store();
+        let mut row = server_row_in_window("ses_selected", "Selected", "@1");
+        row.selection.target.tmux_instance = Some("default".to_owned());
+        let mut out_of_scope_server = observation_for_row(&row, "server", "other-instance");
+        out_of_scope_server.target.tmux_instance = Some("other".to_owned());
+        let mut selected_legacy_tui = observation_for_row(&row, "tui", "legacy-pane");
+        selected_legacy_tui.target.tmux_instance = None;
+        for observation in [out_of_scope_server, selected_legacy_tui] {
+            store.upsert_observation(&observation)?;
+        }
+        let command = format!("touch '{}'", marker_path.display());
+        let actions = SidebarActions::new(
+            Tmux::new(),
+            store,
+            StatusIcons::default(),
+            vec![hook_config(
+                &command,
+                Some("opencode"),
+                Some("server"),
+                Some(1000),
+            )],
+        );
+
+        actions.execute_selection_hooks(SidebarHookIntent::new(row))?;
+
+        assert!(!marker_path.exists());
+        Ok(())
+    }
+
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
         report.key = session_key("opencode", session_id);
@@ -457,6 +579,43 @@ mod tests {
         AgentSessionKey {
             agent_kind: agent_kind.to_owned(),
             session_id: session_id.to_owned(),
+        }
+    }
+
+    fn hook_config(
+        command: &str,
+        agent_kind: Option<&str>,
+        producer_kind: Option<&str>,
+        timeout_ms: Option<u64>,
+    ) -> SidebarSelectionHookConfig {
+        SidebarSelectionHookConfig {
+            command: command.to_owned(),
+            agent_kind: agent_kind.map(str::to_owned),
+            producer_kind: producer_kind.map(str::to_owned),
+            timeout_ms,
+        }
+    }
+
+    fn observation_for_row(
+        row: &SidebarRow,
+        producer_kind: &str,
+        producer_instance: &str,
+    ) -> AgentObservationState {
+        AgentObservationState {
+            key: AgentObservationKey {
+                session: row.selection.key.clone(),
+                producer_kind: producer_kind.to_owned(),
+                producer_instance: producer_instance.to_owned(),
+            },
+            created_at: 100,
+            status: Some(row.selection.status),
+            status_observed_at: Some(100),
+            status_changed_at: Some(100),
+            working_elapsed_secs: 0,
+            observed_at: 100,
+            title: row.selection.title.clone(),
+            context: row.selection.context.clone(),
+            target: row.selection.target.clone(),
         }
     }
 }

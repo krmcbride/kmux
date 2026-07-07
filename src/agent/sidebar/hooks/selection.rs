@@ -9,25 +9,53 @@ use serde::Serialize;
 
 use super::diagnostics::{self, HookAttemptLog};
 use super::runner::{self, HookCommand, HookCommandOutcome};
-use crate::agent::sidebar::model::SidebarRow;
 use crate::config::SidebarSelectionHookConfig;
-use crate::state::{AgentLocationHints, AgentObservationState, AgentStatus, StateStore};
+use crate::state::{AgentLocationHints, AgentObservationState, AgentSessionKey, AgentStatus};
 
 const HOOK_EVENT: &str = "sidebar.select";
 
-/// Run configured selection hooks that match the selected sidebar row.
+/// Resolved selected-session data used to build the external hook payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::agent::sidebar) struct SelectionHookInput {
+    key: AgentSessionKey,
+    status: AgentStatus,
+    title: Option<String>,
+    context: Option<String>,
+    target: AgentLocationHints,
+    observations: Vec<AgentObservationState>,
+}
+
+/// Run configured selection hooks that match the resolved selected session.
 pub(super) fn run_selection_hooks(
     hooks: &[SidebarSelectionHookConfig],
-    store: &StateStore,
-    tmux_instance: &str,
-    row: &SidebarRow,
+    selected: &SelectionHookInput,
 ) -> Result<()> {
     if hooks.is_empty() {
         return Ok(());
     }
 
-    let observations = selected_observations(store, row, tmux_instance)?;
-    run_hooks_with_observations(hooks, row, &observations)
+    run_hooks_for_input(hooks, selected)
+}
+
+impl SelectionHookInput {
+    /// Build hook input from resolved selected-session data and pre-filtered observations.
+    pub(in crate::agent::sidebar) fn new(
+        key: AgentSessionKey,
+        status: AgentStatus,
+        title: Option<String>,
+        context: Option<String>,
+        target: AgentLocationHints,
+        observations: Vec<AgentObservationState>,
+    ) -> Self {
+        Self {
+            key,
+            status,
+            title,
+            context,
+            target,
+            observations,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,42 +126,20 @@ struct SelectionHookObservationPayload {
     target: SelectionHookTargetPayload,
 }
 
-fn selected_observations(
-    store: &StateStore,
-    row: &SidebarRow,
-    tmux_instance: &str,
-) -> Result<Vec<AgentObservationState>> {
-    let session = &row.selection.key;
-    Ok(store
-        .list_observations()?
-        .into_iter()
-        .filter(|observation| {
-            observation.key.session == *session
-                && observation
-                    .target
-                    .tmux_instance
-                    .as_deref()
-                    .is_none_or(|target_instance| target_instance == tmux_instance)
-        })
-        .collect())
-}
-
-fn run_hooks_with_observations(
+fn run_hooks_for_input(
     hooks: &[SidebarSelectionHookConfig],
-    row: &SidebarRow,
-    observations: &[AgentObservationState],
+    selected: &SelectionHookInput,
 ) -> Result<()> {
     let log_path = diagnostics::default_log_path().ok();
-    run_hooks_with_observations_and_log_path(hooks, row, observations, log_path.as_deref())
+    run_hooks_for_input_and_log_path(hooks, selected, log_path.as_deref())
 }
 
-fn run_hooks_with_observations_and_log_path(
+fn run_hooks_for_input_and_log_path(
     hooks: &[SidebarSelectionHookConfig],
-    row: &SidebarRow,
-    observations: &[AgentObservationState],
+    selected: &SelectionHookInput,
     log_path: Option<&Path>,
 ) -> Result<()> {
-    let payload = payload_for_row(row, observations);
+    let payload = payload_for_selection(selected);
     let payload_json = serde_json::to_vec_pretty(&payload)?;
     let mut failures = Vec::new();
 
@@ -227,22 +233,20 @@ fn finish_hook_attempt(
     Ok(())
 }
 
-fn payload_for_row(
-    row: &SidebarRow,
-    observations: &[AgentObservationState],
-) -> SelectionHookPayload {
+fn payload_for_selection(selected: &SelectionHookInput) -> SelectionHookPayload {
     SelectionHookPayload {
         version: 1,
         event: HOOK_EVENT,
         agent: SelectionHookAgentPayload {
-            kind: row.selection.key.agent_kind.clone(),
-            session_id: row.selection.key.session_id.clone(),
+            kind: selected.key.agent_kind.clone(),
+            session_id: selected.key.session_id.clone(),
         },
-        status: row.selection.status,
-        title: row.selection.title.clone(),
-        context: row.selection.context.clone(),
-        target: SelectionHookTargetPayload::from_hints(&row.selection.target),
-        observations: observations
+        status: selected.status,
+        title: selected.title.clone(),
+        context: selected.context.clone(),
+        target: SelectionHookTargetPayload::from_hints(&selected.target),
+        observations: selected
+            .observations
             .iter()
             .map(SelectionHookObservationPayload::from_observation)
             .collect(),
@@ -381,53 +385,95 @@ impl SelectionHookObservationPayload {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
     use std::fs;
     use std::time::{Duration, Instant};
 
-    use serde_json::Value;
+    use serde_json::{Value, json};
     use tempfile::tempdir;
 
     use super::*;
-    use crate::agent::sidebar::test_support::{report_state, row_from_view};
+    use crate::agent::sessions::AgentSessionView;
+    use crate::agent::sidebar::test_support::report_state;
     use crate::state::{AgentObservationKey, AgentSessionKey};
 
     #[test]
-    fn payload_serializes_selected_row_and_observations() {
+    fn payload_serializes_selected_session_and_observations() {
         let mut view = report_state(AgentStatus::Waiting, 100, "@1", "%1");
         view.title = Some("Implement hooks".to_owned());
         view.context = Some("55.2K".to_owned());
         view.target.directory = Some("/repo/worktree".to_owned());
         view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
-        let row = row_from_view(&view, 100);
-        let observation = observation_for_row(&row, "server", "http://127.0.0.1:4096");
+        let mut selected = input_from_view(&view, Vec::new());
+        selected.observations = vec![observation_for_input(
+            &selected,
+            "server",
+            "http://127.0.0.1:4096",
+        )];
 
-        let payload = payload_for_row(&row, &[observation]);
+        let payload = payload_for_selection(&selected);
         let json = serde_json::to_value(payload).expect("payload should serialize");
 
-        assert_eq!(json["version"], 1);
-        assert_eq!(json["event"], HOOK_EVENT);
-        assert_eq!(json["agent"]["kind"], "opencode");
-        assert_eq!(json["agent"]["session_id"], "ses_%1");
-        assert_eq!(json["status"], "waiting");
-        assert_eq!(json["target"]["tmux_window_id"], "@1");
-        assert_eq!(json["target"]["directory"], "/repo/worktree");
-        assert_eq!(json["target"]["agent_workspace_id"], "wrk_01KTEST");
-        assert_eq!(json["observations"][0]["producer_kind"], "server");
         assert_eq!(
-            json["observations"][0]["producer_instance"],
-            "http://127.0.0.1:4096"
-        );
-        assert_eq!(
-            json["observations"][0]["target"]["agent_workspace_id"],
-            "wrk_01KTEST"
+            json,
+            json!({
+                "version": 1,
+                "event": HOOK_EVENT,
+                "agent": {
+                    "kind": "opencode",
+                    "session_id": "ses_%1",
+                },
+                "status": "waiting",
+                "title": "Implement hooks",
+                "context": "55.2K",
+                "target": {
+                    "tmux_instance": "test",
+                    "tmux_session_name": "project",
+                    "tmux_window_name": "kmux-feature-sidebar",
+                    "tmux_window_id": "@1",
+                    "tmux_pane_id": "%1",
+                    "tmux_pane_title": "Implement sidebar",
+                    "tmux_pane_current_command": "nvim",
+                    "git_repo_name": "kmux",
+                    "git_repo_path": "/repo",
+                    "kmux_workspace_slug": "feature-sidebar",
+                    "agent_workspace_id": "wrk_01KTEST",
+                    "git_worktree_path": "/repo__worktrees/feature-sidebar",
+                    "git_branch": "feature/sidebar",
+                    "directory": "/repo/worktree",
+                },
+                "observations": [{
+                    "producer_kind": "server",
+                    "producer_instance": "http://127.0.0.1:4096",
+                    "status": "waiting",
+                    "observed_at": 100,
+                    "title": "Implement hooks",
+                    "context": "55.2K",
+                    "target": {
+                        "tmux_instance": "test",
+                        "tmux_session_name": "project",
+                        "tmux_window_name": "kmux-feature-sidebar",
+                        "tmux_window_id": "@1",
+                        "tmux_pane_id": "%1",
+                        "tmux_pane_title": "Implement sidebar",
+                        "tmux_pane_current_command": "nvim",
+                        "git_repo_name": "kmux",
+                        "git_repo_path": "/repo",
+                        "kmux_workspace_slug": "feature-sidebar",
+                        "agent_workspace_id": "wrk_01KTEST",
+                        "git_worktree_path": "/repo__worktrees/feature-sidebar",
+                        "git_branch": "feature/sidebar",
+                        "directory": "/repo/worktree",
+                    },
+                }],
+            })
         );
     }
 
     #[test]
     fn hook_filters_by_agent_kind_and_producer_kind() {
-        let row = row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100);
-        let observation = observation_for_row(&row, "server", "http://127.0.0.1:4096");
-        let payload = payload_for_row(&row, &[observation]);
+        let selected = input_with_observation("server", "http://127.0.0.1:4096");
+        let payload = payload_for_selection(&selected);
 
         assert!(hook_matches_payload(
             &hook_config("true", Some("opencode"), Some("server"), None),
@@ -445,8 +491,9 @@ mod tests {
 
     #[test]
     fn agent_kind_only_hook_matches_without_observations() {
-        let row = row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100);
-        let payload = payload_for_row(&row, &[]);
+        let selected =
+            input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
+        let payload = payload_for_selection(&selected);
 
         assert!(hook_matches_payload(
             &hook_config("true", Some("opencode"), None, None),
@@ -455,12 +502,95 @@ mod tests {
     }
 
     #[test]
+    fn hook_env_preserves_selection_compatibility_variables() {
+        let mut view = report_state(AgentStatus::Working, 100, "@1", "%1");
+        view.target.directory = Some("/repo/worktree".to_owned());
+        view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
+        let selected = input_from_view(&view, vec![]);
+        let payload = payload_for_selection(&selected);
+
+        let env = env_map(hook_env(&payload, None));
+
+        assert_eq!(
+            env.get("KMUX_HOOK_EVENT").map(String::as_str),
+            Some(HOOK_EVENT)
+        );
+        assert_eq!(
+            env.get("KMUX_AGENT_KIND").map(String::as_str),
+            Some("opencode")
+        );
+        assert_eq!(
+            env.get("KMUX_AGENT_SESSION_ID").map(String::as_str),
+            Some("ses_%1")
+        );
+        assert_eq!(
+            env.get("KMUX_AGENT_STATUS").map(String::as_str),
+            Some("working")
+        );
+        assert_eq!(
+            env.get("KMUX_TMUX_INSTANCE").map(String::as_str),
+            Some("test")
+        );
+        assert_eq!(
+            env.get("KMUX_TMUX_SESSION_NAME").map(String::as_str),
+            Some("project")
+        );
+        assert_eq!(
+            env.get("KMUX_TMUX_WINDOW_NAME").map(String::as_str),
+            Some("kmux-feature-sidebar")
+        );
+        assert_eq!(
+            env.get("KMUX_TMUX_WINDOW_ID").map(String::as_str),
+            Some("@1")
+        );
+        assert_eq!(env.get("KMUX_TMUX_PANE_ID").map(String::as_str), Some("%1"));
+        assert_eq!(
+            env.get("KMUX_DIRECTORY").map(String::as_str),
+            Some("/repo/worktree")
+        );
+        assert_eq!(
+            env.get("KMUX_GIT_WORKTREE_PATH").map(String::as_str),
+            Some("/repo__worktrees/feature-sidebar")
+        );
+        assert_eq!(
+            env.get("KMUX_GIT_BRANCH").map(String::as_str),
+            Some("feature/sidebar")
+        );
+        assert_eq!(
+            env.get("KMUX_WORKSPACE_SLUG").map(String::as_str),
+            Some("feature-sidebar")
+        );
+        assert_eq!(
+            env.get("KMUX_AGENT_WORKSPACE_ID").map(String::as_str),
+            Some("wrk_01KTEST")
+        );
+        assert_eq!(env.get("KMUX_HOOK_LOG"), None);
+    }
+
+    #[test]
+    fn hook_current_dir_prefers_worktree_path_and_falls_back_to_directory() -> Result<()> {
+        let worktree = tempdir()?;
+        let directory = tempdir()?;
+        let mut target = SelectionHookTargetPayload {
+            git_worktree_path: Some(worktree.path().display().to_string()),
+            directory: Some(directory.path().display().to_string()),
+            ..SelectionHookTargetPayload::default()
+        };
+
+        assert_eq!(hook_current_dir(&target).as_deref(), Some(worktree.path()));
+
+        target.git_worktree_path = Some(worktree.path().join("missing").display().to_string());
+        assert_eq!(hook_current_dir(&target).as_deref(), Some(directory.path()));
+        Ok(())
+    }
+
+    #[test]
     fn matching_hook_receives_payload_env_and_selected_cwd() -> Result<()> {
         let dir = tempdir()?;
         let mut view = report_state(AgentStatus::Working, 100, "@1", "%1");
         view.target.git_worktree_path = Some(dir.path().display().to_string());
         view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
-        let row = row_from_view(&view, 100);
+        let selected = input_from_view(&view, vec![]);
         let payload_path = dir.path().join("payload.json");
         let session_path = dir.path().join("session.txt");
         let workspace_path = dir.path().join("workspace.txt");
@@ -473,10 +603,9 @@ mod tests {
             cwd_path.display()
         );
 
-        run_hooks_with_observations_and_log_path(
+        run_hooks_for_input_and_log_path(
             &[hook_config(&command, Some("opencode"), None, Some(1000))],
-            &row,
-            &[],
+            &selected,
             None,
         )?;
 
@@ -495,13 +624,13 @@ mod tests {
     fn non_matching_hook_is_not_run() -> Result<()> {
         let dir = tempdir()?;
         let marker = dir.path().join("marker");
-        let row = row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100);
+        let selected =
+            input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
         let command = format!("touch '{}'", marker.display());
 
-        run_hooks_with_observations_and_log_path(
+        run_hooks_for_input_and_log_path(
             &[hook_config(&command, Some("codex"), None, Some(1000))],
-            &row,
-            &[],
+            &selected,
             None,
         )?;
 
@@ -514,16 +643,16 @@ mod tests {
         let dir = tempdir()?;
         let log_path = dir.path().join("sidebar-hooks.jsonl");
         let log_env_path = dir.path().join("log-env.txt");
-        let row = row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100);
+        let selected =
+            input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
         let command = format!(
             "printf '%s' \"$KMUX_HOOK_LOG\" > '{}'; printf 'server missing' >&2; exit 7",
             log_env_path.display()
         );
 
-        let error = run_hooks_with_observations_and_log_path(
+        let error = run_hooks_for_input_and_log_path(
             &[hook_config(&command, Some("opencode"), None, Some(1000))],
-            &row,
-            &[],
+            &selected,
             Some(&log_path),
         )
         .expect_err("failing hook should report an error");
@@ -545,13 +674,39 @@ mod tests {
     }
 
     #[test]
-    fn hook_timeout_is_reported() {
-        let row = row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100);
+    fn successful_hook_logs_ok_status() -> Result<()> {
+        let dir = tempdir()?;
+        let log_path = dir.path().join("sidebar-hooks.jsonl");
+        let selected =
+            input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
 
-        let error = run_hooks_with_observations_and_log_path(
+        run_hooks_for_input_and_log_path(
+            &[hook_config(
+                "printf selected",
+                Some("opencode"),
+                None,
+                Some(1000),
+            )],
+            &selected,
+            Some(&log_path),
+        )?;
+
+        let entry = read_single_log_entry(&log_path)?;
+        assert_eq!(entry["status"], "ok");
+        assert_eq!(entry["agent_session_id"], "ses_%1");
+        assert_eq!(entry["stdout"], "selected");
+        assert!(entry.get("error").is_none());
+        Ok(())
+    }
+
+    #[test]
+    fn hook_timeout_is_reported() {
+        let selected =
+            input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
+
+        let error = run_hooks_for_input_and_log_path(
             &[hook_config("sleep 1", Some("opencode"), None, Some(10))],
-            &row,
-            &[],
+            &selected,
             None,
         )
         .expect_err("timeout should fail");
@@ -560,16 +715,41 @@ mod tests {
     }
 
     #[test]
+    fn timeout_hook_logs_timed_out_status() -> Result<()> {
+        let dir = tempdir()?;
+        let log_path = dir.path().join("sidebar-hooks.jsonl");
+        let selected =
+            input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
+
+        let error = run_hooks_for_input_and_log_path(
+            &[hook_config("sleep 1", Some("opencode"), None, Some(10))],
+            &selected,
+            Some(&log_path),
+        )
+        .expect_err("timeout should fail");
+
+        assert!(error.to_string().contains("timed out"));
+        let entry = read_single_log_entry(&log_path)?;
+        assert_eq!(entry["status"], "timed_out");
+        assert!(
+            entry["error"]
+                .as_str()
+                .is_some_and(|error| error.contains("timed out"))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn hook_timeout_covers_commands_that_ignore_large_stdin() {
-        let row = row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100);
-        let mut observation = observation_for_row(&row, "server", "http://127.0.0.1:4096");
+        let mut selected = input_with_observation("server", "http://127.0.0.1:4096");
+        let mut observation = selected.observations.remove(0);
         observation.title = Some("x".repeat(1024 * 1024));
+        selected.observations.push(observation);
         let started = Instant::now();
 
-        let error = run_hooks_with_observations_and_log_path(
+        let error = run_hooks_for_input_and_log_path(
             &[hook_config("sleep 1", Some("opencode"), None, Some(25))],
-            &row,
-            &[observation],
+            &selected,
             None,
         )
         .expect_err("timeout should fail before large stdin can block");
@@ -592,29 +772,72 @@ mod tests {
         }
     }
 
-    fn observation_for_row(
-        row: &SidebarRow,
+    fn input_with_observation(producer_kind: &str, producer_instance: &str) -> SelectionHookInput {
+        let mut selected = input_from_view(
+            &report_state(AgentStatus::Working, 100, "@1", "%1"),
+            Vec::new(),
+        );
+        selected.observations = vec![observation_for_input(
+            &selected,
+            producer_kind,
+            producer_instance,
+        )];
+        selected
+    }
+
+    fn input_from_view(
+        view: &AgentSessionView,
+        observations: Vec<AgentObservationState>,
+    ) -> SelectionHookInput {
+        SelectionHookInput::new(
+            view.key.clone(),
+            view.status,
+            view.title.clone(),
+            view.context.clone(),
+            view.location_hints().clone(),
+            observations,
+        )
+    }
+
+    fn observation_for_input(
+        selected: &SelectionHookInput,
         producer_kind: &str,
         producer_instance: &str,
     ) -> AgentObservationState {
         AgentObservationState {
             key: AgentObservationKey {
                 session: AgentSessionKey {
-                    agent_kind: row.selection.key.agent_kind.clone(),
-                    session_id: row.selection.key.session_id.clone(),
+                    agent_kind: selected.key.agent_kind.clone(),
+                    session_id: selected.key.session_id.clone(),
                 },
                 producer_kind: producer_kind.to_owned(),
                 producer_instance: producer_instance.to_owned(),
             },
             created_at: 100,
-            status: Some(row.selection.status),
+            status: Some(selected.status),
             status_observed_at: Some(100),
             status_changed_at: Some(100),
             working_elapsed_secs: 0,
             observed_at: 100,
-            title: row.selection.title.clone(),
-            context: row.selection.context.clone(),
-            target: row.selection.target.clone(),
+            title: selected.title.clone(),
+            context: selected.context.clone(),
+            target: selected.target.clone(),
         }
+    }
+
+    fn env_map(env: Vec<(OsString, OsString)>) -> BTreeMap<String, String> {
+        env.into_iter()
+            .map(|(key, value)| {
+                (
+                    key.to_string_lossy().into_owned(),
+                    value.to_string_lossy().into_owned(),
+                )
+            })
+            .collect()
+    }
+
+    fn read_single_log_entry(log_path: &Path) -> Result<Value> {
+        let log = fs::read_to_string(log_path)?;
+        Ok(serde_json::from_str(log.trim())?)
     }
 }

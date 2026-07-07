@@ -52,7 +52,7 @@ impl SidebarRowIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Hook-facing context for a selected sidebar row.
+/// Non-display selected-session data carried with a row for sidebar actions.
 pub(super) struct SidebarRowSelection {
     pub(super) key: AgentSessionKey,
     pub(super) status: AgentStatus,
