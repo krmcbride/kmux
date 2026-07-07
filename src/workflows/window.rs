@@ -11,7 +11,7 @@ pub(super) fn create_resolved(
     resolved: &ResolvedWorkspace,
     focus: bool,
 ) -> Result<()> {
-    let window_name = repo.config.workspace_window_name(&resolved.workspace_slug);
+    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     if tmux
         .tmux
         .window_exists_by_name(&tmux.session_name, &window_name)?
@@ -19,7 +19,7 @@ pub(super) fn create_resolved(
         bail!(
             "tmux window '{}' already exists for workspace '{}'; remove it before creating the workspace",
             window_name,
-            resolved.workspace_slug
+            resolved.workspace_slug()
         );
     }
 
@@ -27,7 +27,7 @@ pub(super) fn create_resolved(
     tmux.tmux.create_window_with_command(
         &tmux.session_name,
         &window_name,
-        &resolved.path,
+        resolved.path(),
         command,
     )?;
     if focus {
@@ -42,7 +42,7 @@ pub(super) fn restore_resolved(
     tmux: &TmuxContext,
     resolved: &ResolvedWorkspace,
 ) -> Result<()> {
-    let window_name = repo.config.workspace_window_name(&resolved.workspace_slug);
+    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     let expected_windows = tmux
         .tmux
         .list_windows(Some(&tmux.session_name))?
@@ -54,7 +54,7 @@ pub(super) fn restore_resolved(
         bail!(
             "multiple tmux windows are named '{}' for workspace '{}'; remove duplicates before restoring",
             window_name,
-            resolved.workspace_slug
+            resolved.workspace_slug()
         );
     }
 
@@ -66,7 +66,7 @@ pub(super) fn restore_resolved(
     tmux.tmux.create_window_with_command(
         &tmux.session_name,
         &window_name,
-        &resolved.path,
+        resolved.path(),
         command,
     )?;
     Ok(())

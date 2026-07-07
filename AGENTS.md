@@ -2,6 +2,10 @@
 
 These instructions apply to this repository in addition to the user-level agent rules.
 
+## Tooling Notes
+
+- In sandboxed agent environments, `bun` commands under `integrations/opencode` may fail with `CouldntReadCurrentDirectory` or `Cannot read directory "/home/": AccessDenied` because Bun walks parent dirs outside the sandbox. Treat this as expected and work around it by running local tool binaries directly when possible, such as `./node_modules/.bin/tsc` or `./node_modules/.bin/biome`.
+
 ## Rust Module Style
 
 - Use `pub(crate)` primarily at crate boundary declarations in `src/lib.rs`, such as top-level modules that are internal to the crate.

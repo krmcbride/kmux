@@ -26,8 +26,8 @@ pub struct WorkspaceTarget<'a> {
 }
 
 impl<'a> WorkspaceTarget<'a> {
-    /// Build a workspace target from the identifiers known for a Git worktree.
-    pub fn new(_workspace_slug: Option<String>, _branch: Option<String>, path: &'a Path) -> Self {
+    /// Build a workspace target from the canonical Git worktree root.
+    pub fn new(path: &'a Path) -> Self {
         Self { path }
     }
 }
@@ -155,7 +155,7 @@ mod tests {
 
     #[test]
     fn any_hint_match_requires_path_hint() {
-        let target = WorkspaceTarget::new(None, None, Path::new("/repo/project"));
+        let target = WorkspaceTarget::new(Path::new("/repo/project"));
         let view = view_with_target(AgentLocationHints::default());
 
         assert!(!view_matches_workspace(
@@ -165,12 +165,8 @@ mod tests {
         ));
     }
 
-    fn target<'a>(workspace_slug: &str, branch: &str, path: &'a str) -> WorkspaceTarget<'a> {
-        WorkspaceTarget::new(
-            Some(workspace_slug.to_owned()),
-            Some(branch.to_owned()),
-            Path::new(path),
-        )
+    fn target<'a>(_workspace_slug: &str, _branch: &str, path: &'a str) -> WorkspaceTarget<'a> {
+        WorkspaceTarget::new(Path::new(path))
     }
 
     fn view_with_target(target: AgentLocationHints) -> AgentSessionView {

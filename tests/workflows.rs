@@ -554,6 +554,34 @@ fn add_is_create_only_when_branch_already_exists() -> Result<()> {
 }
 
 #[test]
+fn add_rejects_workspace_slug_collision() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/auth", "--background"])
+        .assert()
+        .success();
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature-auth", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "workspace slug 'feature-auth' already exists",
+        ))
+        .stderr(predicate::str::contains(
+            "for branch 'feature/auth', not 'feature-auth'",
+        ));
+
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature-auth"]).is_err());
+    Ok(())
+}
+
+#[test]
 fn add_rejects_window_only_partial_workspace() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {

@@ -399,14 +399,7 @@ fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
 }
 
 fn workspace_target(worktree: &WorktreeInfo) -> WorkspaceTarget<'_> {
-    WorkspaceTarget::new(
-        worktree
-            .path
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned()),
-        worktree.branch.clone(),
-        &worktree.path,
-    )
+    WorkspaceTarget::new(&worktree.path)
 }
 
 fn status_icon(status: StoredAgentStatus, icons: &StatusIcons) -> &str {

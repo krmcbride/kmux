@@ -10,10 +10,10 @@ use super::resolve::{ResolvedWorkspace, resolve_current_kmux_workspace, resolve_
 pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let (resolved, parent) = resolve_target(&repo, args)?;
-    let child = resolved.branch.as_ref().ok_or_else(|| {
+    let child = resolved.branch().ok_or_else(|| {
         anyhow::anyhow!(
             "workspace '{}' has no known git branch and cannot have a parent",
-            resolved.workspace_slug
+            resolved.workspace_slug()
         )
     })?;
 

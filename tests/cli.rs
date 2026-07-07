@@ -139,10 +139,30 @@ fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
         &repo,
         &["worktree", "add", "-b", "feature/active", &active_arg],
     )?;
+    let legacy = worktree_base.join("custom-completion");
+    let legacy_arg = legacy.display().to_string();
+    git(
+        &repo,
+        &[
+            "worktree",
+            "add",
+            "-b",
+            "feature/legacy-completion",
+            &legacy_arg,
+        ],
+    )?;
+    let detached = worktree_base.join("detached-completion");
+    let detached_arg = detached.display().to_string();
+    git(
+        &repo,
+        &["worktree", "add", "--detach", &detached_arg, "HEAD"],
+    )?;
 
     let workspaces = kmux_stdout(&repo, &["_complete-workspaces"])?;
     assert!(workspaces.lines().any(|line| line == "feature-active"));
     assert!(!workspaces.lines().any(|line| line == "project"));
+    assert!(!workspaces.lines().any(|line| line == "custom-completion"));
+    assert!(!workspaces.lines().any(|line| line == "detached-completion"));
 
     let add_branches = kmux_stdout(&repo, &["_complete-add-branches"])?;
     assert!(add_branches.lines().any(|line| line == "feature/addable"));

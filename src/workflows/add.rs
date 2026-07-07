@@ -96,17 +96,17 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
         &workspace_slug,
     )?;
 
-    let resolved = ResolvedWorkspace {
+    let resolved = ResolvedWorkspace::from_created_kmux_workspace(
         workspace_slug,
-        path: worktree_path,
-        branch: Some(target.branch.clone()),
-    };
+        worktree_path,
+        target.branch.clone(),
+    )?;
     create_resolved(&repo, &tmux, &resolved, !args.background)?;
     record_parent(&repo, &target.branch, &target.parent)?;
     println!(
         "created {}\t{}",
-        resolved.workspace_slug,
-        resolved.path.display()
+        resolved.workspace_slug(),
+        resolved.path().display()
     );
     Ok(())
 }
@@ -114,19 +114,19 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
 // Existing kmux worktrees are create-only conflicts, even when the tmux window
 // is gone. `kmux restore` owns tmux reconciliation for those cases.
 fn bail_existing_workspace(expected_branch: &str, resolved: ResolvedWorkspace) -> Result<()> {
-    if resolved.branch.as_deref() != Some(expected_branch) {
+    if resolved.branch() != Some(expected_branch) {
         bail!(
             "workspace slug '{}' already exists at {} for branch '{}', not '{}'",
-            resolved.workspace_slug,
-            resolved.path.display(),
-            resolved.branch.as_deref().unwrap_or("<unknown>"),
+            resolved.workspace_slug(),
+            resolved.path().display(),
+            resolved.branch().unwrap_or("<unknown>"),
             expected_branch
         );
     }
     bail!(
         "workspace for '{}' already exists at {}; use 'kmux restore' to restore tmux windows",
         expected_branch,
-        resolved.path.display()
+        resolved.path().display()
     );
 }
 

@@ -10,7 +10,7 @@ use clap_complete::{Shell, generate as generate_for_shell};
 use crate::cli;
 use crate::git::Git;
 use crate::paths::RepoPaths;
-use crate::slug::workspace_slug_from_branch;
+use crate::workspace::strict_kmux_workspace_records;
 
 /// Print static clap completions plus kmux dynamic completion hooks for a shell.
 pub fn generate(shell: Shell) -> Result<()> {
@@ -78,27 +78,12 @@ fn kmux_workspaces() -> Vec<String> {
         return Vec::new();
     };
 
-    let mut workspaces = worktrees
+    let Ok(records) = strict_kmux_workspace_records(&paths, worktrees) else {
+        return Vec::new();
+    };
+    let mut workspaces = records
         .into_iter()
-        .filter(|worktree| worktree.path.parent() == Some(paths.worktree_base_dir.as_path()))
-        .filter(|worktree| {
-            let Some(branch) = worktree.branch.as_deref() else {
-                return false;
-            };
-            let Ok(expected_slug) = workspace_slug_from_branch(branch) else {
-                return false;
-            };
-            worktree
-                .path
-                .file_name()
-                .is_some_and(|file_name| file_name == expected_slug.as_str())
-        })
-        .filter_map(|worktree| {
-            worktree
-                .path
-                .file_name()
-                .map(|name| name.to_string_lossy().into_owned())
-        })
+        .map(|record| record.workspace_slug().to_owned())
         .collect::<Vec<_>>();
     workspaces.sort();
     workspaces.dedup();

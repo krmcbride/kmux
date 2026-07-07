@@ -16,17 +16,17 @@ pub(super) fn run() -> Result<()> {
     }
 
     for workspace in workspaces {
-        if workspace.branch.is_none() {
+        if workspace.branch().is_none() {
             bail!(
                 "workspace '{}' has no known git branch and cannot be restored by kmux",
-                workspace.workspace_slug
+                workspace.workspace_slug()
             );
         }
         restore_resolved(&repo, &tmux, &workspace)?;
         println!(
             "restored {}\t{}",
-            workspace.workspace_slug,
-            workspace.path.display()
+            workspace.workspace_slug(),
+            workspace.path().display()
         );
     }
 

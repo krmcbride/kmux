@@ -13,16 +13,16 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let tmux = load_tmux_context()?;
     let resolved = resolve_remove_target(&repo, args.name.as_deref())?;
 
-    if same_path(&resolved.path, &repo.paths.main_worktree) {
+    if same_path(resolved.path(), &repo.paths.main_worktree) {
         bail!(
             "cannot remove the main worktree at {}",
-            resolved.path.display()
+            resolved.path().display()
         );
     }
-    let branch = resolved.branch.as_ref().ok_or_else(|| {
+    let branch = resolved.branch().ok_or_else(|| {
         anyhow::anyhow!(
             "workspace '{}' has no known git branch and cannot be removed by kmux",
-            resolved.workspace_slug
+            resolved.workspace_slug()
         )
     })?;
     if !args.force && !repo.git.branch_is_safely_deletable(branch)? {
@@ -43,7 +43,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
             repo.paths.main_worktree.display()
         )
     })?;
-    repo.git.remove_worktree(&resolved.path, args.force)?;
+    repo.git.remove_worktree(resolved.path(), args.force)?;
     repo.git.delete_local_branch(branch, true)?;
     if state.remove_parent(branch) {
         state_store.save(&state)?;
@@ -56,7 +56,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         );
     }
 
-    let window_name = repo.config.workspace_window_name(&resolved.workspace_slug);
+    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     if tmux
         .tmux
         .window_exists_by_name(&tmux.session_name, &window_name)?
@@ -64,7 +64,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         tmux.tmux.kill_window(&tmux.session_name, &window_name)?;
     }
 
-    println!("removed {}", resolved.workspace_slug);
+    println!("removed {}", resolved.workspace_slug());
     Ok(())
 }
 

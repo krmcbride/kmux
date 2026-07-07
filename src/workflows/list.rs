@@ -45,12 +45,12 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
         .enumerate()
         .map(|(index, item)| DisplayRow {
             branch: format_branch(&items, index),
-            parent: item.git_parent_branch.as_deref().unwrap_or("-").to_owned(),
+            parent: item.git_parent_branch().unwrap_or("-").to_owned(),
             age: format_age(item, now),
             agent: format_agent(item, &agents, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
             unmerged: format_unmerged(item, &repo.git),
-            path: format_path(Path::new(&item.git_worktree_path), &current_dir),
+            path: format_path(Path::new(item.git_worktree_path()), &current_dir),
         })
         .collect::<Vec<_>>();
 
@@ -72,20 +72,20 @@ struct DisplayRow {
 // parent labels in their own column for scanability.
 fn format_branch(items: &[WorkspaceListItem], index: usize) -> String {
     let item = &items[index];
-    let branch = item.git_branch.as_deref().unwrap_or("-");
-    if item.tree_depth == 0 {
+    let branch = item.git_branch().unwrap_or("-");
+    if item.tree_depth() == 0 {
         return branch.to_owned();
     }
 
     let mut prefix = String::new();
-    for depth in 1..item.tree_depth {
+    for depth in 1..item.tree_depth() {
         if has_following_at_depth(items, index, depth) {
             prefix.push_str("│   ");
         } else {
             prefix.push_str("    ");
         }
     }
-    if has_following_at_depth(items, index, item.tree_depth) {
+    if has_following_at_depth(items, index, item.tree_depth()) {
         prefix.push_str("├── ");
     } else {
         prefix.push_str("└── ");
@@ -96,17 +96,17 @@ fn format_branch(items: &[WorkspaceListItem], index: usize) -> String {
 fn has_following_at_depth(items: &[WorkspaceListItem], index: usize, depth: usize) -> bool {
     items[index + 1..]
         .iter()
-        .take_while(|item| item.tree_depth >= depth)
-        .any(|item| item.tree_depth == depth)
+        .take_while(|item| item.tree_depth() >= depth)
+        .any(|item| item.tree_depth() == depth)
 }
 
 // Main worktree age is intentionally omitted because the column describes kmux workspaces.
 fn format_age(item: &WorkspaceListItem, now: u64) -> String {
-    if item.is_main {
+    if item.is_main() {
         return "-".to_owned();
     }
 
-    item.created_at
+    item.created_at()
         .map(|created_at| compact_age(now.saturating_sub(created_at)))
         .unwrap_or_else(|| "-".to_owned())
 }
@@ -159,11 +159,7 @@ fn format_agent(
 
 // Match agent observations against the full workspace identity that list rows know.
 fn workspace_target(item: &WorkspaceListItem) -> WorkspaceTarget<'_> {
-    WorkspaceTarget::new(
-        Some(item.workspace_slug.clone()),
-        item.git_branch.clone(),
-        Path::new(&item.git_worktree_path),
-    )
+    WorkspaceTarget::new(Path::new(item.git_worktree_path()))
 }
 
 fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {
@@ -184,11 +180,11 @@ fn format_mux(
     let Some(session_name) = session_name else {
         return "-".to_owned();
     };
-    if item.is_main {
+    if item.is_main() {
         return "-".to_owned();
     }
 
-    let window_name = config.workspace_window_name(&item.workspace_slug);
+    let window_name = config.workspace_window_name(item.workspace_slug());
     match tmux.window_exists_by_name(session_name, &window_name) {
         Ok(true) => "yes".to_owned(),
         Ok(false) | Err(_) => "-".to_owned(),
@@ -198,11 +194,11 @@ fn format_mux(
 // Show whether removal would fail the safe-delete check, but keep list resilient
 // when Git cannot answer for a transient reason.
 fn format_unmerged(item: &WorkspaceListItem, git: &crate::git::Git) -> String {
-    if item.is_main {
+    if item.is_main() {
         return "-".to_owned();
     }
 
-    let Some(branch) = item.git_branch.as_deref() else {
+    let Some(branch) = item.git_branch() else {
         return "-".to_owned();
     };
 
