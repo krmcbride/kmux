@@ -68,7 +68,7 @@ impl SidebarRowSelection {
             status: view.status,
             title: view.title.clone(),
             context: view.context.clone(),
-            target: view.target.clone(),
+            target: view.location_hints().clone(),
         }
     }
 }
@@ -154,7 +154,6 @@ impl SidebarRow {
         working_icon: Option<&str>,
         idle_after_seconds: u64,
     ) -> Self {
-        let target = &view.target;
         let primary = repo_label(view);
         let secondary = branch_label(view, &primary);
         let title = view
@@ -162,12 +161,10 @@ impl SidebarRow {
             .as_deref()
             .filter(|title| *title != primary && *title != secondary)
             .or_else(|| {
-                target
-                    .tmux_pane_title
-                    .as_deref()
+                view.tmux_pane_title()
                     .filter(|title| *title != primary && *title != secondary)
             })
-            .or(target.tmux_pane_current_command.as_deref())
+            .or_else(|| view.tmux_pane_current_command())
             .map(str::to_owned)
             .or_else(|| fallback_session_title(view, &primary, &secondary))
             .unwrap_or_default();
@@ -191,9 +188,9 @@ impl SidebarRow {
             }
         };
 
-        let session_name = target.tmux_session_name.clone().unwrap_or_default();
-        let window_id = target.tmux_window_id.clone().unwrap_or_default();
-        let pane_id = target.tmux_pane_id.clone();
+        let session_name = view.tmux_session_name().unwrap_or_default().to_owned();
+        let window_id = view.tmux_window_id().unwrap_or_default().to_owned();
+        let pane_id = view.tmux_pane_id().map(str::to_owned);
         let jump_target = jump_target_for_view(view);
 
         Self {
@@ -278,21 +275,21 @@ pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<us
 // Primary label should be stable and repo-oriented; fall back through paths,
 // tmux window name, and finally session id.
 fn repo_label(view: &AgentSessionView) -> String {
-    clean_label(view.target.git_repo_name.as_deref())
-        .or_else(|| path_label(view.target.git_repo_path.as_deref()))
-        .or_else(|| path_label(view.target.directory.as_deref()))
-        .or_else(|| path_label(view.target.git_worktree_path.as_deref()))
-        .or_else(|| clean_label(view.target.tmux_window_name.as_deref()))
+    clean_label(view.git_repo_name())
+        .or_else(|| path_label(view.git_repo_path()))
+        .or_else(|| path_label(view.directory()))
+        .or_else(|| path_label(view.git_worktree_path()))
+        .or_else(|| clean_label(view.tmux_window_name()))
         .unwrap_or_else(|| view.key.session_id.clone())
 }
 
 // Secondary label should add distinguishing context without repeating primary.
 fn branch_label(view: &AgentSessionView, primary: &str) -> String {
-    clean_label(view.target.git_branch.as_deref())
-        .or_else(|| distinct_label(view.target.kmux_workspace_slug.as_deref(), primary))
-        .or_else(|| path_distinct_label(view.target.directory.as_deref(), primary))
-        .or_else(|| path_distinct_label(view.target.git_worktree_path.as_deref(), primary))
-        .or_else(|| distinct_label(view.target.tmux_window_name.as_deref(), primary))
+    clean_label(view.git_branch())
+        .or_else(|| distinct_label(view.kmux_workspace_slug(), primary))
+        .or_else(|| path_distinct_label(view.directory(), primary))
+        .or_else(|| path_distinct_label(view.git_worktree_path(), primary))
+        .or_else(|| distinct_label(view.tmux_window_name(), primary))
         .or_else(|| fallback_session_label(view, primary))
         .unwrap_or_default()
 }
@@ -352,43 +349,34 @@ fn compact_session_id(session_id: &str) -> &str {
 }
 
 fn view_identity_key(view: &AgentSessionView) -> String {
-    view.workspace_key
-        .as_ref()
+    view.workspace_key()
         .map(|key| format!("workspace:{key}"))
         .or_else(|| {
-            view.target
-                .tmux_window_id
-                .as_ref()
+            view.tmux_window_id()
                 .map(|window_id| format!("window:{window_id}"))
         })
-        .or_else(|| {
-            view.target
-                .tmux_pane_id
-                .as_ref()
-                .map(|pane_id| format!("pane:{pane_id}"))
-        })
+        .or_else(|| view.tmux_pane_id().map(|pane_id| format!("pane:{pane_id}")))
         .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
 }
 
 fn jump_target_for_view(view: &AgentSessionView) -> SidebarJumpTarget {
     match view.tmux_target {
         AgentTmuxTarget::Window => {
-            let Some(session_name) = view.target.tmux_session_name.clone() else {
+            let Some(session_name) = view.tmux_session_name().map(str::to_owned) else {
                 return SidebarJumpTarget::None;
             };
-            let Some(window_id) = view.target.tmux_window_id.clone() else {
+            let Some(window_id) = view.tmux_window_id().map(str::to_owned) else {
                 return SidebarJumpTarget::None;
             };
             SidebarJumpTarget::Window {
                 session_name,
                 window_id,
-                pane_id: view.target.tmux_pane_id.clone(),
+                pane_id: view.tmux_pane_id().map(str::to_owned),
             }
         }
         AgentTmuxTarget::Session => view
-            .target
-            .tmux_session_name
-            .clone()
+            .tmux_session_name()
+            .map(str::to_owned)
             .map(|session_name| SidebarJumpTarget::Session { session_name })
             .unwrap_or(SidebarJumpTarget::None),
         AgentTmuxTarget::None => SidebarJumpTarget::None,

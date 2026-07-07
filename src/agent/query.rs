@@ -47,10 +47,12 @@ pub fn view_matches_workspace(
 // Identity mode requires filesystem identity. Branch and slug are useful display
 // hints, but they are not strong enough for identity-sensitive matching.
 fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
-    view.target
-        .git_worktree_path
-        .as_deref()
-        .or(view.target.directory.as_deref())
+    if let Some(workspace) = view.workspace.as_ref() {
+        return same_path(workspace.identity().root(), target.path);
+    }
+
+    view.git_worktree_path()
+        .or_else(|| view.directory())
         .is_some_and(|path| path_matches(path, target.path))
 }
 
@@ -67,7 +69,9 @@ fn path_matches(path: &str, target: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::sessions::ResolvedAgentWorkspace;
     use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
+    use std::path::PathBuf;
 
     #[test]
     fn identity_match_uses_path_when_path_hint_exists() {
@@ -108,6 +112,28 @@ mod tests {
 
         assert!(!view_matches_workspace(
             &slug_and_branch,
+            &target,
+            WorkspaceMatchMode::Identity
+        ));
+    }
+
+    #[test]
+    fn identity_match_prefers_resolved_workspace_identity_over_stale_hints() {
+        let target = target("feature", "feature", "/repo/project__worktrees/new");
+        let mut view = view_with_target(AgentLocationHints {
+            git_worktree_path: Some("/repo/project__worktrees/old".to_owned()),
+            ..AgentLocationHints::default()
+        });
+        view.workspace = Some(
+            ResolvedAgentWorkspace::from_canonical_root(
+                PathBuf::from("/repo/project__worktrees/new"),
+                "/repo/project__worktrees/new".to_owned(),
+            )
+            .expect("workspace identity should be valid"),
+        );
+
+        assert!(view_matches_workspace(
+            &view,
             &target,
             WorkspaceMatchMode::Identity
         ));
@@ -175,6 +201,7 @@ mod tests {
                 agent_kind: "opencode".to_owned(),
                 session_id: "ses".to_owned(),
             },
+            workspace: None,
             workspace_key: None,
             tmux_target: crate::agent::sessions::AgentTmuxTarget::None,
             created_at: 100,

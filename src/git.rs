@@ -85,10 +85,7 @@ impl Git {
 
     /// Resolve the current worktree root and Git common dir for this adapter's cwd.
     pub fn repo_info(&self) -> Result<RepoInfo> {
-        let current_worktree_raw = self
-            .stdout(["rev-parse", "--show-toplevel"])
-            .context("failed to locate git worktree root")?;
-        let current_worktree = resolve_existing_path(&self.cwd, current_worktree_raw.trim())?;
+        let current_worktree = self.worktree_root()?;
 
         // `--git-common-dir` is the shared metadata directory for all worktrees
         // in a repo. In a primary checkout this is `<repo>/.git`; in a linked
@@ -102,6 +99,14 @@ impl Git {
             current_worktree,
             git_common_dir,
         })
+    }
+
+    /// Return the canonical root for the Git worktree containing this adapter's cwd.
+    pub fn worktree_root(&self) -> Result<PathBuf> {
+        let current_worktree_raw = self
+            .stdout(["rev-parse", "--show-toplevel"])
+            .context("failed to locate git worktree root")?;
+        resolve_existing_path(&self.cwd, current_worktree_raw.trim())
     }
 
     /// Return the current branch name, or `None` when HEAD is detached.

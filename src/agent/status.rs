@@ -12,7 +12,7 @@ use anyhow::{Context, Result, anyhow};
 use serde::Serialize;
 
 use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
-use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget, session_views};
+use crate::agent::sessions::{AgentSessionView, session_views};
 use crate::agent::sidebar;
 use crate::cli;
 use crate::config::{Config, StatusIcons};
@@ -118,10 +118,10 @@ pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIc
     let views = session_views(store, tmux)?;
     let mut by_window = HashMap::<String, StoredAgentStatus>::new();
     for view in views {
-        if view.tmux_target != AgentTmuxTarget::Window {
+        if !view.is_window_tmux_target() {
             continue;
         }
-        let Some(window_id) = view.target.tmux_window_id else {
+        let Some(window_id) = view.tmux_window_id().map(str::to_owned) else {
             continue;
         };
         by_window
@@ -341,19 +341,19 @@ fn entry_for_view(
 ) -> StatusEntry {
     let git_worktree_path = worktree
         .map(|worktree| worktree.path.display().to_string())
-        .or_else(|| view.target.git_worktree_path.clone())
-        .or_else(|| view.target.directory.clone());
+        .or_else(|| view.git_worktree_path().map(str::to_owned))
+        .or_else(|| view.directory().map(str::to_owned));
     let workspace_slug = worktree
         .and_then(|worktree| worktree.path.file_name())
         .map(|name| name.to_string_lossy().into_owned())
-        .or_else(|| view.target.kmux_workspace_slug.clone());
+        .or_else(|| view.kmux_workspace_slug().map(str::to_owned));
     let branch = worktree
         .and_then(|worktree| worktree.branch.clone())
-        .or_else(|| view.target.git_branch.clone())
+        .or_else(|| view.git_branch().map(str::to_owned))
         .unwrap_or_else(|| "-".to_owned());
     let workspace_name = workspace_slug
         .clone()
-        .or_else(|| view.target.tmux_window_name.clone())
+        .or_else(|| view.tmux_window_name().map(str::to_owned))
         .unwrap_or_else(|| view.key.session_id.clone());
     let git = if show_git {
         git_worktree_path
@@ -375,14 +375,14 @@ fn entry_for_view(
         title: view
             .title
             .clone()
-            .or_else(|| view.target.tmux_pane_title.clone()),
+            .or_else(|| view.tmux_pane_title().map(str::to_owned)),
         context: view.context.clone(),
-        tmux_pane_id: view.target.tmux_pane_id.clone().unwrap_or_default(),
+        tmux_pane_id: view.tmux_pane_id().unwrap_or_default().to_owned(),
         workspace_slug,
         git_worktree_path,
-        tmux_session_name: view.target.tmux_session_name.clone().unwrap_or_default(),
-        tmux_window_name: view.target.tmux_window_name.clone().unwrap_or_default(),
-        tmux_window_id: view.target.tmux_window_id.clone().unwrap_or_default(),
+        tmux_session_name: view.tmux_session_name().unwrap_or_default().to_owned(),
+        tmux_window_name: view.tmux_window_name().unwrap_or_default().to_owned(),
+        tmux_window_id: view.tmux_window_id().unwrap_or_default().to_owned(),
         git,
     }
 }
@@ -390,11 +390,11 @@ fn entry_for_view(
 fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
     view.key.agent_kind == filter
         || view.key.session_id == filter
-        || view.target.kmux_workspace_slug.as_deref() == Some(filter)
-        || view.target.git_branch.as_deref() == Some(filter)
-        || view.target.tmux_window_name.as_deref() == Some(filter)
-        || view.target.git_worktree_path.as_deref() == Some(filter)
-        || view.target.directory.as_deref() == Some(filter)
+        || view.kmux_workspace_slug() == Some(filter)
+        || view.git_branch() == Some(filter)
+        || view.tmux_window_name() == Some(filter)
+        || view.git_worktree_path() == Some(filter)
+        || view.directory() == Some(filter)
         || view.title.as_deref() == Some(filter)
 }
 

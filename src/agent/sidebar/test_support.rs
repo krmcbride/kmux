@@ -42,6 +42,7 @@ pub(super) fn report_state(
             agent_kind: "opencode".to_owned(),
             session_id: format!("ses_{pane_id}"),
         },
+        workspace: None,
         workspace_key: Some(format!("/repo__worktrees/feature-sidebar/{window_id}")),
         tmux_target: AgentTmuxTarget::Window,
         created_at: status_changed_at,

@@ -5,6 +5,7 @@
 //! best honest live tmux target for selection.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use anyhow::Result;
 
@@ -14,13 +15,24 @@ use crate::state::{
 };
 use crate::telemetry;
 use crate::tmux::{Tmux, TmuxPaneSnapshot};
+use crate::workspace::WorkspaceIdentity;
 
 use super::workspace::{AgentWorkspaceAttachment, AgentWorkspaceResolver};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Reconciled view of one logical agent session for UI and status output.
-pub struct AgentSessionView {
+/// Resolved workspace identity associated with an agent session.
+pub struct ResolvedAgentWorkspace {
+    identity: WorkspaceIdentity,
+    key: String,
+    path: String,
+    reported_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Reconciled application model for one logical agent session.
+pub struct ResolvedAgentSession {
     pub key: AgentSessionKey,
+    pub workspace: Option<ResolvedAgentWorkspace>,
     pub workspace_key: Option<String>,
     pub tmux_target: AgentTmuxTarget,
     pub created_at: u64,
@@ -31,8 +43,12 @@ pub struct AgentSessionView {
     pub observed_at: u64,
     pub title: Option<String>,
     pub context: Option<String>,
+    /// Merged raw hints retained for legacy callers and unchanged hook payloads.
     pub target: AgentLocationHints,
 }
+
+/// Compatibility name for callers that have not moved to resolved-session wording yet.
+pub type AgentSessionView = ResolvedAgentSession;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Precision of the live tmux target associated with an agent row.
@@ -42,7 +58,52 @@ pub enum AgentTmuxTarget {
     None,
 }
 
-impl AgentSessionView {
+impl ResolvedAgentWorkspace {
+    /// Build a resolved workspace from a canonical Git worktree root.
+    pub fn from_canonical_root(
+        canonical_worktree_root: PathBuf,
+        reported_path: String,
+    ) -> Result<Self> {
+        let identity = WorkspaceIdentity::from_canonical_root(canonical_worktree_root)?;
+        let path = identity.root().display().to_string();
+        Ok(Self {
+            identity,
+            key: path.clone(),
+            path,
+            reported_path,
+        })
+    }
+
+    /// Return the canonical workspace identity.
+    pub fn identity(&self) -> &WorkspaceIdentity {
+        &self.identity
+    }
+
+    /// Return the stable grouping key for this workspace.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Return the canonical Git worktree root as display text.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// Return the path originally reported by the producer before Git-root resolution.
+    pub fn reported_path(&self) -> &str {
+        &self.reported_path
+    }
+
+    fn from_attachment(attachment: &AgentWorkspaceAttachment) -> Option<Self> {
+        Self::from_canonical_root(
+            PathBuf::from(attachment.path()),
+            attachment.reported_path().to_owned(),
+        )
+        .ok()
+    }
+}
+
+impl ResolvedAgentSession {
     /// Return elapsed time for the current status at `now`.
     ///
     /// Working rows accumulate prior working time plus the active working span;
@@ -54,6 +115,107 @@ impl AgentSessionView {
             AgentStatus::Waiting | AgentStatus::Done => status_age,
         }
     }
+
+    /// Return the resolved workspace grouping key, if the session is attached to Git.
+    pub fn workspace_key(&self) -> Option<&str> {
+        self.workspace
+            .as_ref()
+            .map(ResolvedAgentWorkspace::key)
+            .or(self.workspace_key.as_deref())
+    }
+
+    /// Return the resolved canonical Git worktree path, if available.
+    pub fn workspace_path(&self) -> Option<&str> {
+        self.workspace
+            .as_ref()
+            .map(ResolvedAgentWorkspace::path)
+            .or(self.target.git_worktree_path.as_deref())
+    }
+
+    /// Return the raw compatibility hints merged from producer observations.
+    pub fn location_hints(&self) -> &AgentLocationHints {
+        &self.target
+    }
+
+    /// Return the best known Git repo name for display.
+    pub fn git_repo_name(&self) -> Option<&str> {
+        self.target.git_repo_name.as_deref()
+    }
+
+    /// Return the best known main Git repository path for display.
+    pub fn git_repo_path(&self) -> Option<&str> {
+        self.target.git_repo_path.as_deref()
+    }
+
+    /// Return the kmux workspace slug reported or inferred for this session.
+    pub fn kmux_workspace_slug(&self) -> Option<&str> {
+        self.target.kmux_workspace_slug.as_deref()
+    }
+
+    /// Return the resolved Git worktree path used for matching and display.
+    pub fn git_worktree_path(&self) -> Option<&str> {
+        self.workspace_path()
+    }
+
+    /// Return the best known Git branch name for display and filtering.
+    pub fn git_branch(&self) -> Option<&str> {
+        self.target.git_branch.as_deref()
+    }
+
+    /// Return the latest producer-reported directory, if one was provided.
+    pub fn directory(&self) -> Option<&str> {
+        self.target.directory.as_deref().or_else(|| {
+            self.workspace
+                .as_ref()
+                .map(ResolvedAgentWorkspace::reported_path)
+        })
+    }
+
+    /// Return the resolved tmux session name for navigation.
+    pub fn tmux_session_name(&self) -> Option<&str> {
+        self.target.tmux_session_name.as_deref()
+    }
+
+    /// Return the resolved tmux window id for navigation.
+    pub fn tmux_window_id(&self) -> Option<&str> {
+        self.target.tmux_window_id.as_deref()
+    }
+
+    /// Return the resolved tmux window name for display.
+    pub fn tmux_window_name(&self) -> Option<&str> {
+        self.target.tmux_window_name.as_deref()
+    }
+
+    /// Return the resolved tmux pane id when live pane precision is available.
+    pub fn tmux_pane_id(&self) -> Option<&str> {
+        self.target.tmux_pane_id.as_deref()
+    }
+
+    /// Return the live tmux pane title captured for display fallback.
+    pub fn tmux_pane_title(&self) -> Option<&str> {
+        self.target.tmux_pane_title.as_deref()
+    }
+
+    /// Return the live tmux pane command captured for display fallback.
+    pub fn tmux_pane_current_command(&self) -> Option<&str> {
+        self.target.tmux_pane_current_command.as_deref()
+    }
+
+    /// Return whether the session has an exact tmux window navigation target.
+    pub fn is_window_tmux_target(&self) -> bool {
+        self.tmux_target == AgentTmuxTarget::Window
+    }
+
+    /// Return the stable key used to collapse multiple logical sessions into one row.
+    pub fn collapse_group_key(&self) -> String {
+        self.workspace_key()
+            .map(|key| format!("workspace:{key}"))
+            .or_else(|| {
+                self.tmux_window_id()
+                    .map(|window_id| format!("window:{window_id}"))
+            })
+            .unwrap_or_else(|| format!("session:{}/{}", self.key.agent_kind, self.key.session_id))
+    }
 }
 
 /// Reconcile persisted agent observations with live tmux window state.
@@ -63,13 +225,12 @@ pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSession
         {},
         || {
             let tmux_instance = tmux.instance_id();
-            let observations = store
-                .list_observations()?
-                .into_iter()
+            let observations = store.list_observations()?;
+            let observation_count = observations
+                .iter()
                 .filter(|observation| is_candidate_for_tmux_instance(observation, &tmux_instance))
-                .collect::<Vec<_>>();
-            let observation_count = observations.len();
-            if observations.is_empty() {
+                .count();
+            if observation_count == 0 {
                 return Ok(SessionViewsTelemetry {
                     views: Vec::new(),
                     observations: 0,
@@ -82,7 +243,13 @@ pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSession
             let tmux_snapshot_ok = panes_result.is_ok();
             let panes = panes_result.unwrap_or_default();
             let pane_count = panes.len();
-            let views = reconcile_session_views(observations, &panes, &tmux_instance);
+            let mut workspace_resolver = AgentWorkspaceResolver::default();
+            let views = reconcile_agent_sessions(
+                observations,
+                &panes,
+                &tmux_instance,
+                &mut workspace_resolver,
+            );
             Ok(SessionViewsTelemetry {
                 views,
                 observations: observation_count,
@@ -121,6 +288,46 @@ struct ResolvedObservationTarget {
     tmux_target: AgentTmuxTarget,
 }
 
+trait AgentWorkspaceLookup {
+    fn attachment_for_hints(
+        &mut self,
+        target: &AgentLocationHints,
+    ) -> Option<AgentWorkspaceAttachment>;
+
+    fn attachment_for_path(&mut self, path: &str) -> Option<AgentWorkspaceAttachment>;
+
+    fn attachment_matches_path(
+        &mut self,
+        attachment: &AgentWorkspaceAttachment,
+        candidate: Option<&str>,
+    ) -> bool {
+        candidate
+            .and_then(|path| self.attachment_for_path(path))
+            .is_some_and(|candidate_attachment| candidate_attachment.key() == attachment.key())
+    }
+}
+
+impl AgentWorkspaceLookup for AgentWorkspaceResolver {
+    fn attachment_for_hints(
+        &mut self,
+        target: &AgentLocationHints,
+    ) -> Option<AgentWorkspaceAttachment> {
+        AgentWorkspaceResolver::attachment_for_hints(self, target)
+    }
+
+    fn attachment_for_path(&mut self, path: &str) -> Option<AgentWorkspaceAttachment> {
+        AgentWorkspaceResolver::attachment_for_path(self, path)
+    }
+
+    fn attachment_matches_path(
+        &mut self,
+        attachment: &AgentWorkspaceAttachment,
+        candidate: Option<&str>,
+    ) -> bool {
+        AgentWorkspaceResolver::attachment_matches_path(self, attachment, candidate)
+    }
+}
+
 // Ignore observations scoped to another tmux socket, but accept unscoped legacy
 // observations so older agents still appear in status views.
 fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_id: &str) -> bool {
@@ -133,22 +340,37 @@ fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_
 
 // Group observations by logical agent session after assigning each reported
 // directory to a Git worktree root.
+#[cfg(test)]
 fn reconcile_session_views(
     observations: Vec<AgentObservationState>,
     panes: &[TmuxPaneSnapshot],
     tmux_instance: &str,
 ) -> Vec<AgentSessionView> {
     let mut workspace_resolver = AgentWorkspaceResolver::default();
+    reconcile_agent_sessions(observations, panes, tmux_instance, &mut workspace_resolver)
+}
 
+// Pure session reconciliation policy over observation, tmux pane, and workspace
+// attachment facts. Callers supply the attachment capability so tests can bypass
+// concrete XDG state, Git discovery, and tmux subprocesses.
+fn reconcile_agent_sessions(
+    observations: Vec<AgentObservationState>,
+    panes: &[TmuxPaneSnapshot],
+    tmux_instance: &str,
+    workspace_resolver: &mut impl AgentWorkspaceLookup,
+) -> Vec<ResolvedAgentSession> {
     let mut grouped = BTreeMap::<AgentSessionKey, Vec<EnrichedObservation>>::new();
     for observation in observations {
+        if !is_candidate_for_tmux_instance(&observation, tmux_instance) {
+            continue;
+        }
         let workspace_attachment = workspace_resolver.attachment_for_hints(&observation.target);
         let resolved_target = resolve_observation_target(
             &observation,
             workspace_attachment.as_ref(),
             panes,
             tmux_instance,
-            &mut workspace_resolver,
+            workspace_resolver,
         );
         grouped
             .entry(observation.key.session.clone())
@@ -192,12 +414,17 @@ fn session_view_from_observations(
 
     let status_changed_at = status_observation.state.status_changed_at?;
     let status_observed_at = observation_status_observed_at(&status_observation.state);
+    let workspace = location_observation
+        .workspace_attachment
+        .as_ref()
+        .and_then(ResolvedAgentWorkspace::from_attachment);
     let workspace_key = location_observation
         .workspace_attachment
         .as_ref()
         .map(|attachment| attachment.key().to_owned());
     Some(AgentSessionView {
         key,
+        workspace,
         workspace_key,
         tmux_target: resolved_target.tmux_target,
         created_at: observations
@@ -270,7 +497,7 @@ fn observation_location_precision(observation: &EnrichedObservation) -> u8 {
 fn collapse_workspace_views(views: Vec<AgentSessionView>) -> Vec<AgentSessionView> {
     let mut by_target = BTreeMap::<String, AgentSessionView>::new();
     for view in views {
-        let key = view_group_key(&view);
+        let key = view.collapse_group_key();
         match by_target.get_mut(&key) {
             Some(current) if primary_view_is_better(&view, current) => {
                 *current = view;
@@ -282,19 +509,6 @@ fn collapse_workspace_views(views: Vec<AgentSessionView>) -> Vec<AgentSessionVie
         }
     }
     by_target.into_values().collect()
-}
-
-fn view_group_key(view: &AgentSessionView) -> String {
-    view.workspace_key
-        .as_ref()
-        .map(|key| format!("workspace:{key}"))
-        .or_else(|| {
-            view.target
-                .tmux_window_id
-                .as_ref()
-                .map(|window_id| format!("window:{window_id}"))
-        })
-        .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
 }
 
 fn primary_view_is_better(candidate: &AgentSessionView, current: &AgentSessionView) -> bool {
@@ -368,7 +582,7 @@ fn resolve_observation_target(
     workspace_attachment: Option<&AgentWorkspaceAttachment>,
     panes: &[TmuxPaneSnapshot],
     tmux_instance: &str,
-    workspace_resolver: &mut AgentWorkspaceResolver,
+    workspace_resolver: &mut impl AgentWorkspaceLookup,
 ) -> Option<ResolvedObservationTarget> {
     let attachment = workspace_attachment?;
     let mut target = AgentLocationHints::default();
@@ -395,7 +609,7 @@ fn enrich_target_from_live_tmux(
     preferred_pane_id: Option<&str>,
     panes: &[TmuxPaneSnapshot],
     tmux_instance: &str,
-    workspace_resolver: &mut AgentWorkspaceResolver,
+    workspace_resolver: &mut impl AgentWorkspaceLookup,
 ) -> AgentTmuxTarget {
     if let Some(pane) =
         preferred_pane_workspace_match(attachment, preferred_pane_id, panes, workspace_resolver)
@@ -446,7 +660,7 @@ fn preferred_pane_workspace_match<'a>(
     attachment: &AgentWorkspaceAttachment,
     preferred_pane_id: Option<&str>,
     panes: &'a [TmuxPaneSnapshot],
-    workspace_resolver: &mut AgentWorkspaceResolver,
+    workspace_resolver: &mut impl AgentWorkspaceLookup,
 ) -> Option<&'a TmuxPaneSnapshot> {
     let preferred_pane_id = preferred_pane_id?;
     panes.iter().find(|pane| {
@@ -459,7 +673,7 @@ fn preferred_pane_workspace_match<'a>(
 fn window_workspace_matches(
     attachment: &AgentWorkspaceAttachment,
     panes: &[TmuxPaneSnapshot],
-    workspace_resolver: &mut AgentWorkspaceResolver,
+    workspace_resolver: &mut impl AgentWorkspaceLookup,
 ) -> Vec<WindowWorkspaceMatch> {
     let mut windows = BTreeMap::<String, WindowWorkspaceAccumulator>::new();
     for pane in panes
@@ -610,10 +824,172 @@ fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
 mod tests {
     use super::*;
     use crate::state::{AgentObservationKey, AgentObservationState};
+    use std::collections::BTreeMap;
     use std::fs;
     use std::path::Path;
     use std::process::Command;
     use tempfile::{TempDir, tempdir};
+
+    #[derive(Default)]
+    struct FakeWorkspaceResolver {
+        attachments: BTreeMap<String, AgentWorkspaceAttachment>,
+    }
+
+    impl FakeWorkspaceResolver {
+        fn with_path(path: &str) -> Self {
+            Self {
+                attachments: [(path.to_owned(), AgentWorkspaceAttachment::for_test(path))]
+                    .into_iter()
+                    .collect(),
+            }
+        }
+    }
+
+    impl AgentWorkspaceLookup for FakeWorkspaceResolver {
+        fn attachment_for_hints(
+            &mut self,
+            target: &AgentLocationHints,
+        ) -> Option<AgentWorkspaceAttachment> {
+            target
+                .directory
+                .as_deref()
+                .and_then(|path| self.attachment_for_path(path))
+        }
+
+        fn attachment_for_path(&mut self, path: &str) -> Option<AgentWorkspaceAttachment> {
+            self.attachments.get(path).cloned()
+        }
+    }
+
+    #[test]
+    fn pure_reconciliation_returns_no_views_without_observations() {
+        let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
+
+        let views = reconcile_agent_sessions(Vec::new(), &[], "default", &mut resolver);
+
+        assert!(views.is_empty());
+    }
+
+    #[test]
+    fn pure_reconciliation_ignores_observations_for_other_tmux_instances() {
+        let mut observation = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            100,
+            Some("Wrong tmux"),
+            "/repo/project",
+        );
+        observation.target.tmux_instance = Some("other".to_owned());
+        let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
+
+        let views = reconcile_agent_sessions(vec![observation], &[], "default", &mut resolver);
+
+        assert!(views.is_empty());
+    }
+
+    #[test]
+    fn pure_reconciliation_builds_resolved_workspace_and_live_window_target() {
+        let observation = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            100,
+            Some("Resolved"),
+            "/repo/project",
+        );
+        let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
+
+        let views = reconcile_agent_sessions(
+            vec![observation],
+            &[pane_snapshot("%1", "@1", "/repo/project", None)],
+            "default",
+            &mut resolver,
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].workspace_key(), Some("/repo/project"));
+        assert_eq!(views[0].workspace_path(), Some("/repo/project"));
+        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert_eq!(views[0].tmux_window_id(), Some("@1"));
+    }
+
+    #[test]
+    fn pure_reconciliation_uses_no_tmux_target_without_pane_snapshots() {
+        let observation = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            100,
+            Some("No panes"),
+            "/repo/project",
+        );
+        let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
+
+        let views = reconcile_agent_sessions(vec![observation], &[], "default", &mut resolver);
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
+        assert_eq!(views[0].tmux_window_id(), None);
+    }
+
+    #[test]
+    fn pure_reconciliation_degrades_duplicate_windows_to_session_target() {
+        let mut observation = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            100,
+            Some("Session target"),
+            "/repo/project",
+        );
+        observation.target.tmux_pane_id = None;
+        let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
+
+        let views = reconcile_agent_sessions(
+            vec![observation],
+            &[
+                pane_snapshot("%1", "@1", "/repo/project", None),
+                pane_snapshot("%2", "@2", "/repo/project", None),
+            ],
+            "default",
+            &mut resolver,
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Session);
+        assert_eq!(views[0].tmux_session_name(), Some("project"));
+        assert_eq!(views[0].tmux_window_id(), None);
+    }
+
+    #[test]
+    fn pure_reconciliation_uses_no_target_for_matching_windows_across_sessions() {
+        let mut observation = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            100,
+            Some("Ambiguous"),
+            "/repo/project",
+        );
+        observation.target.tmux_pane_id = None;
+        let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
+
+        let views = reconcile_agent_sessions(
+            vec![observation],
+            &[
+                pane_snapshot_in_session("project", "%1", "@1", "/repo/project", None),
+                pane_snapshot_in_session("other", "%2", "@2", "/repo/project", None),
+            ],
+            "default",
+            &mut resolver,
+        );
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
+        assert_eq!(views[0].tmux_session_name(), None);
+        assert_eq!(views[0].tmux_window_id(), None);
+    }
 
     #[test]
     fn merges_tui_and_server_observations_into_one_session_view() {

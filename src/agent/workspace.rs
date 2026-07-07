@@ -7,7 +7,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::paths::RepoPaths;
+use crate::git::Git;
 use crate::state::AgentLocationHints;
 use crate::telemetry;
 
@@ -39,6 +39,12 @@ impl AgentWorkspaceAttachment {
     /// Return the path exactly as reported before resolution.
     pub fn reported_path(&self) -> &str {
         &self.reported_path
+    }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(path: impl ToString) -> Self {
+        let path = path.to_string();
+        attachment(path.clone(), PathBuf::from(path))
     }
 }
 
@@ -87,10 +93,8 @@ fn resolve_path(path: &str) -> Option<AgentWorkspaceAttachment> {
             return WorkspaceResolveTelemetry::unattached("not_dir");
         }
 
-        match RepoPaths::discover(&resolved) {
-            Ok(paths) => {
-                WorkspaceResolveTelemetry::attached(attachment(path, paths.current_worktree))
-            }
+        match Git::new(&resolved).worktree_root() {
+            Ok(root) => WorkspaceResolveTelemetry::attached(attachment(path, root)),
             Err(_) => WorkspaceResolveTelemetry::unattached("not_git"),
         }
     });
@@ -277,6 +281,21 @@ mod tests {
         assert!(
             resolver
                 .attachment_for_path("/tmp/does-not-exist/kmux-agent")
+                .is_none()
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn non_directory_path_does_not_attach() -> Result<()> {
+        let temp = TempDir::new()?;
+        let file = temp.path().join("plain-file");
+        fs::write(&file, "not a directory\n")?;
+        let mut resolver = AgentWorkspaceResolver::default();
+
+        assert!(
+            resolver
+                .attachment_for_path(&file.display().to_string())
                 .is_none()
         );
         Ok(())
