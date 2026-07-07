@@ -308,6 +308,7 @@ impl SidebarActions {
             selection.status,
             selection.title.clone(),
             selection.context.clone(),
+            selection.metadata.clone(),
             selection.target.clone(),
             observations,
         ))
@@ -615,6 +616,8 @@ mod tests {
             observed_at: 100,
             title: row.selection.title.clone(),
             context: row.selection.context.clone(),
+            metadata: row.selection.metadata.clone(),
+            metadata_cleared: Default::default(),
             target: row.selection.target.clone(),
         }
     }

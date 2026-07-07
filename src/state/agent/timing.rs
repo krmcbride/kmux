@@ -149,6 +149,8 @@ mod tests {
             observed_at: status_changed_at,
             title: None,
             context: None,
+            metadata: Default::default(),
+            metadata_cleared: Default::default(),
             target: AgentLocationHints {
                 kmux_workspace_slug: Some("feature".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature".to_owned()),

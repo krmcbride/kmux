@@ -4,6 +4,8 @@
 //! and read by status/sidebar presentation. Keep them tolerant of older files so
 //! persisted observations can survive kmux upgrades.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,8 +44,7 @@ pub struct AgentObservationKey {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-/// Optional location metadata used to attach agent sessions to tmux, Git, and
-/// external agent workspace scopes.
+/// Optional location metadata used to attach agent sessions to tmux and Git.
 pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_instance: Option<String>,
@@ -67,8 +68,6 @@ pub struct AgentLocationHints {
     pub git_repo_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub kmux_workspace_slug: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agent_workspace_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -95,6 +94,10 @@ pub struct AgentObservationState {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub metadata: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    pub metadata_cleared: BTreeSet<String>,
     #[serde(default)]
     pub target: AgentLocationHints,
 }
@@ -155,6 +158,8 @@ mod tests {
             observed_at: status_changed_at,
             title: None,
             context: None,
+            metadata: BTreeMap::new(),
+            metadata_cleared: BTreeSet::new(),
             target: AgentLocationHints::default(),
         }
     }

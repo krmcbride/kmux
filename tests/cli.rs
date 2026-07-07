@@ -85,10 +85,15 @@ fn set_agent_status_help_documents_integration_contract() {
             "Delete the observation identified by this session and producer key",
         ))
         .stdout(predicate::str::contains("Delete all producer observations"))
-        .stdout(predicate::str::contains("--tmux-pane-id"))
-        .stdout(predicate::str::contains("--tmux-window-id"))
+        .stdout(predicate::str::contains("--tmux-instance"))
+        .stdout(predicate::str::contains("--agent-meta"))
+        .stdout(predicate::str::contains("--clear-agent-meta"))
         .stdout(predicate::str::contains("--git-repo-name"))
-        .stdout(predicate::str::contains("--git-worktree-path"))
+        .stdout(predicate::str::contains("--tmux-pane-id").not())
+        .stdout(predicate::str::contains("--tmux-window-id").not())
+        .stdout(predicate::str::contains("--git-worktree-path").not())
+        .stdout(predicate::str::contains("--agent-workspace-id").not())
+        .stdout(predicate::str::contains("--clear-agent-workspace-id").not())
         .stdout(predicate::str::contains("--pane-id").not())
         .stdout(predicate::str::contains("--window-id").not())
         .stdout(predicate::str::contains("--repo-name").not())
@@ -228,4 +233,33 @@ fn removed_add_base_flag_fails_clearly() {
         .assert()
         .failure()
         .stderr(predicate::str::contains("unexpected argument"));
+}
+
+#[test]
+fn removed_set_agent_status_producer_flags_fail_clearly() {
+    for flag in [
+        "--agent-workspace-id",
+        "--clear-agent-workspace-id",
+        "--git-worktree-path",
+        "--tmux-window-id",
+        "--tmux-pane-id",
+    ] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .args([
+                "set-agent-status",
+                "--agent-kind",
+                "opencode",
+                "--session-id",
+                "ses_test",
+                "--producer-kind",
+                "tui",
+                "--producer-instance",
+                "default/%1",
+                flag,
+            ])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unexpected argument"));
+    }
 }

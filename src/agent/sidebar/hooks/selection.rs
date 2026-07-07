@@ -1,5 +1,6 @@
 //! `sidebar.select` hook payload construction and orchestration.
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -21,6 +22,7 @@ pub(in crate::agent::sidebar) struct SelectionHookInput {
     status: AgentStatus,
     title: Option<String>,
     context: Option<String>,
+    metadata: BTreeMap<String, String>,
     target: AgentLocationHints,
     observations: Vec<AgentObservationState>,
 }
@@ -44,6 +46,7 @@ impl SelectionHookInput {
         status: AgentStatus,
         title: Option<String>,
         context: Option<String>,
+        metadata: BTreeMap<String, String>,
         target: AgentLocationHints,
         observations: Vec<AgentObservationState>,
     ) -> Self {
@@ -52,6 +55,7 @@ impl SelectionHookInput {
             status,
             title,
             context,
+            metadata,
             target,
             observations,
         }
@@ -76,6 +80,8 @@ struct SelectionHookPayload {
 struct SelectionHookAgentPayload {
     kind: String,
     session_id: String,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -103,8 +109,6 @@ struct SelectionHookTargetPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     kmux_workspace_slug: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    agent_workspace_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     git_worktree_path: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     git_branch: Option<String>,
@@ -123,6 +127,8 @@ struct SelectionHookObservationPayload {
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    metadata: BTreeMap<String, String>,
     target: SelectionHookTargetPayload,
 }
 
@@ -240,6 +246,7 @@ fn payload_for_selection(selected: &SelectionHookInput) -> SelectionHookPayload 
         agent: SelectionHookAgentPayload {
             kind: selected.key.agent_kind.clone(),
             session_id: selected.key.session_id.clone(),
+            metadata: selected.metadata.clone(),
         },
         status: selected.status,
         title: selected.title.clone(),
@@ -311,11 +318,7 @@ fn hook_env(payload: &SelectionHookPayload, log_path: Option<&Path>) -> Vec<(OsS
         "KMUX_WORKSPACE_SLUG",
         &payload.target.kmux_workspace_slug,
     );
-    push_optional_env(
-        &mut env,
-        "KMUX_AGENT_WORKSPACE_ID",
-        &payload.target.agent_workspace_id,
-    );
+    push_metadata_env(&mut env, &payload.agent.metadata);
     if let Some(log_path) = log_path {
         env.push((
             OsString::from("KMUX_HOOK_LOG"),
@@ -333,6 +336,38 @@ fn push_optional_env(env: &mut Vec<(OsString, OsString)>, key: &str, value: &Opt
     if let Some(value) = value.as_deref() {
         push_env(env, key, value);
     }
+}
+
+fn push_metadata_env(env: &mut Vec<(OsString, OsString)>, metadata: &BTreeMap<String, String>) {
+    let mut candidates = BTreeMap::<String, Option<String>>::new();
+    for (key, value) in metadata {
+        if let Some(env_name) = metadata_env_name(key) {
+            candidates
+                .entry(env_name)
+                .and_modify(|candidate| *candidate = None)
+                .or_insert_with(|| Some(value.clone()));
+        }
+    }
+
+    for (key, value) in candidates {
+        if let Some(value) = value {
+            push_env(env, &key, value);
+        }
+    }
+}
+
+fn metadata_env_name(key: &str) -> Option<String> {
+    if key.is_empty()
+        || !key
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || character == '_')
+    {
+        return None;
+    }
+
+    let mut env_name = String::from("KMUX_AGENT_META_");
+    env_name.extend(key.chars().map(|character| character.to_ascii_uppercase()));
+    Some(env_name)
 }
 
 fn hook_current_dir(target: &SelectionHookTargetPayload) -> Option<PathBuf> {
@@ -361,7 +396,6 @@ impl SelectionHookTargetPayload {
             git_repo_name: target.git_repo_name.clone(),
             git_repo_path: target.git_repo_path.clone(),
             kmux_workspace_slug: target.kmux_workspace_slug.clone(),
-            agent_workspace_id: target.agent_workspace_id.clone(),
             git_worktree_path: target.git_worktree_path.clone(),
             git_branch: target.git_branch.clone(),
             directory: target.directory.clone(),
@@ -378,6 +412,7 @@ impl SelectionHookObservationPayload {
             observed_at: observation.observed_at,
             title: observation.title.clone(),
             context: observation.context.clone(),
+            metadata: observation.metadata.clone(),
             target: SelectionHookTargetPayload::from_hints(&observation.target),
         }
     }
@@ -403,7 +438,8 @@ mod tests {
         view.title = Some("Implement hooks".to_owned());
         view.context = Some("55.2K".to_owned());
         view.target.directory = Some("/repo/worktree".to_owned());
-        view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
+        view.metadata
+            .insert("opaque_ref".to_owned(), "ref_01KTEST".to_owned());
         let mut selected = input_from_view(&view, Vec::new());
         selected.observations = vec![observation_for_input(
             &selected,
@@ -422,6 +458,9 @@ mod tests {
                 "agent": {
                     "kind": "opencode",
                     "session_id": "ses_%1",
+                    "metadata": {
+                        "opaque_ref": "ref_01KTEST",
+                    },
                 },
                 "status": "waiting",
                 "title": "Implement hooks",
@@ -437,7 +476,6 @@ mod tests {
                     "git_repo_name": "kmux",
                     "git_repo_path": "/repo",
                     "kmux_workspace_slug": "feature-sidebar",
-                    "agent_workspace_id": "wrk_01KTEST",
                     "git_worktree_path": "/repo__worktrees/feature-sidebar",
                     "git_branch": "feature/sidebar",
                     "directory": "/repo/worktree",
@@ -449,6 +487,9 @@ mod tests {
                     "observed_at": 100,
                     "title": "Implement hooks",
                     "context": "55.2K",
+                    "metadata": {
+                        "opaque_ref": "ref_01KTEST",
+                    },
                     "target": {
                         "tmux_instance": "test",
                         "tmux_session_name": "project",
@@ -460,7 +501,6 @@ mod tests {
                         "git_repo_name": "kmux",
                         "git_repo_path": "/repo",
                         "kmux_workspace_slug": "feature-sidebar",
-                        "agent_workspace_id": "wrk_01KTEST",
                         "git_worktree_path": "/repo__worktrees/feature-sidebar",
                         "git_branch": "feature/sidebar",
                         "directory": "/repo/worktree",
@@ -505,7 +545,8 @@ mod tests {
     fn hook_env_preserves_selection_compatibility_variables() {
         let mut view = report_state(AgentStatus::Working, 100, "@1", "%1");
         view.target.directory = Some("/repo/worktree".to_owned());
-        view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
+        view.metadata
+            .insert("opaque_ref".to_owned(), "ref_01KTEST".to_owned());
         let selected = input_from_view(&view, vec![]);
         let payload = payload_for_selection(&selected);
 
@@ -561,10 +602,32 @@ mod tests {
             Some("feature-sidebar")
         );
         assert_eq!(
-            env.get("KMUX_AGENT_WORKSPACE_ID").map(String::as_str),
-            Some("wrk_01KTEST")
+            env.get("KMUX_AGENT_META_OPAQUE_REF").map(String::as_str),
+            Some("ref_01KTEST")
         );
         assert_eq!(env.get("KMUX_HOOK_LOG"), None);
+    }
+
+    #[test]
+    fn hook_env_exports_only_unambiguous_env_safe_metadata_keys() {
+        let mut view = report_state(AgentStatus::Working, 100, "@1", "%1");
+        view.metadata
+            .insert("ticket".to_owned(), "T-123".to_owned());
+        view.metadata.insert("mixed".to_owned(), "lower".to_owned());
+        view.metadata.insert("MiXeD".to_owned(), "mixed".to_owned());
+        view.metadata
+            .insert("not-env-safe".to_owned(), "skipped".to_owned());
+        let selected = input_from_view(&view, vec![]);
+        let payload = payload_for_selection(&selected);
+
+        let env = env_map(hook_env(&payload, None));
+
+        assert_eq!(
+            env.get("KMUX_AGENT_META_TICKET").map(String::as_str),
+            Some("T-123")
+        );
+        assert!(!env.contains_key("KMUX_AGENT_META_MIXED"));
+        assert!(!env.contains_key("KMUX_AGENT_META_NOT_ENV_SAFE"));
     }
 
     #[test]
@@ -589,17 +652,18 @@ mod tests {
         let dir = tempdir()?;
         let mut view = report_state(AgentStatus::Working, 100, "@1", "%1");
         view.target.git_worktree_path = Some(dir.path().display().to_string());
-        view.target.agent_workspace_id = Some("wrk_01KTEST".to_owned());
+        view.metadata
+            .insert("opaque_ref".to_owned(), "ref_01KTEST".to_owned());
         let selected = input_from_view(&view, vec![]);
         let payload_path = dir.path().join("payload.json");
         let session_path = dir.path().join("session.txt");
-        let workspace_path = dir.path().join("workspace.txt");
+        let metadata_path = dir.path().join("metadata.txt");
         let cwd_path = dir.path().join("cwd.txt");
         let command = format!(
-            "cat > '{}'; printf '%s' \"$KMUX_AGENT_SESSION_ID\" > '{}'; printf '%s' \"$KMUX_AGENT_WORKSPACE_ID\" > '{}'; pwd > '{}'",
+            "cat > '{}'; printf '%s' \"$KMUX_AGENT_SESSION_ID\" > '{}'; printf '%s' \"$KMUX_AGENT_META_OPAQUE_REF\" > '{}'; pwd > '{}'",
             payload_path.display(),
             session_path.display(),
-            workspace_path.display(),
+            metadata_path.display(),
             cwd_path.display()
         );
 
@@ -612,7 +676,7 @@ mod tests {
         let payload: Value = serde_json::from_str(&fs::read_to_string(payload_path)?)?;
         assert_eq!(payload["agent"]["session_id"], "ses_%1");
         assert_eq!(fs::read_to_string(session_path)?, "ses_%1");
-        assert_eq!(fs::read_to_string(workspace_path)?, "wrk_01KTEST");
+        assert_eq!(fs::read_to_string(metadata_path)?, "ref_01KTEST");
         assert_eq!(
             fs::read_to_string(cwd_path)?.trim(),
             dir.path().display().to_string()
@@ -794,6 +858,7 @@ mod tests {
             view.status,
             view.title.clone(),
             view.context.clone(),
+            view.metadata().clone(),
             view.location_hints().clone(),
             observations,
         )
@@ -821,6 +886,8 @@ mod tests {
             observed_at: 100,
             title: selected.title.clone(),
             context: selected.context.clone(),
+            metadata: selected.metadata.clone(),
+            metadata_cleared: Default::default(),
             target: selected.target.clone(),
         }
     }

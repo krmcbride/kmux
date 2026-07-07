@@ -68,20 +68,6 @@ impl AgentWorkspaceResolver {
         self.cache.insert(path.to_owned(), attachment.clone());
         attachment
     }
-
-    /// Return whether an attachment matches a candidate path's Git worktree root.
-    pub fn attachment_matches_path(
-        &mut self,
-        attachment: &AgentWorkspaceAttachment,
-        candidate: Option<&str>,
-    ) -> bool {
-        let Some(candidate) = candidate.and_then(clean_path) else {
-            return false;
-        };
-
-        self.attachment_for_path(candidate)
-            .is_some_and(|candidate_attachment| candidate_attachment.key == attachment.key)
-    }
 }
 
 fn resolve_path(path: &str) -> Option<AgentWorkspaceAttachment> {

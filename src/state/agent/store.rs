@@ -250,6 +250,10 @@ mod tests {
             observed_at: 43,
             title: Some("OpenCode session".to_owned()),
             context: Some("163.2K (41%)".to_owned()),
+            metadata: [("workspace_id".to_owned(), "wrk_01KTEST".to_owned())]
+                .into_iter()
+                .collect(),
+            metadata_cleared: Default::default(),
             target: AgentLocationHints {
                 tmux_instance: Some("test".to_owned()),
                 tmux_pane_id: Some("%1".to_owned()),
@@ -262,7 +266,6 @@ mod tests {
                 git_repo_name: Some("repo".to_owned()),
                 git_repo_path: Some("/repo".to_owned()),
                 kmux_workspace_slug: Some("feature-auth".to_owned()),
-                agent_workspace_id: Some("wrk_01KTEST".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 git_branch: Some("feature/auth".to_owned()),
                 directory: Some("/repo__worktrees/feature-auth".to_owned()),
@@ -400,6 +403,8 @@ mod tests {
             observed_at: status_changed_at,
             title: None,
             context: None,
+            metadata: Default::default(),
+            metadata_cleared: Default::default(),
             target: AgentLocationHints {
                 kmux_workspace_slug: Some("feature".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature".to_owned()),

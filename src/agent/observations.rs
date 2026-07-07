@@ -3,6 +3,8 @@
 //! CLI workflows translate integration flags into these command shapes, while
 //! this module owns state mutation, timing policy, and target metadata merging.
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use anyhow::Result;
 
 use crate::paths::{infer_repo_metadata_from_paths, path_basename};
@@ -26,20 +28,23 @@ pub(crate) struct ObservationUpdate {
     pub(crate) status: Option<AgentStatus>,
     pub(crate) title: Option<String>,
     pub(crate) context: Option<String>,
+    pub(crate) metadata: MetadataUpdate,
     pub(crate) target: LocationUpdate,
+}
+
+/// Sanitized agent-specific metadata mutation for one producer observation.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct MetadataUpdate {
+    pub(crate) set: BTreeMap<String, String>,
+    pub(crate) clear: BTreeSet<String>,
 }
 
 /// Sanitized location update reported by an external producer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(crate) struct LocationUpdate {
     pub(crate) tmux_instance: Option<String>,
-    pub(crate) tmux_pane_id: Option<String>,
-    pub(crate) tmux_window_id: Option<String>,
-    pub(crate) agent_workspace_id: Option<String>,
-    pub(crate) clear_agent_workspace_id: bool,
     pub(crate) git_repo_name: Option<String>,
     pub(crate) git_repo_path: Option<String>,
-    pub(crate) git_worktree_path: Option<String>,
     pub(crate) git_branch: Option<String>,
     pub(crate) directory: Option<String>,
 }
@@ -96,6 +101,8 @@ fn upsert_observation(store: &StateStore, update: ObservationUpdate, now: u64) -
         observed_at: now,
         title: None,
         context: None,
+        metadata: BTreeMap::new(),
+        metadata_cleared: BTreeSet::new(),
         target: AgentLocationHints::default(),
     });
 
@@ -116,25 +123,34 @@ fn upsert_observation(store: &StateStore, update: ObservationUpdate, now: u64) -
     if let Some(context) = update.context {
         state.context = Some(context);
     }
+    update
+        .metadata
+        .apply_to(&mut state.metadata, &mut state.metadata_cleared);
     update.target.apply_to(&mut state.target);
+    clear_obsolete_producer_hints(&mut state.target);
     enrich_missing_repo_metadata(&mut state.target);
 
     store.upsert_observation(&state)
 }
 
+impl MetadataUpdate {
+    fn apply_to(self, metadata: &mut BTreeMap<String, String>, cleared: &mut BTreeSet<String>) {
+        for key in self.clear {
+            metadata.remove(&key);
+            cleared.insert(key);
+        }
+        for (key, value) in self.set {
+            cleared.remove(&key);
+            metadata.insert(key, value);
+        }
+    }
+}
+
 impl LocationUpdate {
     fn apply_to(self, target: &mut AgentLocationHints) {
         apply_optional(&mut target.tmux_instance, self.tmux_instance);
-        apply_optional(&mut target.tmux_pane_id, self.tmux_pane_id);
-        apply_optional(&mut target.tmux_window_id, self.tmux_window_id);
-        apply_agent_workspace_id(
-            target,
-            self.agent_workspace_id,
-            self.clear_agent_workspace_id,
-        );
         apply_optional(&mut target.git_repo_name, self.git_repo_name);
         apply_optional(&mut target.git_repo_path, self.git_repo_path);
-        apply_optional(&mut target.git_worktree_path, self.git_worktree_path);
         apply_optional(&mut target.git_branch, self.git_branch);
 
         // Directory is the producer's current location, so omitted or blank values
@@ -143,16 +159,12 @@ impl LocationUpdate {
     }
 }
 
-fn apply_agent_workspace_id(
-    target: &mut AgentLocationHints,
-    value: Option<String>,
-    clear_agent_workspace_id: bool,
-) {
-    if let Some(value) = value {
-        target.agent_workspace_id = Some(value);
-    } else if clear_agent_workspace_id {
-        target.agent_workspace_id = None;
-    }
+// These fields used to be producer inputs. New reports should not preserve old
+// local values that could affect resolved tmux focus or derived Git roots.
+fn clear_obsolete_producer_hints(target: &mut AgentLocationHints) {
+    target.tmux_pane_id = None;
+    target.tmux_window_id = None;
+    target.git_worktree_path = None;
 }
 
 // Metadata-only updates should not erase existing fields with omitted or blank strings.
@@ -200,6 +212,12 @@ mod tests {
             status: Some(AgentStatus::Working),
             title: Some("Build feature".to_owned()),
             context: Some("12K".to_owned()),
+            metadata: MetadataUpdate {
+                set: [("workspace_id".to_owned(), "wrk_01KTEST".to_owned())]
+                    .into_iter()
+                    .collect(),
+                clear: BTreeSet::new(),
+            },
             target: LocationUpdate {
                 directory: Some("/repo/project".to_owned()),
                 git_branch: Some("main".to_owned()),
@@ -218,6 +236,11 @@ mod tests {
         assert_eq!(observation.status_changed_at, Some(100));
         assert_eq!(observation.title.as_deref(), Some("Build feature"));
         assert_eq!(observation.context.as_deref(), Some("12K"));
+        assert_eq!(
+            observation.metadata.get("workspace_id").map(String::as_str),
+            Some("wrk_01KTEST")
+        );
+        assert!(observation.metadata_cleared.is_empty());
         assert_eq!(
             observation.target.directory.as_deref(),
             Some("/repo/project")
@@ -238,6 +261,7 @@ mod tests {
                 status: Some(AgentStatus::Working),
                 title: Some("Initial".to_owned()),
                 context: None,
+                metadata: MetadataUpdate::default(),
                 target: LocationUpdate {
                     directory: Some("/repo/project".to_owned()),
                     ..LocationUpdate::default()
@@ -253,6 +277,7 @@ mod tests {
                 status: None,
                 title: Some("Renamed".to_owned()),
                 context: Some("metadata".to_owned()),
+                metadata: MetadataUpdate::default(),
                 target: LocationUpdate::default(),
             })),
             150,
@@ -272,7 +297,7 @@ mod tests {
     }
 
     #[test]
-    fn location_update_clears_agent_workspace_id() -> Result<()> {
+    fn metadata_update_clears_agent_metadata_key() -> Result<()> {
         let temp = TempDir::new()?;
         let store = store_with_path(temp.path().join("state"))?;
         let key = observation_key("ses_root", "server", "default");
@@ -283,10 +308,13 @@ mod tests {
                 status: Some(AgentStatus::Working),
                 title: None,
                 context: None,
-                target: LocationUpdate {
-                    agent_workspace_id: Some("wrk_01KTEST".to_owned()),
-                    ..LocationUpdate::default()
+                metadata: MetadataUpdate {
+                    set: [("workspace_id".to_owned(), "wrk_01KTEST".to_owned())]
+                        .into_iter()
+                        .collect(),
+                    clear: BTreeSet::new(),
                 },
+                target: LocationUpdate::default(),
             })),
             100,
         )?;
@@ -297,10 +325,11 @@ mod tests {
                 status: Some(AgentStatus::Working),
                 title: None,
                 context: None,
-                target: LocationUpdate {
-                    clear_agent_workspace_id: true,
-                    ..LocationUpdate::default()
+                metadata: MetadataUpdate {
+                    set: BTreeMap::new(),
+                    clear: ["workspace_id".to_owned()].into_iter().collect(),
                 },
+                target: LocationUpdate::default(),
             })),
             120,
         )?;
@@ -308,7 +337,61 @@ mod tests {
         let observation = store
             .get_observation(&key)?
             .ok_or_else(|| anyhow::anyhow!("expected observation to be stored"))?;
-        assert_eq!(observation.target.agent_workspace_id, None);
+        assert!(!observation.metadata.contains_key("workspace_id"));
+        assert!(observation.metadata_cleared.contains("workspace_id"));
+        Ok(())
+    }
+
+    #[test]
+    fn upsert_clears_obsolete_producer_target_hints() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = store_with_path(temp.path().join("state"))?;
+        let key = observation_key("ses_root", "server", "default");
+        let mut previous = AgentObservationState {
+            key: key.clone(),
+            created_at: 100,
+            status: Some(AgentStatus::Working),
+            status_observed_at: Some(100),
+            status_changed_at: Some(100),
+            working_elapsed_secs: 0,
+            observed_at: 100,
+            title: None,
+            context: None,
+            metadata: BTreeMap::new(),
+            metadata_cleared: BTreeSet::new(),
+            target: AgentLocationHints {
+                tmux_pane_id: Some("%old".to_owned()),
+                tmux_window_id: Some("@old".to_owned()),
+                git_worktree_path: Some("/repo/old".to_owned()),
+                directory: Some("/repo/old".to_owned()),
+                ..AgentLocationHints::default()
+            },
+        };
+        store.upsert_observation(&previous)?;
+
+        apply_observation_command_at(
+            &store,
+            ObservationCommand::Upsert(Box::new(ObservationUpdate {
+                key: key.clone(),
+                status: Some(AgentStatus::Working),
+                title: None,
+                context: None,
+                metadata: MetadataUpdate::default(),
+                target: LocationUpdate {
+                    directory: Some("/repo/new".to_owned()),
+                    ..LocationUpdate::default()
+                },
+            })),
+            120,
+        )?;
+
+        previous = store
+            .get_observation(&key)?
+            .ok_or_else(|| anyhow::anyhow!("expected observation to be stored"))?;
+        assert_eq!(previous.target.tmux_pane_id, None);
+        assert_eq!(previous.target.tmux_window_id, None);
+        assert_eq!(previous.target.git_worktree_path, None);
+        assert_eq!(previous.target.directory.as_deref(), Some("/repo/new"));
         Ok(())
     }
 
@@ -360,6 +443,7 @@ mod tests {
                 status: Some(AgentStatus::Working),
                 title: None,
                 context: None,
+                metadata: MetadataUpdate::default(),
                 target: LocationUpdate::default(),
             })),
             now,

@@ -471,8 +471,8 @@ class KmuxServerReporter {
     ];
     if (title) cmd.push("--title", title);
     if (context) cmd.push("--context", context);
-    if (workspaceID) cmd.push("--agent-workspace-id", workspaceID);
-    else cmd.push("--clear-agent-workspace-id");
+    if (workspaceID) cmd.push("--agent-meta", `workspace_id=${workspaceID}`);
+    else cmd.push("--clear-agent-meta", "workspace_id");
     if (directory) cmd.push("--directory", directory);
 
     this.spawnKmux(cmd);

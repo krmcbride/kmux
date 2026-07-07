@@ -100,7 +100,6 @@ status_icons:
         .stdout(predicate::str::contains("\"git_worktree_path\""));
 
     let worktree_pane = tmux.pane_for_window("kmux-feature-auth")?;
-    let worktree_window_id = tmux.pane_format(&worktree_pane, "#{window_id}")?;
     let worktree_path = worktree.display().to_string();
     let producer_instance = format!("default/{worktree_pane}");
     kmux_with_pane(&repo, &config_home, &tmux, &worktree_pane)?
@@ -111,10 +110,7 @@ status_icons:
             &producer_instance,
             &[
                 ("--tmux-instance", &tmux.socket_name),
-                ("--tmux-pane-id", &worktree_pane),
-                ("--tmux-window-id", &worktree_window_id),
                 ("--directory", &worktree_path),
-                ("--git-worktree-path", &worktree_path),
                 ("--git-branch", "feature/auth"),
             ],
         ))

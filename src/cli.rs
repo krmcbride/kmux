@@ -144,21 +144,13 @@ pub struct SetAgentStatusArgs {
     #[arg(long)]
     pub tmux_instance: Option<String>,
 
-    /// Optional tmux pane id hint, such as %3.
-    #[arg(long)]
-    pub tmux_pane_id: Option<String>,
+    /// Agent-specific metadata entry in KEY=VALUE form; may be repeated.
+    #[arg(long, value_name = "KEY=VALUE")]
+    pub agent_meta: Vec<String>,
 
-    /// Optional tmux window id hint, such as @7.
-    #[arg(long)]
-    pub tmux_window_id: Option<String>,
-
-    /// Optional agent-native workspace/project id hint; distinct from kmux workspace slugs.
-    #[arg(long)]
-    pub agent_workspace_id: Option<String>,
-
-    /// Clear any previously reported agent-native workspace/project id hint.
-    #[arg(long)]
-    pub clear_agent_workspace_id: bool,
+    /// Clear a previously reported agent-specific metadata key; may be repeated.
+    #[arg(long, value_name = "KEY")]
+    pub clear_agent_meta: Vec<String>,
 
     /// Optional Git repository/project display hint; arbitrary text supplied by the integration.
     #[arg(long)]
@@ -167,10 +159,6 @@ pub struct SetAgentStatusArgs {
     /// Optional filesystem path to the main Git repository.
     #[arg(long)]
     pub git_repo_path: Option<String>,
-
-    /// Optional resolved Git worktree path hint; producers should usually report --directory instead.
-    #[arg(long)]
-    pub git_worktree_path: Option<String>,
 
     /// Optional Git branch name hint.
     #[arg(long)]

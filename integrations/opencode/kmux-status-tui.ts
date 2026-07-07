@@ -337,9 +337,8 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     pushArg(cmd, "--title", title);
     pushArg(cmd, "--context", context);
     pushArg(cmd, "--tmux-instance", tmuxInstance);
-    pushArg(cmd, "--tmux-pane-id", paneID);
-    if (workspaceID) cmd.push("--agent-workspace-id", workspaceID);
-    else cmd.push("--clear-agent-workspace-id");
+    if (workspaceID) cmd.push("--agent-meta", `workspace_id=${workspaceID}`);
+    else cmd.push("--clear-agent-meta", "workspace_id");
     pushArg(cmd, "--directory", directory);
   }
 

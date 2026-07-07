@@ -9,8 +9,8 @@
  * OpenCode v1 scopes tui.session.select events by workspace, not by directory
  * or TUI process. Without a workspace ID, implicit-local TUIs can all accept the
  * event and navigate to the wrong session, so this hook intentionally skips the
- * OpenCode API call unless kmux reports target.agent_workspace_id. Directory is
- * still sent with workspace-scoped calls to preserve OpenCode routing context.
+ * OpenCode API call unless kmux reports agent.metadata.workspace_id. Directory
+ * is still sent with workspace-scoped calls to preserve OpenCode routing context.
  */
 
 const AGENT_KIND = "opencode";
@@ -57,7 +57,8 @@ function selectedDirectory(payload: HookPayload): string | undefined {
 }
 
 function selectedWorkspaceID(payload: HookPayload): string | undefined {
-  return clean(optionalRecord(payload.target)?.agent_workspace_id);
+  const metadata = optionalRecord(optionalRecord(payload.agent)?.metadata);
+  return clean(metadata?.workspace_id);
 }
 
 function configuredServerUrl(): string | undefined {

@@ -4,6 +4,7 @@
 //! with stable identities, status-derived icons, elapsed-time labels, and compact
 //! primary/secondary text for the renderer.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget};
@@ -58,6 +59,7 @@ pub(super) struct SidebarRowSelection {
     pub(super) status: AgentStatus,
     pub(super) title: Option<String>,
     pub(super) context: Option<String>,
+    pub(super) metadata: BTreeMap<String, String>,
     pub(super) target: AgentLocationHints,
 }
 
@@ -68,6 +70,7 @@ impl SidebarRowSelection {
             status: view.status,
             title: view.title.clone(),
             context: view.context.clone(),
+            metadata: view.metadata().clone(),
             target: view.location_hints().clone(),
         }
     }

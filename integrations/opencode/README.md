@@ -16,8 +16,8 @@ in declarative Home Manager configuration.
 
 The status plugins report the active OpenCode session directory as the primary
 kmux location. When OpenCode exposes a workspace ID, the plugins also report it
-as optional routing metadata so the selection hook can scope OpenCode TUI
-navigation safely.
+as generic agent metadata (`workspace_id`) so the selection hook can scope
+OpenCode TUI navigation safely.
 
 ## Development
 
