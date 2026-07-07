@@ -14,13 +14,11 @@
  */
 
 const AGENT_KIND = "opencode";
-const SERVER_PRODUCER_KIND = "server";
 const DEFAULT_TIMEOUT_MS = 1000;
 
 type HookPayload = {
   agent?: Record<string, unknown>;
-  target?: Record<string, unknown>;
-  observations?: unknown[];
+  workspace?: Record<string, unknown>;
 };
 
 function clean(value: unknown): string | undefined {
@@ -52,8 +50,8 @@ function sessionID(payload: HookPayload): string | undefined {
 }
 
 function selectedDirectory(payload: HookPayload): string | undefined {
-  const target = optionalRecord(payload.target);
-  return clean(target?.git_worktree_path) ?? clean(target?.directory);
+  const workspace = optionalRecord(payload.workspace);
+  return clean(workspace?.git_worktree_path) ?? clean(workspace?.directory);
 }
 
 function selectedWorkspaceID(payload: HookPayload): string | undefined {
@@ -61,19 +59,8 @@ function selectedWorkspaceID(payload: HookPayload): string | undefined {
   return clean(metadata?.workspace_id);
 }
 
-function configuredServerUrl(): string | undefined {
+function serverUrl(): string | undefined {
   return validHttpUrl(clean(Bun.env.OPENCODE_SERVER_URL));
-}
-
-function serverUrlFromPayload(payload: HookPayload): string | undefined {
-  for (const item of payload.observations ?? []) {
-    const observation = optionalRecord(item);
-    if (!observation) continue;
-    if (clean(observation.producer_kind) !== SERVER_PRODUCER_KIND) continue;
-    const url = validHttpUrl(clean(observation.producer_instance));
-    if (url) return url;
-  }
-  return configuredServerUrl();
 }
 
 function validHttpUrl(value: string | undefined): string | undefined {
@@ -163,16 +150,16 @@ async function main() {
     return;
   }
 
-  const serverUrl = serverUrlFromPayload(payload);
-  if (!serverUrl) {
+  const configuredServerUrl = serverUrl();
+  if (!configuredServerUrl) {
     console.error(
-      "OpenCode select-session skipped: no server producer URL and OPENCODE_SERVER_URL is not set",
+      "OpenCode select-session skipped: OPENCODE_SERVER_URL is not set",
     );
     return;
   }
 
   await selectSession(
-    serverUrl,
+    configuredServerUrl,
     selectedSessionID,
     selectedDirectory(payload),
     workspaceID,

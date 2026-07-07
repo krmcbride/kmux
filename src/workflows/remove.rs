@@ -4,8 +4,9 @@ use crate::cli;
 use crate::state::workspace::WorkspaceStateStore;
 
 use super::context::{load_repo_context, load_tmux_context};
-use super::resolve::{ResolvedWorkspace, resolve_current_kmux_workspace, resolve_workspace};
+use super::resolve::{resolve_current_kmux_workspace, resolve_workspace};
 use crate::paths::same_path;
+use crate::workspace::WorkspaceRecord;
 
 /// Remove a kmux workspace, its worktree, local branch, tmux window, and owned parent link.
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
@@ -72,7 +73,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
 fn resolve_remove_target(
     repo: &super::context::RepoContext,
     name: Option<&str>,
-) -> Result<ResolvedWorkspace> {
+) -> Result<WorkspaceRecord> {
     if let Some(name) = name {
         return resolve_workspace(repo, name);
     }

@@ -2,13 +2,13 @@ use anyhow::{Result, bail};
 
 use super::context::{RepoContext, TmuxContext};
 use super::files::startup_command;
-use super::resolve::ResolvedWorkspace;
+use crate::workspace::WorkspaceRecord;
 
 /// Create a tmux window for a resolved workspace.
 pub(super) fn create_resolved(
     repo: &RepoContext,
     tmux: &TmuxContext,
-    resolved: &ResolvedWorkspace,
+    resolved: &WorkspaceRecord,
     focus: bool,
 ) -> Result<()> {
     let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
@@ -40,7 +40,7 @@ pub(super) fn create_resolved(
 pub(super) fn restore_resolved(
     repo: &RepoContext,
     tmux: &TmuxContext,
-    resolved: &ResolvedWorkspace,
+    resolved: &WorkspaceRecord,
 ) -> Result<()> {
     let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     let expected_windows = tmux

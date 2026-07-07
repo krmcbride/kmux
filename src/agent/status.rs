@@ -10,7 +10,7 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
-use crate::agent::sessions::AgentSessionView;
+use crate::agent::sessions::ResolvedAgentSession;
 use crate::config::StatusIcons;
 use crate::git::{Git, WorktreeInfo};
 use crate::paths::RepoPaths;
@@ -73,7 +73,7 @@ struct DisplayRow {
 // Without filters, prefer views for the current repo when the command is run
 // inside a Git repository; otherwise show all known agent sessions.
 pub(crate) fn status_entries(
-    views: &[AgentSessionView],
+    views: &[ResolvedAgentSession],
     query: &StatusQuery,
     icons: &StatusIcons,
 ) -> Result<Vec<StatusEntry>> {
@@ -104,7 +104,7 @@ pub(crate) fn status_entries(
 // Current-repo scoping uses strict workspace identity matching to avoid pulling
 // in stale observations from another worktree that share a branch or slug.
 fn current_repo_entries(
-    views: &[AgentSessionView],
+    views: &[ResolvedAgentSession],
     now: u64,
     show_git: bool,
     icons: &StatusIcons,
@@ -131,7 +131,7 @@ fn current_repo_entries(
 // Build a presentation row from the resolved session view, falling back through
 // worktree, explicit target, and tmux metadata as needed.
 fn entry_for_view(
-    view: &AgentSessionView,
+    view: &ResolvedAgentSession,
     worktree: Option<&WorktreeInfo>,
     now: u64,
     show_git: bool,
@@ -185,7 +185,7 @@ fn entry_for_view(
     }
 }
 
-fn view_matches_filter(view: &AgentSessionView, filter: &str) -> bool {
+fn view_matches_filter(view: &ResolvedAgentSession, filter: &str) -> bool {
     view.key.agent_kind == filter
         || view.key.session_id == filter
         || view.kmux_workspace_slug() == Some(filter)
@@ -341,8 +341,8 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession};
-    use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
+    use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
+    use crate::state::{AgentSessionKey, AgentStatus};
 
     #[test]
     fn status_entries_filter_by_branch_without_current_repo_scope() -> Result<()> {
@@ -402,7 +402,7 @@ mod tests {
         session_id: &str,
         git_branch: &str,
         title: &str,
-    ) -> AgentSessionView {
+    ) -> ResolvedAgentSession {
         ResolvedAgentSession {
             key: AgentSessionKey {
                 agent_kind: agent_kind.to_owned(),
@@ -420,14 +420,14 @@ mod tests {
             title: Some(title.to_owned()),
             context: None,
             metadata: Default::default(),
-            target: AgentLocationHints {
+            target: ResolvedAgentTarget {
                 kmux_workspace_slug: Some(git_branch.replace('/', "-")),
                 git_worktree_path: Some(format!("/repo/{session_id}")),
                 git_branch: Some(git_branch.to_owned()),
                 tmux_session_name: Some("project".to_owned()),
                 tmux_window_id: Some("@1".to_owned()),
                 tmux_window_name: Some(format!("kmux-{}", git_branch.replace('/', "-"))),
-                ..AgentLocationHints::default()
+                ..ResolvedAgentTarget::default()
             },
         }
     }

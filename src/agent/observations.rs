@@ -106,9 +106,6 @@ fn upsert_observation(store: &StateStore, update: ObservationUpdate, now: u64) -
         target: AgentLocationHints::default(),
     });
 
-    if state.created_at == 0 {
-        state.created_at = state.effective_created_at();
-    }
     state.key = key;
     if status_supplied {
         state.status = update.status;
@@ -174,8 +171,8 @@ fn apply_optional(target: &mut Option<String>, value: Option<String>) {
     }
 }
 
-// Fill missing repo fields opportunistically from path hints so older or sparse
-// producers still show useful repo/branch labels.
+// Fill missing repo fields opportunistically from path hints so sparse producer
+// reports still show useful repo/branch labels.
 fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
     let metadata = infer_repo_metadata_from_paths(&[
         target.directory.as_deref(),

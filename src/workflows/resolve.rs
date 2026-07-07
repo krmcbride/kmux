@@ -13,11 +13,8 @@ use crate::workspace::{
 use super::context::RepoContext;
 use crate::paths::same_path;
 
-pub(super) type ResolvedWorkspace = WorkspaceRecord;
-pub(super) type WorkspaceListItem = WorkspaceInventoryItem;
-
 /// Resolve a user-supplied workspace name, slug, or window-prefixed slug.
-pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<ResolvedWorkspace> {
+pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<WorkspaceRecord> {
     for candidate in name_candidates(&repo.config, name) {
         if let Some(worktree) = find_kmux_workspace_by_name(repo, &candidate)? {
             return resolved_from_kmux_worktree(repo, worktree);
@@ -31,7 +28,7 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Resolv
 pub(super) fn resolve_current_kmux_workspace(
     repo: &RepoContext,
     command_name: &str,
-) -> Result<ResolvedWorkspace> {
+) -> Result<WorkspaceRecord> {
     if same_path(&repo.paths.current_worktree, &repo.paths.main_worktree) {
         bail!("{command_name} requires a workspace name when run from the main worktree");
     }
@@ -64,12 +61,12 @@ pub(super) fn resolve_current_kmux_workspace(
 pub(super) fn resolved_from_kmux_worktree(
     repo: &RepoContext,
     worktree: WorktreeInfo,
-) -> Result<ResolvedWorkspace> {
+) -> Result<WorkspaceRecord> {
     validated_kmux_record(&repo.paths, worktree, false)
 }
 
 /// Build the full workspace inventory, enriched with parent metadata and tree depth.
-pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceListItem>> {
+pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceInventoryItem>> {
     let mut worktrees = repo.git.worktrees()?;
     let mut items = Vec::new();
 
@@ -95,7 +92,7 @@ pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceListItem>> {
 /// Return strict kmux workspaces suitable for tmux restore.
 ///
 /// Strict workspaces live under the kmux worktree base and use the branch-derived slug.
-pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<ResolvedWorkspace>> {
+pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<WorkspaceRecord>> {
     let mut workspaces = Vec::new();
     for worktree in repo.git.worktrees()? {
         if !is_kmux_worktree(&repo.paths, &worktree.path) {
@@ -156,12 +153,15 @@ pub(super) fn find_kmux_workspace_by_slug(
 
 // Filesystem creation time is best-effort list metadata; unsupported platforms
 // fall back to modified time, then omit the field.
-fn list_item_from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<WorkspaceListItem> {
+fn list_item_from_worktree(
+    worktree: WorktreeInfo,
+    is_main: bool,
+) -> Result<WorkspaceInventoryItem> {
     let record = WorkspaceRecord::from_worktree(worktree, is_main)?;
     list_item_from_record(record)
 }
 
-fn list_item_from_record(record: WorkspaceRecord) -> Result<WorkspaceListItem> {
+fn list_item_from_record(record: WorkspaceRecord) -> Result<WorkspaceInventoryItem> {
     let created_at = std::fs::metadata(record.path())
         .ok()
         .and_then(|metadata| metadata.created().or_else(|_| metadata.modified()).ok())
@@ -173,7 +173,7 @@ fn list_item_from_record(record: WorkspaceRecord) -> Result<WorkspaceListItem> {
 
 // Parent metadata is allowed to reference branches/worktrees that are not
 // currently present; missing parents are rendered as roots with a parent label.
-fn apply_parent_state(items: &mut [WorkspaceListItem], state: &WorkspaceState) {
+fn apply_parent_state(items: &mut [WorkspaceInventoryItem], state: &WorkspaceState) {
     for item in items {
         let Some(branch) = item.git_branch() else {
             continue;
@@ -187,7 +187,7 @@ fn apply_parent_state(items: &mut [WorkspaceListItem], state: &WorkspaceState) {
 
 // Order inventory as a forest. Links to absent parents become roots, and the
 // visited fallback handles hand-edited cyclic state defensively.
-fn parent_tree_order(mut items: Vec<WorkspaceListItem>) -> Vec<WorkspaceListItem> {
+fn parent_tree_order(mut items: Vec<WorkspaceInventoryItem>) -> Vec<WorkspaceInventoryItem> {
     let branch_set = items
         .iter()
         .filter_map(|item| item.git_branch().map(ToOwned::to_owned))
@@ -244,7 +244,7 @@ fn visit_parent_tree(
     index: usize,
     depth: usize,
     children: &BTreeMap<String, Vec<usize>>,
-    items: &mut [WorkspaceListItem],
+    items: &mut [WorkspaceInventoryItem],
     visited: &mut HashSet<usize>,
     ordered: &mut Vec<usize>,
 ) {
@@ -265,7 +265,7 @@ fn visit_parent_tree(
     }
 }
 
-fn item_order_key(item: &WorkspaceListItem) -> (bool, String) {
+fn item_order_key(item: &WorkspaceInventoryItem) -> (bool, String) {
     (!item.is_main(), item.workspace_slug().to_owned())
 }
 

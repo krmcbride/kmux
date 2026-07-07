@@ -2,7 +2,7 @@
 //!
 //! The store uses the user's XDG state directory because observations are local
 //! process telemetry, not repo metadata. It owns filename construction,
-//! migration/pruning of stale files, and atomic writes from short-lived producers.
+//! pruning of stale files, and atomic writes from short-lived producers.
 
 use std::fs;
 use std::io;
@@ -55,7 +55,7 @@ impl StateStore {
             .filter(|observation| observation.key == *key))
     }
 
-    /// List valid observations, migrating legacy filenames and pruning unreadable files.
+    /// List valid observations, pruning invalid JSON or non-canonical files.
     pub fn list_observations(&self) -> Result<Vec<AgentObservationState>> {
         let observations_dir = self.observations_dir();
         let result = telemetry::timed_result_event!(
@@ -84,19 +84,9 @@ impl StateStore {
                             Some(observation) => {
                                 let canonical_path = self.observation_path(&observation.key);
                                 if path != canonical_path {
-                                    if canonical_path.exists() {
-                                        telemetry.pruned += 1;
-                                        delete_file_if_exists(&path)?;
-                                        continue;
-                                    }
-                                    fs::rename(&path, &canonical_path).with_context(|| {
-                                        format!(
-                                            "failed to migrate observation state file {} to {}",
-                                            path.display(),
-                                            canonical_path.display()
-                                        )
-                                    })?;
-                                    telemetry.migrated += 1;
+                                    telemetry.pruned += 1;
+                                    delete_file_if_exists(&path)?;
+                                    continue;
                                 }
                                 telemetry.observations.push(observation);
                             }
@@ -119,7 +109,6 @@ impl StateStore {
             ok |telemetry| {
                 files = telemetry.files,
                 observations = telemetry.observations.len(),
-                migrated = telemetry.migrated,
                 pruned = telemetry.pruned,
             },
         );
@@ -163,7 +152,6 @@ impl StateStore {
 struct ObservationListTelemetry {
     observations: Vec<AgentObservationState>,
     files: usize,
-    migrated: usize,
     pruned: usize,
 }
 
@@ -310,20 +298,18 @@ mod tests {
     }
 
     #[test]
-    fn delete_session_removes_observations_migrated_from_non_canonical_filenames() -> Result<()> {
+    fn non_canonical_observation_filenames_are_pruned() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
         let state = test_observation("server", "default", AgentStatus::Working, 100);
-        let session = state.key.session.clone();
-        let old_path = store
+        let non_canonical_path = store
             .observations_dir()
             .join("opencode__ses_root__server__default.json");
-        fs::write(&old_path, serde_json::to_vec_pretty(&state)?)?;
+        fs::write(&non_canonical_path, serde_json::to_vec_pretty(&state)?)?;
 
-        store.delete_session(&session)?;
-
-        assert!(!old_path.exists());
         assert!(store.list_observations()?.is_empty());
+
+        assert!(!non_canonical_path.exists());
         Ok(())
     }
 
@@ -336,18 +322,6 @@ mod tests {
 
         assert!(store.list_observations()?.is_empty());
         assert!(!corrupt_path.exists());
-        Ok(())
-    }
-
-    #[test]
-    fn old_agent_reports_directory_is_ignored() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let old_dir = store.base_path.join("agent-reports");
-        fs::create_dir_all(&old_dir)?;
-        fs::write(old_dir.join("old.json"), "{}")?;
-
-        assert!(store.list_observations()?.is_empty());
         Ok(())
     }
 

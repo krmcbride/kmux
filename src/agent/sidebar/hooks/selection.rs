@@ -10,8 +10,9 @@ use serde::Serialize;
 
 use super::diagnostics::{self, HookAttemptLog};
 use super::runner::{self, HookCommand, HookCommandOutcome};
+use crate::agent::sessions::ResolvedAgentTarget;
 use crate::config::SidebarSelectionHookConfig;
-use crate::state::{AgentLocationHints, AgentObservationState, AgentSessionKey, AgentStatus};
+use crate::state::{AgentObservationState, AgentSessionKey, AgentStatus};
 
 const HOOK_EVENT: &str = "sidebar.select";
 
@@ -23,7 +24,7 @@ pub(in crate::agent::sidebar) struct SelectionHookInput {
     title: Option<String>,
     context: Option<String>,
     metadata: BTreeMap<String, String>,
-    target: AgentLocationHints,
+    target: ResolvedAgentTarget,
     observations: Vec<AgentObservationState>,
 }
 
@@ -47,7 +48,7 @@ impl SelectionHookInput {
         title: Option<String>,
         context: Option<String>,
         metadata: BTreeMap<String, String>,
-        target: AgentLocationHints,
+        target: ResolvedAgentTarget,
         observations: Vec<AgentObservationState>,
     ) -> Self {
         Self {
@@ -67,69 +68,57 @@ struct SelectionHookPayload {
     version: u8,
     event: &'static str,
     agent: SelectionHookAgentPayload,
-    status: AgentStatus,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    context: Option<String>,
-    target: SelectionHookTargetPayload,
-    observations: Vec<SelectionHookObservationPayload>,
+    workspace: SelectionHookWorkspacePayload,
+    tmux: SelectionHookTmuxPayload,
 }
 
 #[derive(Debug, Clone, Serialize)]
 struct SelectionHookAgentPayload {
     kind: String,
     session_id: String,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    metadata: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize)]
-struct SelectionHookTargetPayload {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_instance: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_session_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_window_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_window_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_pane_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_pane_title: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_pane_current_command: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    tmux_pane_current_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    git_repo_name: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    git_repo_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    kmux_workspace_slug: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    git_worktree_path: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    git_branch: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    directory: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct SelectionHookObservationPayload {
-    producer_kind: String,
-    producer_instance: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    status: Option<AgentStatus>,
-    observed_at: u64,
+    status: AgentStatus,
     #[serde(skip_serializing_if = "Option::is_none")]
     title: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     context: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     metadata: BTreeMap<String, String>,
-    target: SelectionHookTargetPayload,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct SelectionHookWorkspacePayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    directory: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_worktree_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_repo_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_repo_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    git_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    kmux_workspace_slug: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+struct SelectionHookTmuxPayload {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    instance: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    session_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    window_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pane_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pane_title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pane_current_command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pane_current_path: Option<String>,
 }
 
 fn run_hooks_for_input(
@@ -151,7 +140,7 @@ fn run_hooks_for_input_and_log_path(
 
     for hook in hooks
         .iter()
-        .filter(|hook| hook_matches_payload(hook, &payload))
+        .filter(|hook| hook_matches_selection(hook, selected))
     {
         if let Err(error) = run_matching_hook(hook, &payload, &payload_json, log_path) {
             failures.push(format!("{}: {error}", hook.command));
@@ -170,7 +159,7 @@ fn run_matching_hook(
     payload_json: &[u8],
     log_path: Option<&Path>,
 ) -> Result<()> {
-    let current_dir = hook_current_dir(&payload.target);
+    let current_dir = hook_current_dir(&payload.workspace);
     let command = HookCommand {
         command: &hook.command,
         stdin: payload_json,
@@ -246,34 +235,33 @@ fn payload_for_selection(selected: &SelectionHookInput) -> SelectionHookPayload 
         agent: SelectionHookAgentPayload {
             kind: selected.key.agent_kind.clone(),
             session_id: selected.key.session_id.clone(),
+            status: selected.status,
+            title: selected.title.clone(),
+            context: selected.context.clone(),
             metadata: selected.metadata.clone(),
         },
-        status: selected.status,
-        title: selected.title.clone(),
-        context: selected.context.clone(),
-        target: SelectionHookTargetPayload::from_hints(&selected.target),
-        observations: selected
-            .observations
-            .iter()
-            .map(SelectionHookObservationPayload::from_observation)
-            .collect(),
+        workspace: SelectionHookWorkspacePayload::from_target(&selected.target),
+        tmux: SelectionHookTmuxPayload::from_target(&selected.target),
     }
 }
 
-fn hook_matches_payload(hook: &SidebarSelectionHookConfig, payload: &SelectionHookPayload) -> bool {
+fn hook_matches_selection(
+    hook: &SidebarSelectionHookConfig,
+    selected: &SelectionHookInput,
+) -> bool {
     if hook
         .agent_kind
         .as_deref()
-        .is_some_and(|agent_kind| agent_kind != payload.agent.kind)
+        .is_some_and(|agent_kind| agent_kind != selected.key.agent_kind)
     {
         return false;
     }
 
     if let Some(producer_kind) = hook.producer_kind.as_deref() {
-        return payload
+        return selected
             .observations
             .iter()
-            .any(|observation| observation.producer_kind == producer_kind);
+            .any(|observation| observation.key.producer_kind == producer_kind);
     }
 
     true
@@ -284,39 +272,27 @@ fn hook_env(payload: &SelectionHookPayload, log_path: Option<&Path>) -> Vec<(OsS
     push_env(&mut env, "KMUX_HOOK_EVENT", payload.event);
     push_env(&mut env, "KMUX_AGENT_KIND", &payload.agent.kind);
     push_env(&mut env, "KMUX_AGENT_SESSION_ID", &payload.agent.session_id);
-    push_env(&mut env, "KMUX_AGENT_STATUS", payload.status.as_str());
-    push_optional_env(
-        &mut env,
-        "KMUX_TMUX_INSTANCE",
-        &payload.target.tmux_instance,
-    );
+    push_env(&mut env, "KMUX_AGENT_STATUS", payload.agent.status.as_str());
+    push_optional_env(&mut env, "KMUX_TMUX_INSTANCE", &payload.tmux.instance);
     push_optional_env(
         &mut env,
         "KMUX_TMUX_SESSION_NAME",
-        &payload.target.tmux_session_name,
+        &payload.tmux.session_name,
     );
-    push_optional_env(
-        &mut env,
-        "KMUX_TMUX_WINDOW_NAME",
-        &payload.target.tmux_window_name,
-    );
-    push_optional_env(
-        &mut env,
-        "KMUX_TMUX_WINDOW_ID",
-        &payload.target.tmux_window_id,
-    );
-    push_optional_env(&mut env, "KMUX_TMUX_PANE_ID", &payload.target.tmux_pane_id);
-    push_optional_env(&mut env, "KMUX_DIRECTORY", &payload.target.directory);
+    push_optional_env(&mut env, "KMUX_TMUX_WINDOW_NAME", &payload.tmux.window_name);
+    push_optional_env(&mut env, "KMUX_TMUX_WINDOW_ID", &payload.tmux.window_id);
+    push_optional_env(&mut env, "KMUX_TMUX_PANE_ID", &payload.tmux.pane_id);
+    push_optional_env(&mut env, "KMUX_DIRECTORY", &payload.workspace.directory);
     push_optional_env(
         &mut env,
         "KMUX_GIT_WORKTREE_PATH",
-        &payload.target.git_worktree_path,
+        &payload.workspace.git_worktree_path,
     );
-    push_optional_env(&mut env, "KMUX_GIT_BRANCH", &payload.target.git_branch);
+    push_optional_env(&mut env, "KMUX_GIT_BRANCH", &payload.workspace.git_branch);
     push_optional_env(
         &mut env,
         "KMUX_WORKSPACE_SLUG",
-        &payload.target.kmux_workspace_slug,
+        &payload.workspace.kmux_workspace_slug,
     );
     push_metadata_env(&mut env, &payload.agent.metadata);
     if let Some(log_path) = log_path {
@@ -370,10 +346,10 @@ fn metadata_env_name(key: &str) -> Option<String> {
     Some(env_name)
 }
 
-fn hook_current_dir(target: &SelectionHookTargetPayload) -> Option<PathBuf> {
+fn hook_current_dir(workspace: &SelectionHookWorkspacePayload) -> Option<PathBuf> {
     [
-        target.git_worktree_path.as_deref(),
-        target.directory.as_deref(),
+        workspace.git_worktree_path.as_deref(),
+        workspace.directory.as_deref(),
     ]
     .into_iter()
     .flatten()
@@ -382,38 +358,30 @@ fn hook_current_dir(target: &SelectionHookTargetPayload) -> Option<PathBuf> {
     .map(Path::to_path_buf)
 }
 
-impl SelectionHookTargetPayload {
-    fn from_hints(target: &AgentLocationHints) -> Self {
+impl SelectionHookWorkspacePayload {
+    fn from_target(target: &ResolvedAgentTarget) -> Self {
         Self {
-            tmux_instance: target.tmux_instance.clone(),
-            tmux_session_name: target.tmux_session_name.clone(),
-            tmux_window_name: target.tmux_window_name.clone(),
-            tmux_window_id: target.tmux_window_id.clone(),
-            tmux_pane_id: target.tmux_pane_id.clone(),
-            tmux_pane_title: target.tmux_pane_title.clone(),
-            tmux_pane_current_command: target.tmux_pane_current_command.clone(),
-            tmux_pane_current_path: target.tmux_pane_current_path.clone(),
+            directory: target.directory.clone(),
+            git_worktree_path: target.git_worktree_path.clone(),
             git_repo_name: target.git_repo_name.clone(),
             git_repo_path: target.git_repo_path.clone(),
-            kmux_workspace_slug: target.kmux_workspace_slug.clone(),
-            git_worktree_path: target.git_worktree_path.clone(),
             git_branch: target.git_branch.clone(),
-            directory: target.directory.clone(),
+            kmux_workspace_slug: target.kmux_workspace_slug.clone(),
         }
     }
 }
 
-impl SelectionHookObservationPayload {
-    fn from_observation(observation: &AgentObservationState) -> Self {
+impl SelectionHookTmuxPayload {
+    fn from_target(target: &ResolvedAgentTarget) -> Self {
         Self {
-            producer_kind: observation.key.producer_kind.clone(),
-            producer_instance: observation.key.producer_instance.clone(),
-            status: observation.status,
-            observed_at: observation.observed_at,
-            title: observation.title.clone(),
-            context: observation.context.clone(),
-            metadata: observation.metadata.clone(),
-            target: SelectionHookTargetPayload::from_hints(&observation.target),
+            instance: target.tmux_instance.clone(),
+            session_name: target.tmux_session_name.clone(),
+            window_name: target.tmux_window_name.clone(),
+            window_id: target.tmux_window_id.clone(),
+            pane_id: target.tmux_pane_id.clone(),
+            pane_title: target.tmux_pane_title.clone(),
+            pane_current_command: target.tmux_pane_current_command.clone(),
+            pane_current_path: target.tmux_pane_current_path.clone(),
         }
     }
 }
@@ -428,24 +396,19 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use crate::agent::sessions::AgentSessionView;
+    use crate::agent::sessions::ResolvedAgentSession;
     use crate::agent::sidebar::test_support::report_state;
-    use crate::state::{AgentObservationKey, AgentSessionKey};
+    use crate::state::{AgentLocationHints, AgentObservationKey, AgentSessionKey};
 
     #[test]
-    fn payload_serializes_selected_session_and_observations() {
+    fn payload_serializes_selected_session_summary() {
         let mut view = report_state(AgentStatus::Waiting, 100, "@1", "%1");
         view.title = Some("Implement hooks".to_owned());
         view.context = Some("55.2K".to_owned());
         view.target.directory = Some("/repo/worktree".to_owned());
         view.metadata
             .insert("opaque_ref".to_owned(), "ref_01KTEST".to_owned());
-        let mut selected = input_from_view(&view, Vec::new());
-        selected.observations = vec![observation_for_input(
-            &selected,
-            "server",
-            "http://127.0.0.1:4096",
-        )];
+        let selected = input_from_view(&view, Vec::new());
 
         let payload = payload_for_selection(&selected);
         let json = serde_json::to_value(payload).expect("payload should serialize");
@@ -458,54 +421,30 @@ mod tests {
                 "agent": {
                     "kind": "opencode",
                     "session_id": "ses_%1",
-                    "metadata": {
-                        "opaque_ref": "ref_01KTEST",
-                    },
-                },
-                "status": "waiting",
-                "title": "Implement hooks",
-                "context": "55.2K",
-                "target": {
-                    "tmux_instance": "test",
-                    "tmux_session_name": "project",
-                    "tmux_window_name": "kmux-feature-sidebar",
-                    "tmux_window_id": "@1",
-                    "tmux_pane_id": "%1",
-                    "tmux_pane_title": "Implement sidebar",
-                    "tmux_pane_current_command": "nvim",
-                    "git_repo_name": "kmux",
-                    "git_repo_path": "/repo",
-                    "kmux_workspace_slug": "feature-sidebar",
-                    "git_worktree_path": "/repo__worktrees/feature-sidebar",
-                    "git_branch": "feature/sidebar",
-                    "directory": "/repo/worktree",
-                },
-                "observations": [{
-                    "producer_kind": "server",
-                    "producer_instance": "http://127.0.0.1:4096",
                     "status": "waiting",
-                    "observed_at": 100,
                     "title": "Implement hooks",
                     "context": "55.2K",
                     "metadata": {
                         "opaque_ref": "ref_01KTEST",
                     },
-                    "target": {
-                        "tmux_instance": "test",
-                        "tmux_session_name": "project",
-                        "tmux_window_name": "kmux-feature-sidebar",
-                        "tmux_window_id": "@1",
-                        "tmux_pane_id": "%1",
-                        "tmux_pane_title": "Implement sidebar",
-                        "tmux_pane_current_command": "nvim",
-                        "git_repo_name": "kmux",
-                        "git_repo_path": "/repo",
-                        "kmux_workspace_slug": "feature-sidebar",
-                        "git_worktree_path": "/repo__worktrees/feature-sidebar",
-                        "git_branch": "feature/sidebar",
-                        "directory": "/repo/worktree",
-                    },
-                }],
+                },
+                "workspace": {
+                    "directory": "/repo/worktree",
+                    "git_worktree_path": "/repo__worktrees/feature-sidebar",
+                    "git_repo_name": "kmux",
+                    "git_repo_path": "/repo",
+                    "git_branch": "feature/sidebar",
+                    "kmux_workspace_slug": "feature-sidebar",
+                },
+                "tmux": {
+                    "instance": "test",
+                    "session_name": "project",
+                    "window_name": "kmux-feature-sidebar",
+                    "window_id": "@1",
+                    "pane_id": "%1",
+                    "pane_title": "Implement sidebar",
+                    "pane_current_command": "nvim",
+                },
             })
         );
     }
@@ -513,19 +452,18 @@ mod tests {
     #[test]
     fn hook_filters_by_agent_kind_and_producer_kind() {
         let selected = input_with_observation("server", "http://127.0.0.1:4096");
-        let payload = payload_for_selection(&selected);
 
-        assert!(hook_matches_payload(
+        assert!(hook_matches_selection(
             &hook_config("true", Some("opencode"), Some("server"), None),
-            &payload
+            &selected
         ));
-        assert!(!hook_matches_payload(
+        assert!(!hook_matches_selection(
             &hook_config("true", Some("codex"), Some("server"), None),
-            &payload
+            &selected
         ));
-        assert!(!hook_matches_payload(
+        assert!(!hook_matches_selection(
             &hook_config("true", Some("opencode"), Some("tui"), None),
-            &payload
+            &selected
         ));
     }
 
@@ -533,11 +471,10 @@ mod tests {
     fn agent_kind_only_hook_matches_without_observations() {
         let selected =
             input_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), vec![]);
-        let payload = payload_for_selection(&selected);
 
-        assert!(hook_matches_payload(
+        assert!(hook_matches_selection(
             &hook_config("true", Some("opencode"), None, None),
-            &payload
+            &selected
         ));
     }
 
@@ -634,16 +571,22 @@ mod tests {
     fn hook_current_dir_prefers_worktree_path_and_falls_back_to_directory() -> Result<()> {
         let worktree = tempdir()?;
         let directory = tempdir()?;
-        let mut target = SelectionHookTargetPayload {
+        let mut workspace = SelectionHookWorkspacePayload {
             git_worktree_path: Some(worktree.path().display().to_string()),
             directory: Some(directory.path().display().to_string()),
-            ..SelectionHookTargetPayload::default()
+            ..SelectionHookWorkspacePayload::default()
         };
 
-        assert_eq!(hook_current_dir(&target).as_deref(), Some(worktree.path()));
+        assert_eq!(
+            hook_current_dir(&workspace).as_deref(),
+            Some(worktree.path())
+        );
 
-        target.git_worktree_path = Some(worktree.path().join("missing").display().to_string());
-        assert_eq!(hook_current_dir(&target).as_deref(), Some(directory.path()));
+        workspace.git_worktree_path = Some(worktree.path().join("missing").display().to_string());
+        assert_eq!(
+            hook_current_dir(&workspace).as_deref(),
+            Some(directory.path())
+        );
         Ok(())
     }
 
@@ -806,9 +749,7 @@ mod tests {
     #[test]
     fn hook_timeout_covers_commands_that_ignore_large_stdin() {
         let mut selected = input_with_observation("server", "http://127.0.0.1:4096");
-        let mut observation = selected.observations.remove(0);
-        observation.title = Some("x".repeat(1024 * 1024));
-        selected.observations.push(observation);
+        selected.context = Some("x".repeat(1024 * 1024));
         let started = Instant::now();
 
         let error = run_hooks_for_input_and_log_path(
@@ -850,7 +791,7 @@ mod tests {
     }
 
     fn input_from_view(
-        view: &AgentSessionView,
+        view: &ResolvedAgentSession,
         observations: Vec<AgentObservationState>,
     ) -> SelectionHookInput {
         SelectionHookInput::new(
@@ -859,7 +800,7 @@ mod tests {
             view.title.clone(),
             view.context.clone(),
             view.metadata().clone(),
-            view.location_hints().clone(),
+            view.target.clone(),
             observations,
         )
     }
@@ -888,7 +829,7 @@ mod tests {
             context: selected.context.clone(),
             metadata: selected.metadata.clone(),
             metadata_cleared: Default::default(),
-            target: selected.target.clone(),
+            target: AgentLocationHints::default(),
         }
     }
 

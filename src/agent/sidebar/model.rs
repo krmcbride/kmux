@@ -7,9 +7,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget};
+use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
 use crate::config::StatusIcons;
-use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus};
+use crate::state::{AgentSessionKey, AgentStatus};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +45,7 @@ impl SidebarRowIdentity {
         !self.key.trim().is_empty()
     }
 
-    fn from_view(view: &AgentSessionView) -> Self {
+    fn from_view(view: &ResolvedAgentSession) -> Self {
         Self {
             key: view_identity_key(view),
         }
@@ -60,18 +60,18 @@ pub(super) struct SidebarRowSelection {
     pub(super) title: Option<String>,
     pub(super) context: Option<String>,
     pub(super) metadata: BTreeMap<String, String>,
-    pub(super) target: AgentLocationHints,
+    pub(super) target: ResolvedAgentTarget,
 }
 
 impl SidebarRowSelection {
-    fn from_view(view: &AgentSessionView) -> Self {
+    fn from_view(view: &ResolvedAgentSession) -> Self {
         Self {
             key: view.key.clone(),
             status: view.status,
             title: view.title.clone(),
             context: view.context.clone(),
             metadata: view.metadata().clone(),
-            target: view.location_hints().clone(),
+            target: view.target.clone(),
         }
     }
 }
@@ -151,7 +151,7 @@ impl SidebarRow {
 
 impl SidebarRow {
     fn from_view_with_working_icon(
-        view: &AgentSessionView,
+        view: &ResolvedAgentSession,
         now: u64,
         icons: &SidebarIcons,
         working_icon: Option<&str>,
@@ -217,7 +217,7 @@ impl SidebarRow {
 
 /// Build sorted sidebar rows from reconciled agent session views.
 pub(super) fn build_rows_with_working_icon(
-    views: &[AgentSessionView],
+    views: &[ResolvedAgentSession],
     now: u64,
     icons: &SidebarIcons,
     working_icon: Option<&str>,
@@ -277,7 +277,7 @@ pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<us
 
 // Primary label should be stable and repo-oriented; fall back through paths,
 // tmux window name, and finally session id.
-fn repo_label(view: &AgentSessionView) -> String {
+fn repo_label(view: &ResolvedAgentSession) -> String {
     clean_label(view.git_repo_name())
         .or_else(|| path_label(view.git_repo_path()))
         .or_else(|| path_label(view.directory()))
@@ -287,7 +287,7 @@ fn repo_label(view: &AgentSessionView) -> String {
 }
 
 // Secondary label should add distinguishing context without repeating primary.
-fn branch_label(view: &AgentSessionView, primary: &str) -> String {
+fn branch_label(view: &ResolvedAgentSession, primary: &str) -> String {
     clean_label(view.git_branch())
         .or_else(|| distinct_label(view.kmux_workspace_slug(), primary))
         .or_else(|| path_distinct_label(view.directory(), primary))
@@ -321,7 +321,7 @@ fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
     path_label(value).filter(|value| value != primary)
 }
 
-fn fallback_session_label(view: &AgentSessionView, primary: &str) -> Option<String> {
+fn fallback_session_label(view: &ResolvedAgentSession, primary: &str) -> Option<String> {
     let label = compact_session_id(&view.key.session_id).to_owned();
     (label != primary).then_some(label)
 }
@@ -339,7 +339,7 @@ fn compact_elapsed(seconds: u64) -> String {
 }
 
 fn fallback_session_title(
-    view: &AgentSessionView,
+    view: &ResolvedAgentSession,
     primary: &str,
     secondary: &str,
 ) -> Option<String> {
@@ -351,7 +351,7 @@ fn compact_session_id(session_id: &str) -> &str {
     session_id.get(..12).unwrap_or(session_id)
 }
 
-fn view_identity_key(view: &AgentSessionView) -> String {
+fn view_identity_key(view: &ResolvedAgentSession) -> String {
     view.workspace_key()
         .map(|key| format!("workspace:{key}"))
         .or_else(|| {
@@ -362,7 +362,7 @@ fn view_identity_key(view: &AgentSessionView) -> String {
         .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
 }
 
-fn jump_target_for_view(view: &AgentSessionView) -> SidebarJumpTarget {
+fn jump_target_for_view(view: &ResolvedAgentSession) -> SidebarJumpTarget {
     match view.tmux_target {
         AgentTmuxTarget::Window => {
             let Some(session_name) = view.tmux_session_name().map(str::to_owned) else {
@@ -393,7 +393,7 @@ mod tests {
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
     fn build_rows(
-        views: &[AgentSessionView],
+        views: &[ResolvedAgentSession],
         now: u64,
         idle_after_seconds: u64,
     ) -> Vec<SidebarRow> {

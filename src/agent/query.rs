@@ -1,12 +1,12 @@
 //! Query predicates for matching agent session views to kmux workspaces.
 //!
 //! The functions here do not load state themselves; callers provide already-built
-//! `AgentSessionView` values and a workspace target, then choose the matching
+//! `ResolvedAgentSession` values and a workspace target, then choose the matching
 //! strictness needed for identity-sensitive actions or summary badges.
 
 use std::path::Path;
 
-use crate::agent::sessions::AgentSessionView;
+use crate::agent::sessions::ResolvedAgentSession;
 use crate::paths::same_path;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,7 +34,7 @@ impl<'a> WorkspaceTarget<'a> {
 
 /// Return whether an agent view matches a workspace according to the requested mode.
 pub fn view_matches_workspace(
-    view: &AgentSessionView,
+    view: &ResolvedAgentSession,
     target: &WorkspaceTarget<'_>,
     mode: WorkspaceMatchMode,
 ) -> bool {
@@ -46,7 +46,10 @@ pub fn view_matches_workspace(
 
 // Identity mode requires filesystem identity. Branch and slug are useful display
 // hints, but they are not strong enough for identity-sensitive matching.
-fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
+fn view_matches_workspace_identity(
+    view: &ResolvedAgentSession,
+    target: &WorkspaceTarget<'_>,
+) -> bool {
     if let Some(workspace) = view.workspace.as_ref() {
         return same_path(workspace.identity().root(), target.path);
     }
@@ -58,7 +61,7 @@ fn view_matches_workspace_identity(view: &AgentSessionView, target: &WorkspaceTa
 
 // Summary mode uses the same Git-root identity. Branches, slugs, and raw
 // directories are display hints rather than workspace identity.
-fn view_has_any_workspace_hint(view: &AgentSessionView, target: &WorkspaceTarget<'_>) -> bool {
+fn view_has_any_workspace_hint(view: &ResolvedAgentSession, target: &WorkspaceTarget<'_>) -> bool {
     view_matches_workspace_identity(view, target)
 }
 
@@ -195,8 +198,8 @@ mod tests {
         WorkspaceTarget::new(Path::new(path))
     }
 
-    fn view_with_target(target: AgentLocationHints) -> AgentSessionView {
-        AgentSessionView {
+    fn view_with_target(target: AgentLocationHints) -> ResolvedAgentSession {
+        ResolvedAgentSession {
             key: AgentSessionKey {
                 agent_kind: "opencode".to_owned(),
                 session_id: "ses".to_owned(),
@@ -213,7 +216,7 @@ mod tests {
             title: None,
             context: None,
             metadata: Default::default(),
-            target,
+            target: target.into(),
         }
     }
 }

@@ -1,8 +1,7 @@
 //! Serializable model for external agent observation state.
 //!
 //! These types define the JSON contract written by `set-agent-status` producers
-//! and read by status/sidebar presentation. Keep them tolerant of older files so
-//! persisted observations can survive kmux upgrades.
+//! and read by status/sidebar presentation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -80,7 +79,6 @@ pub struct AgentLocationHints {
 /// Latest observed state from one producer for one logical agent session.
 pub struct AgentObservationState {
     pub key: AgentObservationKey,
-    #[serde(default)]
     pub created_at: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<AgentStatus>,
@@ -100,67 +98,4 @@ pub struct AgentObservationState {
     pub metadata_cleared: BTreeSet<String>,
     #[serde(default)]
     pub target: AgentLocationHints,
-}
-
-impl AgentObservationState {
-    /// Return the best available creation time for observations written by older kmux versions.
-    pub fn effective_created_at(&self) -> u64 {
-        if self.created_at != 0 {
-            return self.created_at;
-        }
-
-        [
-            self.status_changed_at,
-            self.status_observed_at,
-            Some(self.observed_at),
-        ]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn effective_created_at_falls_back_for_old_observation_state() {
-        let mut observation = test_observation("tui", "default/%1", AgentStatus::Working, 300);
-        observation.created_at = 0;
-        observation.status_observed_at = Some(250);
-        observation.observed_at = 400;
-
-        assert_eq!(observation.effective_created_at(), 250);
-    }
-
-    fn test_observation(
-        producer_kind: &str,
-        producer_instance: &str,
-        status: AgentStatus,
-        status_changed_at: u64,
-    ) -> AgentObservationState {
-        AgentObservationState {
-            key: AgentObservationKey {
-                session: AgentSessionKey {
-                    agent_kind: "opencode".to_owned(),
-                    session_id: "ses_root".to_owned(),
-                },
-                producer_kind: producer_kind.to_owned(),
-                producer_instance: producer_instance.to_owned(),
-            },
-            created_at: status_changed_at,
-            status: Some(status),
-            status_observed_at: Some(status_changed_at),
-            status_changed_at: Some(status_changed_at),
-            working_elapsed_secs: 0,
-            observed_at: status_changed_at,
-            title: None,
-            context: None,
-            metadata: BTreeMap::new(),
-            metadata_cleared: BTreeSet::new(),
-            target: AgentLocationHints::default(),
-        }
-    }
 }

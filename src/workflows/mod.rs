@@ -1,4 +1,4 @@
-//! Command use-case entrypoints for workspace lifecycle operations.
+//! Command use-case entrypoints for workspace and agent-status workflows.
 //!
 //! Workflow modules orchestrate CLI input, config, Git, tmux, files, state, and
 //! output while keeping adapter-specific subprocess and storage details outside

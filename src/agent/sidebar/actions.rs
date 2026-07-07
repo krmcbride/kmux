@@ -8,7 +8,7 @@ use anyhow::Result;
 
 use super::hooks::{SelectionHookInput, run_selection_hooks};
 use super::lifecycle;
-use super::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity};
+use super::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity, SidebarRowSelection};
 use super::selection::{
     PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
     decode_selected_target, encode_selected_target,
@@ -44,7 +44,7 @@ pub(super) struct SidebarWakeIntent {
 /// Intent to run configured selection hooks for a sidebar row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SidebarHookIntent {
-    pub(super) row: SidebarRow,
+    pub(super) selection: SidebarRowSelection,
 }
 
 /// Result of a successful jump side-effect execution.
@@ -108,8 +108,8 @@ impl SidebarWakeIntent {
 }
 
 impl SidebarHookIntent {
-    fn new(row: SidebarRow) -> Self {
-        Self { row }
+    fn new(selection: SidebarRowSelection) -> Self {
+        Self { selection }
     }
 }
 
@@ -173,7 +173,7 @@ impl SidebarActions {
             self.execute_wake_sidebar(intent);
         }
         let hook_error = self
-            .execute_selection_hooks(SidebarHookIntent::new(row.clone()))
+            .execute_selection_hooks(SidebarHookIntent::new(row.selection.clone()))
             .err();
         SidebarJumpExecution::Succeeded(Box::new(SidebarJumpOutcome {
             row,
@@ -296,12 +296,11 @@ impl SidebarActions {
             return Ok(());
         }
 
-        let selected = self.selection_hook_input(&intent.row)?;
+        let selected = self.selection_hook_input(&intent.selection)?;
         run_selection_hooks(&self.selection_hooks, &selected)
     }
 
-    fn selection_hook_input(&self, row: &SidebarRow) -> Result<SelectionHookInput> {
-        let selection = &row.selection;
+    fn selection_hook_input(&self, selection: &SidebarRowSelection) -> Result<SelectionHookInput> {
         let observations = self.selected_observations(&selection.key)?;
         Ok(SelectionHookInput::new(
             selection.key.clone(),
@@ -323,8 +322,8 @@ impl SidebarActions {
             .store
             .list_observations()?
             .into_iter()
-            // Preserve hook scoping: selected session, current tmux instance,
-            // plus unscoped legacy observations from older producers.
+            // Preserve hook scoping by selected session and current tmux
+            // instance, while keeping unscoped producer observations eligible.
             .filter(|observation| {
                 observation.key.session == *session
                     && observation
@@ -341,7 +340,10 @@ impl SidebarActions {
 mod tests {
     use super::*;
     use crate::agent::sidebar::test_support::{report_state, row_from_view};
-    use crate::state::{AgentObservationKey, AgentObservationState, AgentSessionKey, AgentStatus};
+    use crate::state::{
+        AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
+        AgentStatus,
+    };
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
     use anyhow::Result;
     use std::fs;
@@ -482,17 +484,17 @@ mod tests {
     }
 
     #[test]
-    fn selection_hooks_receive_selected_observations_for_current_tmux_instance() -> Result<()> {
+    fn selection_hooks_receive_selected_session_summary_for_current_tmux_instance() -> Result<()> {
         let dir = tempdir()?;
         let payload_path = dir.path().join("payload.json");
         let store = crate::agent::sidebar::test_support::empty_state_store();
         let mut row = server_row_in_window("ses_selected", "Selected", "@1");
         row.selection.target.tmux_instance = Some("default".to_owned());
-        let mut selected_server = observation_for_row(&row, "server", "default-server");
+        let mut selected_server = observation_for_row(&row, "server", "http://default-server.test");
         selected_server.target.tmux_instance = Some("default".to_owned());
-        let mut selected_legacy = observation_for_row(&row, "tui", "legacy-pane");
-        selected_legacy.target.tmux_instance = None;
-        let mut selected_other_instance = observation_for_row(&row, "server", "other-instance");
+        let mut selected_unscoped = observation_for_row(&row, "tui", "unscoped-pane");
+        selected_unscoped.target.tmux_instance = None;
+        let mut selected_other_instance = observation_for_row(&row, "server", "http://other.test");
         selected_other_instance.target.tmux_instance = Some("other".to_owned());
         let mut other_session = observation_for_row(
             &server_row_in_window("ses_other", "Other", "@1"),
@@ -502,7 +504,7 @@ mod tests {
         other_session.target.tmux_instance = Some("default".to_owned());
         for observation in [
             selected_server,
-            selected_legacy,
+            selected_unscoped,
             selected_other_instance,
             other_session,
         ] {
@@ -516,21 +518,10 @@ mod tests {
             vec![hook_config(&command, Some("opencode"), None, Some(1000))],
         );
 
-        actions.execute_selection_hooks(SidebarHookIntent::new(row))?;
+        actions.execute_selection_hooks(SidebarHookIntent::new(row.selection))?;
 
         let payload: serde_json::Value = serde_json::from_str(&fs::read_to_string(payload_path)?)?;
-        let producers = payload["observations"]
-            .as_array()
-            .expect("observations should be an array")
-            .iter()
-            .map(|observation| {
-                observation["producer_instance"]
-                    .as_str()
-                    .expect("producer instance should be a string")
-                    .to_owned()
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(producers, vec!["default-server", "legacy-pane"]);
+        assert!(payload.get("observations").is_none());
         Ok(())
     }
 
@@ -543,9 +534,9 @@ mod tests {
         row.selection.target.tmux_instance = Some("default".to_owned());
         let mut out_of_scope_server = observation_for_row(&row, "server", "other-instance");
         out_of_scope_server.target.tmux_instance = Some("other".to_owned());
-        let mut selected_legacy_tui = observation_for_row(&row, "tui", "legacy-pane");
-        selected_legacy_tui.target.tmux_instance = None;
-        for observation in [out_of_scope_server, selected_legacy_tui] {
+        let mut selected_unscoped_tui = observation_for_row(&row, "tui", "unscoped-pane");
+        selected_unscoped_tui.target.tmux_instance = None;
+        for observation in [out_of_scope_server, selected_unscoped_tui] {
             store.upsert_observation(&observation)?;
         }
         let command = format!("touch '{}'", marker_path.display());
@@ -561,7 +552,7 @@ mod tests {
             )],
         );
 
-        actions.execute_selection_hooks(SidebarHookIntent::new(row))?;
+        actions.execute_selection_hooks(SidebarHookIntent::new(row.selection))?;
 
         assert!(!marker_path.exists());
         Ok(())
@@ -618,7 +609,7 @@ mod tests {
             context: row.selection.context.clone(),
             metadata: row.selection.metadata.clone(),
             metadata_cleared: Default::default(),
-            target: row.selection.target.clone(),
+            target: AgentLocationHints::default(),
         }
     }
 }

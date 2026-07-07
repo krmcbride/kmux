@@ -44,12 +44,27 @@ pub struct ResolvedAgentSession {
     pub title: Option<String>,
     pub context: Option<String>,
     pub metadata: BTreeMap<String, String>,
-    /// Merged raw hints retained for legacy callers and unchanged hook payloads.
-    pub target: AgentLocationHints,
+    pub target: ResolvedAgentTarget,
 }
 
-/// Compatibility name for callers that have not moved to resolved-session wording yet.
-pub type AgentSessionView = ResolvedAgentSession;
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Resolved navigation, display, and workspace facts for an agent session.
+pub struct ResolvedAgentTarget {
+    pub tmux_instance: Option<String>,
+    pub tmux_pane_id: Option<String>,
+    pub tmux_window_id: Option<String>,
+    pub tmux_session_name: Option<String>,
+    pub tmux_window_name: Option<String>,
+    pub tmux_pane_title: Option<String>,
+    pub tmux_pane_current_command: Option<String>,
+    pub tmux_pane_current_path: Option<String>,
+    pub git_repo_name: Option<String>,
+    pub git_repo_path: Option<String>,
+    pub kmux_workspace_slug: Option<String>,
+    pub git_worktree_path: Option<String>,
+    pub git_branch: Option<String>,
+    pub directory: Option<String>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Precision of the live tmux target associated with an agent row.
@@ -131,11 +146,6 @@ impl ResolvedAgentSession {
             .as_ref()
             .map(ResolvedAgentWorkspace::path)
             .or(self.target.git_worktree_path.as_deref())
-    }
-
-    /// Return the raw compatibility hints merged from producer observations.
-    pub fn location_hints(&self) -> &AgentLocationHints {
-        &self.target
     }
 
     /// Return merged agent-specific metadata for this resolved session.
@@ -224,8 +234,39 @@ impl ResolvedAgentSession {
     }
 }
 
+impl From<AgentLocationHints> for ResolvedAgentTarget {
+    fn from(target: AgentLocationHints) -> Self {
+        Self {
+            tmux_instance: target.tmux_instance,
+            tmux_pane_id: target.tmux_pane_id,
+            tmux_window_id: target.tmux_window_id,
+            tmux_session_name: target.tmux_session_name,
+            tmux_window_name: target.tmux_window_name,
+            tmux_pane_title: target.tmux_pane_title,
+            tmux_pane_current_command: target.tmux_pane_current_command,
+            tmux_pane_current_path: target.tmux_pane_current_path,
+            git_repo_name: target.git_repo_name,
+            git_repo_path: target.git_repo_path,
+            kmux_workspace_slug: target.kmux_workspace_slug,
+            git_worktree_path: target.git_worktree_path,
+            git_branch: target.git_branch,
+            directory: target.directory,
+        }
+    }
+}
+
+impl From<&AgentLocationHints> for ResolvedAgentTarget {
+    fn from(target: &AgentLocationHints) -> Self {
+        target.clone().into()
+    }
+}
+
 /// Reconcile persisted agent observations with live tmux window state.
-pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSessionView>> {
+///
+/// Tmux snapshot failures are treated as an empty live snapshot set so status and
+/// sidebar rendering remain available; telemetry records whether the snapshot
+/// query succeeded.
+pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<ResolvedAgentSession>> {
     let result = telemetry::timed_result_event!(
         "session_views",
         {},
@@ -275,7 +316,7 @@ pub fn session_views(store: &StateStore, tmux: &Tmux) -> Result<Vec<AgentSession
 }
 
 struct SessionViewsTelemetry {
-    views: Vec<AgentSessionView>,
+    views: Vec<ResolvedAgentSession>,
     observations: usize,
     panes: usize,
     tmux_snapshot_ok: bool,
@@ -316,8 +357,8 @@ impl AgentWorkspaceLookup for AgentWorkspaceResolver {
     }
 }
 
-// Ignore observations scoped to another tmux socket, but accept unscoped legacy
-// observations so older agents still appear in status views.
+// Ignore observations scoped to another tmux socket. Unscoped observations remain
+// eligible because server-side producers may not know the active tmux instance.
 fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_id: &str) -> bool {
     observation
         .target
@@ -333,7 +374,7 @@ fn reconcile_session_views(
     observations: Vec<AgentObservationState>,
     panes: &[TmuxPaneSnapshot],
     tmux_instance: &str,
-) -> Vec<AgentSessionView> {
+) -> Vec<ResolvedAgentSession> {
     let mut workspace_resolver = AgentWorkspaceResolver::default();
     reconcile_agent_sessions(observations, panes, tmux_instance, &mut workspace_resolver)
 }
@@ -382,7 +423,7 @@ fn reconcile_agent_sessions(
 fn session_view_from_observations(
     key: AgentSessionKey,
     observations: &[EnrichedObservation],
-) -> Option<AgentSessionView> {
+) -> Option<ResolvedAgentSession> {
     let status_observation = observations
         .iter()
         .filter(|observation| observation.state.status.is_some())
@@ -410,14 +451,14 @@ fn session_view_from_observations(
         .workspace_attachment
         .as_ref()
         .map(|attachment| attachment.key().to_owned());
-    Some(AgentSessionView {
+    Some(ResolvedAgentSession {
         key,
         workspace,
         workspace_key,
         tmux_target: resolved_target.tmux_target,
         created_at: observations
             .iter()
-            .map(|observation| observation.state.effective_created_at())
+            .map(|observation| observation.state.created_at)
             .min()
             .unwrap_or(status_changed_at),
         status: status_observation.state.status?,
@@ -436,7 +477,7 @@ fn session_view_from_observations(
             observation.state.context.as_deref()
         }),
         metadata,
-        target,
+        target: target.into(),
     })
 }
 
@@ -483,8 +524,8 @@ fn observation_location_precision(observation: &EnrichedObservation) -> u8 {
     }
 }
 
-fn collapse_workspace_views(views: Vec<AgentSessionView>) -> Vec<AgentSessionView> {
-    let mut by_target = BTreeMap::<String, AgentSessionView>::new();
+fn collapse_workspace_views(views: Vec<ResolvedAgentSession>) -> Vec<ResolvedAgentSession> {
+    let mut by_target = BTreeMap::<String, ResolvedAgentSession>::new();
     for view in views {
         let key = view.collapse_group_key();
         match by_target.get_mut(&key) {
@@ -500,7 +541,10 @@ fn collapse_workspace_views(views: Vec<AgentSessionView>) -> Vec<AgentSessionVie
     by_target.into_values().collect()
 }
 
-fn primary_view_is_better(candidate: &AgentSessionView, current: &AgentSessionView) -> bool {
+fn primary_view_is_better(
+    candidate: &ResolvedAgentSession,
+    current: &ResolvedAgentSession,
+) -> bool {
     let candidate_rank = status_priority(Some(candidate.status));
     let current_rank = status_priority(Some(current.status));
     candidate_rank > current_rank

@@ -7,11 +7,11 @@ use super::context::{load_repo_context, load_tmux_context};
 use super::files::{apply_file_operations, run_post_create};
 use super::parent::{record_parent, validate_no_cycle};
 use super::resolve::{
-    ResolvedWorkspace, find_kmux_workspace_by_name, find_kmux_workspace_by_slug,
-    resolved_from_kmux_worktree,
+    find_kmux_workspace_by_name, find_kmux_workspace_by_slug, resolved_from_kmux_worktree,
 };
 use super::window::create_resolved;
 use crate::state::workspace::WorkspaceStateStore;
+use crate::workspace::WorkspaceRecord;
 
 /// Create a new branch workspace, tmux window, and parent metadata link.
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
@@ -96,7 +96,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
         &workspace_slug,
     )?;
 
-    let resolved = ResolvedWorkspace::from_created_kmux_workspace(
+    let resolved = WorkspaceRecord::from_created_kmux_workspace(
         workspace_slug,
         worktree_path,
         target.branch.clone(),
@@ -113,7 +113,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
 
 // Existing kmux worktrees are create-only conflicts, even when the tmux window
 // is gone. `kmux restore` owns tmux reconciliation for those cases.
-fn bail_existing_workspace(expected_branch: &str, resolved: ResolvedWorkspace) -> Result<()> {
+fn bail_existing_workspace(expected_branch: &str, resolved: WorkspaceRecord) -> Result<()> {
     if resolved.branch() != Some(expected_branch) {
         bail!(
             "workspace slug '{}' already exists at {} for branch '{}', not '{}'",

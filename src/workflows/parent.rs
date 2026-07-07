@@ -4,7 +4,8 @@ use crate::cli;
 use crate::state::workspace::{WorkspaceParentLink, WorkspaceState, WorkspaceStateStore};
 
 use super::context::{RepoContext, load_repo_context};
-use super::resolve::{ResolvedWorkspace, resolve_current_kmux_workspace, resolve_workspace};
+use super::resolve::{resolve_current_kmux_workspace, resolve_workspace};
+use crate::workspace::WorkspaceRecord;
 
 /// Set or replace a workspace parent link without changing branches, worktrees, or tmux windows.
 pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
@@ -60,10 +61,7 @@ pub(super) fn validate_no_cycle(state: &WorkspaceState, child: &str, parent: &st
 
 // `kmux parent <child> <parent>` targets an explicit child; `kmux parent <parent>`
 // targets the current kmux workspace for the short form.
-fn resolve_target(
-    repo: &RepoContext,
-    args: cli::ParentArgs,
-) -> Result<(ResolvedWorkspace, String)> {
+fn resolve_target(repo: &RepoContext, args: cli::ParentArgs) -> Result<(WorkspaceRecord, String)> {
     if let Some(parent) = args.parent {
         return Ok((resolve_workspace(repo, &args.child_or_parent)?, parent));
     }

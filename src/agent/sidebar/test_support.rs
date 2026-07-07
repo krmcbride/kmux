@@ -1,7 +1,7 @@
-use crate::agent::sessions::{AgentSessionView, AgentTmuxTarget};
+use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
-use crate::state::{AgentLocationHints, AgentSessionKey, AgentStatus, StateStore};
+use crate::state::{AgentSessionKey, AgentStatus, StateStore};
 
 /// Sleeping icon used by sidebar tests to assert idle-row rendering.
 pub(super) const TEST_SLEEPING_ICON: &str = "z";
@@ -18,7 +18,7 @@ pub(super) fn test_icons() -> SidebarIcons {
 }
 
 /// Build the first sidebar row generated from a single agent session view.
-pub(super) fn row_from_view(view: &AgentSessionView, now: u64) -> SidebarRow {
+pub(super) fn row_from_view(view: &ResolvedAgentSession, now: u64) -> SidebarRow {
     let icons = test_icons();
     build_rows_with_working_icon(
         std::slice::from_ref(view),
@@ -36,8 +36,8 @@ pub(super) fn report_state(
     status_changed_at: u64,
     window_id: &str,
     pane_id: &str,
-) -> AgentSessionView {
-    AgentSessionView {
+) -> ResolvedAgentSession {
+    ResolvedAgentSession {
         key: AgentSessionKey {
             agent_kind: "opencode".to_owned(),
             session_id: format!("ses_{pane_id}"),
@@ -54,7 +54,7 @@ pub(super) fn report_state(
         title: None,
         context: None,
         metadata: Default::default(),
-        target: AgentLocationHints {
+        target: ResolvedAgentTarget {
             tmux_instance: Some("test".to_owned()),
             tmux_pane_id: Some(pane_id.to_owned()),
             tmux_window_id: Some(window_id.to_owned()),
@@ -79,7 +79,7 @@ pub(super) fn agent_state(
     status_changed_at: u64,
     window_id: &str,
     pane_id: &str,
-) -> AgentSessionView {
+) -> ResolvedAgentSession {
     report_state(status, status_changed_at, window_id, pane_id)
 }
 

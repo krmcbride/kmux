@@ -5,15 +5,16 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::Result;
 
 use crate::agent::query::{WorkspaceMatchMode, WorkspaceTarget, view_matches_workspace};
-use crate::agent::sessions::{AgentSessionView, session_views};
+use crate::agent::sessions::{ResolvedAgentSession, session_views};
 use crate::cli;
 use crate::config::StatusIcons;
 use crate::state::{AgentStatus, StateStore};
 use crate::tmux::Tmux;
 
 use super::context::load_repo_context;
-use super::resolve::{WorkspaceListItem, list_items};
+use super::resolve::list_items;
 use crate::paths::same_path;
+use crate::workspace::WorkspaceInventoryItem;
 
 /// Print workspace inventory, optionally as JSON for machine consumers.
 pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
@@ -70,7 +71,7 @@ struct DisplayRow {
 
 // Render a depth-first forest using standard tree connectors while keeping
 // parent labels in their own column for scanability.
-fn format_branch(items: &[WorkspaceListItem], index: usize) -> String {
+fn format_branch(items: &[WorkspaceInventoryItem], index: usize) -> String {
     let item = &items[index];
     let branch = item.git_branch().unwrap_or("-");
     if item.tree_depth() == 0 {
@@ -93,7 +94,7 @@ fn format_branch(items: &[WorkspaceListItem], index: usize) -> String {
     format!("{prefix}{branch}")
 }
 
-fn has_following_at_depth(items: &[WorkspaceListItem], index: usize, depth: usize) -> bool {
+fn has_following_at_depth(items: &[WorkspaceInventoryItem], index: usize, depth: usize) -> bool {
     items[index + 1..]
         .iter()
         .take_while(|item| item.tree_depth() >= depth)
@@ -101,7 +102,7 @@ fn has_following_at_depth(items: &[WorkspaceListItem], index: usize, depth: usiz
 }
 
 // Main worktree age is intentionally omitted because the column describes kmux workspaces.
-fn format_age(item: &WorkspaceListItem, now: u64) -> String {
+fn format_age(item: &WorkspaceInventoryItem, now: u64) -> String {
     if item.is_main() {
         return "-".to_owned();
     }
@@ -127,8 +128,8 @@ fn compact_age(seconds: u64) -> String {
 
 // Summarize all agent sessions that provide any hint for this workspace.
 fn format_agent(
-    item: &WorkspaceListItem,
-    agents: &[AgentSessionView],
+    item: &WorkspaceInventoryItem,
+    agents: &[ResolvedAgentSession],
     icons: &StatusIcons,
 ) -> String {
     let target = workspace_target(item);
@@ -158,7 +159,7 @@ fn format_agent(
 }
 
 // Match agent observations against the full workspace identity that list rows know.
-fn workspace_target(item: &WorkspaceListItem) -> WorkspaceTarget<'_> {
+fn workspace_target(item: &WorkspaceInventoryItem) -> WorkspaceTarget<'_> {
     WorkspaceTarget::new(Path::new(item.git_worktree_path()))
 }
 
@@ -172,7 +173,7 @@ fn status_icon(status: AgentStatus, icons: &StatusIcons) -> &str {
 
 // tmux status is best-effort list decoration and should not fail inventory output.
 fn format_mux(
-    item: &WorkspaceListItem,
+    item: &WorkspaceInventoryItem,
     config: &crate::config::Config,
     tmux: &Tmux,
     session_name: Option<&str>,
@@ -193,7 +194,7 @@ fn format_mux(
 
 // Show whether removal would fail the safe-delete check, but keep list resilient
 // when Git cannot answer for a transient reason.
-fn format_unmerged(item: &WorkspaceListItem, git: &crate::git::Git) -> String {
+fn format_unmerged(item: &WorkspaceInventoryItem, git: &crate::git::Git) -> String {
     if item.is_main() {
         return "-".to_owned();
     }
