@@ -21,6 +21,11 @@ These instructions apply to this repository in addition to the user-level agent 
 - Use inner module doc comments (`//!`) at the top of `mod.rs` files or focused module files when a module needs ownership, boundary, or upstream-integration context.
 - Add Rust doc comments to public functions and methods to explain the behavior, invariants, and side effects that are not obvious from the signature. Add brief comments to non-trivial private helpers when they encode workflow policy, parsing rules, filesystem layout, subprocess behavior, or other mental-model context useful during code review.
 
+## Test Fixture Data
+
+- Use neutral placeholder names in tests, examples, and fixtures, such as `project-alpha`, `example-repo`, `/repo/project`, `feature/sidebar`, and `ses_project_alpha`.
+- Do not copy incidental local machine, client, person, repo, tmux session, or filesystem names from debugging output into committed tests or docs.
+
 ## Architecture Boundaries
 
 - `src/workflows/` owns command use cases. Workflows orchestrate config, Git, tmux, state, files, and output, but should avoid becoming storage or adapter modules.

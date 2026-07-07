@@ -553,11 +553,11 @@ mod tests {
         kmux_old.target.git_branch = Some("master".to_owned());
         kmux_old.title = Some("kmux old".to_owned());
 
-        let mut dotfiles = report_state(AgentStatus::Working, 200, "@2", "%2");
-        dotfiles.key.session_id = "ses_dotfiles".to_owned();
-        dotfiles.target.git_repo_name = Some(".dotfiles".to_owned());
-        dotfiles.target.git_branch = Some("master".to_owned());
-        dotfiles.title = Some("dotfiles".to_owned());
+        let mut alpha_tools = report_state(AgentStatus::Working, 200, "@2", "%2");
+        alpha_tools.key.session_id = "ses_alpha_tools".to_owned();
+        alpha_tools.target.git_repo_name = Some("alpha-tools".to_owned());
+        alpha_tools.target.git_branch = Some("master".to_owned());
+        alpha_tools.title = Some("alpha tools".to_owned());
 
         let mut kmux_feature = report_state(AgentStatus::Working, 50, "@3", "%3");
         kmux_feature.key.session_id = "ses_kmux_feature".to_owned();
@@ -571,13 +571,13 @@ mod tests {
         kmux_new.target.git_branch = Some("master".to_owned());
         kmux_new.title = Some("kmux new".to_owned());
 
-        let rows = build_rows(&[kmux_new, kmux_feature, dotfiles, kmux_old], 400, 1_800);
+        let rows = build_rows(&[kmux_new, kmux_feature, alpha_tools, kmux_old], 400, 1_800);
 
         assert_eq!(
             rows.iter()
                 .map(|row| row.title.as_str())
                 .collect::<Vec<_>>(),
-            ["dotfiles", "kmux feature", "kmux old", "kmux new"]
+            ["alpha tools", "kmux feature", "kmux old", "kmux new"]
         );
     }
 

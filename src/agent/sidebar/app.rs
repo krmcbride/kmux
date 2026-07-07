@@ -472,6 +472,10 @@ impl SidebarApp {
         app.sync_selection();
         app
     }
+
+    pub(super) fn set_last_error_for_test(&mut self, error: impl Into<String>) {
+        self.last_error = Some(error.into());
+    }
 }
 
 #[cfg(test)]
@@ -837,7 +841,7 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        let row = session_target_row("ses_dotfiles", "Dotfiles", "project");
+        let row = session_target_row("ses_project_alpha", "Project alpha", "project");
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
@@ -1247,7 +1251,7 @@ mod tests {
     }
 
     #[test]
-    fn no_jump_target_still_runs_selection_hooks() -> Result<()> {
+    fn no_jump_target_reports_error_and_skips_selection_hooks() -> Result<()> {
         let dir = tempdir()?;
         let marker = dir.path().join("marker");
         let rows = vec![no_jump_row(
@@ -1267,9 +1271,12 @@ mod tests {
 
         app.jump_to_selected();
 
-        assert!(marker.exists());
+        assert!(!marker.exists());
         assert!(!app.should_quit());
-        assert_eq!(app.last_error(), None);
+        assert!(
+            app.last_error()
+                .is_some_and(|error| error.contains("no unambiguous tmux target"))
+        );
         Ok(())
     }
 

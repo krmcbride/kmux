@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph},
+    widgets::{Block, List, ListItem, Paragraph, Wrap},
 };
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -24,6 +24,14 @@ const BORDER_FG: Color = Color::Rgb(58, 74, 94);
 const WORKING_FG: Color = Color::Rgb(120, 225, 213);
 const WAITING_FG: Color = Color::Rgb(203, 166, 247);
 const DONE_FG: Color = Color::Rgb(166, 218, 149);
+const ERROR_BG: Color = Color::Rgb(127, 29, 29);
+const ERROR_ACCENT_FG: Color = Color::Rgb(248, 113, 113);
+const ERROR_FG: Color = TEXT_FG;
+const ERROR_TOAST_MAX_HEIGHT: u16 = 8;
+const ERROR_TOAST_MARGIN: u16 = 1;
+const ERROR_TOAST_STRIPE_WIDTH: u16 = 2;
+const ERROR_TOAST_TEXT_PADDING: u16 = 1;
+const ERROR_TOAST_TEXT_PADDING_Y: u16 = 1;
 
 /// Render the sidebar TUI into the provided ratatui frame.
 pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
@@ -34,13 +42,8 @@ pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
 
     let mut list_area = area;
     if let Some(error) = app.last_error() {
-        let warning = fit_width(&format!("error: {error}"), area.width as usize);
-        frame.render_widget(
-            Paragraph::new(warning).style(Style::default().fg(WAITING_FG)),
-            Rect::new(area.x, area.y, area.width, 1),
-        );
-        list_area.y = list_area.y.saturating_add(1);
-        list_area.height = list_area.height.saturating_sub(1);
+        let toast_height = render_error_toast(frame, area, error);
+        list_area.height = list_area.height.saturating_sub(toast_height);
     }
 
     if app.rows().is_empty() {
@@ -67,6 +70,141 @@ pub(super) fn render_sidebar_tui(frame: &mut Frame, app: &mut SidebarApp) {
         .collect::<Vec<_>>();
     let list = List::new(items);
     frame.render_stateful_widget(list, list_area, app.list_state_mut());
+}
+
+fn render_error_toast(frame: &mut Frame, area: Rect, error: &str) -> u16 {
+    let message = format!("Error: {error}");
+    let Some((reserved_height, toast_area)) = error_toast_layout(&message, area) else {
+        return 0;
+    };
+    let style = error_toast_style();
+    frame.render_widget(Block::default().style(style), toast_area);
+    render_error_toast_stripe(frame, toast_area);
+    frame.render_widget(
+        error_toast_paragraph(message, style),
+        error_toast_message_area(toast_area),
+    );
+    reserved_height
+}
+
+fn error_toast_layout(message: &str, area: Rect) -> Option<(u16, Rect)> {
+    if area.width == 0 || area.height == 0 {
+        return None;
+    }
+
+    let margin_x = toast_margin(area.width);
+    let margin_y = toast_margin(area.height);
+    let toast_width = area.width.saturating_sub(margin_x * 2).max(1);
+    let content_width = error_toast_message_width(toast_width);
+    let line_count =
+        error_toast_paragraph(message.to_owned(), error_toast_style()).line_count(content_width);
+    let toast_height = u16::try_from(line_count)
+        .unwrap_or(u16::MAX)
+        .saturating_add(ERROR_TOAST_TEXT_PADDING_Y * 2)
+        .clamp(1, ERROR_TOAST_MAX_HEIGHT)
+        .min(area.height.saturating_sub(margin_y * 2).max(1));
+    let reserved_height = toast_height.saturating_add(margin_y * 2).min(area.height);
+    let toast_area = Rect::new(
+        area.x + margin_x,
+        area.y + area.height.saturating_sub(margin_y + toast_height),
+        toast_width,
+        toast_height,
+    );
+    Some((reserved_height, toast_area))
+}
+
+fn error_toast_paragraph(message: String, style: Style) -> Paragraph<'static> {
+    Paragraph::new(message)
+        .style(style)
+        .wrap(Wrap { trim: true })
+}
+
+fn render_error_toast_stripe(frame: &mut Frame, area: Rect) {
+    let stripe_width = error_toast_stripe_width(area.width);
+    if stripe_width == 0 || area.height == 0 {
+        return;
+    }
+
+    let line = error_toast_stripe_line(stripe_width);
+    let lines = (0..area.height).map(|_| line.clone()).collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines),
+        Rect::new(area.x, area.y, stripe_width, area.height),
+    );
+}
+
+fn error_toast_stripe_line(width: u16) -> Line<'static> {
+    let mut spans = vec![Span::styled(
+        "▌",
+        Style::default().fg(ERROR_ACCENT_FG).bg(ERROR_BG),
+    )];
+    if width > 1 {
+        spans.push(Span::styled(
+            " ".repeat(usize::from(width - 1)),
+            error_toast_style(),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn error_toast_message_area(area: Rect) -> Rect {
+    let x_offset = error_toast_message_x_offset(area.width);
+    let right_padding = toast_right_padding(area.width, x_offset);
+    let vertical_padding = toast_vertical_padding(area.height);
+    Rect::new(
+        area.x + x_offset.min(area.width),
+        area.y + vertical_padding,
+        area.width.saturating_sub(x_offset + right_padding),
+        area.height.saturating_sub(vertical_padding * 2),
+    )
+}
+
+fn error_toast_message_width(toast_width: u16) -> u16 {
+    let x_offset = error_toast_message_x_offset(toast_width);
+    let right_padding = toast_right_padding(toast_width, x_offset);
+    toast_width.saturating_sub(x_offset + right_padding).max(1)
+}
+
+fn error_toast_message_x_offset(width: u16) -> u16 {
+    let stripe_width = error_toast_stripe_width(width);
+    let text_padding = if width > stripe_width {
+        ERROR_TOAST_TEXT_PADDING
+    } else {
+        0
+    };
+    stripe_width + text_padding
+}
+
+fn error_toast_stripe_width(width: u16) -> u16 {
+    ERROR_TOAST_STRIPE_WIDTH.min(width)
+}
+
+fn toast_margin(size: u16) -> u16 {
+    if size > ERROR_TOAST_MARGIN * 2 {
+        ERROR_TOAST_MARGIN
+    } else {
+        0
+    }
+}
+
+fn toast_right_padding(width: u16, x_offset: u16) -> u16 {
+    if width > x_offset + ERROR_TOAST_TEXT_PADDING {
+        ERROR_TOAST_TEXT_PADDING
+    } else {
+        0
+    }
+}
+
+fn toast_vertical_padding(height: u16) -> u16 {
+    if height > ERROR_TOAST_TEXT_PADDING_Y * 2 {
+        ERROR_TOAST_TEXT_PADDING_Y
+    } else {
+        0
+    }
+}
+
+fn error_toast_style() -> Style {
+    Style::default().fg(ERROR_FG).bg(ERROR_BG)
 }
 
 fn render_no_agents(frame: &mut Frame, area: Rect) {
@@ -402,6 +540,55 @@ mod tests {
     }
 
     #[test]
+    fn ratatui_renderer_draws_error_feedback_at_bottom() -> anyhow::Result<()> {
+        let rows = vec![row_from_view(
+            &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
+            300,
+        )];
+        let width = 48;
+        let height = 12;
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend)?;
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        let error = "cannot jump to project-alpha: no unambiguous tmux target; check for this workspace open in multiple sessions or stale pane cwd";
+        app.set_last_error_for_test(error);
+
+        terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
+
+        let buffer = terminal.backend().buffer();
+        let message = format!("Error: {error}");
+        let (_, toast_area) = error_toast_layout(&message, Rect::new(0, 0, width, height))
+            .expect("error toast layout should fit");
+        let text = buffer_text(buffer, width, height);
+        assert!(text.contains("Error: cannot jump to project-alpha"));
+        assert!(text.contains("multiple sessions"));
+        assert!(buffer_line_text(buffer, width, 0).contains("kmux"));
+        assert_eq!(toast_area.x, 1);
+        assert!(toast_area.y > 0);
+        assert!(toast_area.y + toast_area.height < height);
+        assert_ne!(buffer[(0, toast_area.y)].bg, ERROR_BG);
+        assert_eq!(buffer[(toast_area.x, toast_area.y)].symbol(), "▌");
+        assert_eq!(buffer[(toast_area.x, toast_area.y)].fg, ERROR_ACCENT_FG);
+        let message_area = error_toast_message_area(toast_area);
+        assert_eq!(message_area.y, toast_area.y + 1);
+        assert_eq!(message_area.height, toast_area.height - 2);
+        assert_eq!(buffer[(message_area.x, toast_area.y)].symbol(), " ");
+        assert_eq!(buffer[(message_area.x, toast_area.y)].bg, ERROR_BG);
+        assert_eq!(
+            buffer[(message_area.x, toast_area.y + toast_area.height - 1)].symbol(),
+            " "
+        );
+        assert_eq!(buffer[(message_area.x, message_area.y)].symbol(), "E");
+        assert_eq!(buffer[(message_area.x, message_area.y)].fg, ERROR_FG);
+        for y in toast_area.y..toast_area.y + toast_area.height {
+            for x in toast_area.x..toast_area.x + toast_area.width {
+                assert_eq!(buffer[(x, y)].bg, ERROR_BG);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
         let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
         agent.target.git_repo_name = Some("very-long-sidebar-repo-name".to_owned());
@@ -461,6 +648,10 @@ mod tests {
         (0..height)
             .flat_map(|y| (0..width).map(move |x| buffer[(x, y)].symbol()))
             .collect::<String>()
+    }
+
+    fn buffer_line_text(buffer: &ratatui::buffer::Buffer, width: u16, y: u16) -> String {
+        (0..width).map(|x| buffer[(x, y)].symbol()).collect()
     }
 
     fn line_width(line: &Line<'_>) -> usize {

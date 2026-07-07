@@ -76,8 +76,8 @@ pub(super) struct SidebarDeleteOutcome {
     pub(super) row: SidebarRow,
 }
 
-#[derive(Debug, Clone)]
 /// Concrete executor for sidebar actions that touch tmux, state, hooks, or notifications.
+#[derive(Debug, Clone)]
 pub(super) struct SidebarActions {
     tmux: Tmux,
     store: StateStore,
@@ -279,15 +279,6 @@ impl SidebarActions {
         }
     }
 
-    /// Replace hook config in tests without exposing mutable executor internals.
-    #[cfg(test)]
-    pub(super) fn set_selection_hooks_for_test(
-        &mut self,
-        selection_hooks: Vec<SidebarSelectionHookConfig>,
-    ) {
-        self.selection_hooks = selection_hooks;
-    }
-
     fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
         match &row.jump_target {
             SidebarJumpTarget::Window {
@@ -304,7 +295,10 @@ impl SidebarActions {
             SidebarJumpTarget::Session { session_name } => {
                 self.tmux.switch_client_to_session(session_name)?;
             }
-            SidebarJumpTarget::None => {}
+            SidebarJumpTarget::None => anyhow::bail!(
+                "cannot jump to {}: no unambiguous tmux target; check for this workspace open in multiple sessions or stale pane cwd",
+                row.primary
+            ),
         }
         Ok(())
     }
@@ -355,6 +349,17 @@ impl SidebarActions {
                         .is_none_or(|target_instance| target_instance == tmux_instance)
             })
             .collect())
+    }
+}
+
+#[cfg(test)]
+impl SidebarActions {
+    /// Replace hook config in tests without exposing mutable executor internals.
+    pub(super) fn set_selection_hooks_for_test(
+        &mut self,
+        selection_hooks: Vec<SidebarSelectionHookConfig>,
+    ) {
+        self.selection_hooks = selection_hooks;
     }
 }
 
