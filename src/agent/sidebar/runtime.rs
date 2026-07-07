@@ -162,7 +162,9 @@ enum EventOutcome {
 fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
     match event {
         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-            KeyCode::Char('q') | KeyCode::Esc => app.request_disable(),
+            KeyCode::Char('q') | KeyCode::Esc => {
+                app.request_disable();
+            }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 app.request_disable();
             }

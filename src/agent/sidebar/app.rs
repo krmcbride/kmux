@@ -1,38 +1,30 @@
 //! Stateful controller for the sidebar terminal UI.
 //!
-//! `SidebarApp` owns selection, focus-following behavior, row refreshes, jump
-//! actions, deletion, spinner state, and transient errors. Rendering and terminal
-//! event plumbing live in sibling modules.
+//! `SidebarApp` owns selection, focus-following behavior, refreshed rows, spinner
+//! state, and transient errors. Rendering, terminal event plumbing, row queries,
+//! and side-effect execution live in sibling modules.
 
-use anyhow::Result;
 use ratatui::widgets::ListState;
 
-use super::lifecycle;
+use super::actions::{
+    SidebarActions, SidebarDeleteOutcome, SidebarDeleteSessionIntent, SidebarDisableIntent,
+    SidebarJumpExecution, SidebarJumpIntent,
+};
+use super::rows::{SidebarRefreshRowsIntent, SidebarRowsQuery, SidebarRowsSnapshot};
+use crate::agent::sidebar::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity};
+use crate::agent::sidebar::selection::{self, SelectionMode};
 
-use crate::agent::sessions::session_views;
-use crate::agent::sidebar::hooks::run_selection_hooks;
-use crate::agent::sidebar::model::{
-    SidebarIcons, SidebarJumpTarget, SidebarRow, SidebarRowIdentity, build_rows_with_working_icon,
-};
-use crate::agent::sidebar::selection::{
-    self, PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
-    SelectionMode, decode_selected_target, encode_selected_target,
-};
-use crate::agent::status_badges::refresh_window_statuses;
-use crate::config::{SidebarSelectionHookConfig, StatusIcons};
-use crate::state::StateStore;
+#[cfg(test)]
+use crate::tmux::Tmux;
+use crate::tmux::TmuxPaneVisibility;
+
 use crate::telemetry;
-use crate::tmux::{Tmux, TmuxPaneVisibility};
 
 /// Mutable state for the sidebar terminal UI.
 pub(super) struct SidebarApp {
-    tmux: Tmux,
-    store: StateStore,
-    status_icons: StatusIcons,
-    icons: SidebarIcons,
+    rows_query: SidebarRowsQuery,
+    actions: SidebarActions,
     working_frames: Vec<String>,
-    idle_after_seconds: u64,
-    selection_hooks: Vec<SidebarSelectionHookConfig>,
     spinner_frame: usize,
     rows: Vec<SidebarRow>,
     list_state: ListState,
@@ -50,27 +42,18 @@ pub(super) struct SidebarApp {
 }
 
 impl SidebarApp {
-    /// Create sidebar UI state and capture the host tmux window/pane identity.
+    /// Create sidebar UI state around injected row and action services.
     pub(super) fn new(
-        tmux: Tmux,
-        store: StateStore,
-        status_icons: StatusIcons,
-        icons: SidebarIcons,
+        rows_query: SidebarRowsQuery,
+        actions: SidebarActions,
         working_frames: Vec<String>,
-        idle_after_seconds: u64,
-        selection_hooks: Vec<SidebarSelectionHookConfig>,
+        host_window_id: Option<String>,
+        sidebar_pane_id: Option<String>,
     ) -> Self {
-        let context = tmux.current_context().ok().flatten();
-        let host_window_id = context.as_ref().map(|context| context.window_id.clone());
-        let sidebar_pane_id = context.map(|context| context.pane_id);
         Self {
-            tmux,
-            store,
-            status_icons,
-            icons,
+            rows_query,
+            actions,
             working_frames,
-            idle_after_seconds,
-            selection_hooks,
             spinner_frame: 0,
             rows: Vec::new(),
             list_state: ListState::default(),
@@ -90,14 +73,40 @@ impl SidebarApp {
 
     /// Refresh rows from current agent/tmux state.
     pub(super) fn refresh_rows(&mut self) -> bool {
-        let visibility = self.sidebar_visibility();
-        self.refresh_rows_for_visibility(visibility)
+        let sidebar_pane_id = self.sidebar_pane_id.clone();
+        let working_icon = self.working_icon().map(str::to_owned);
+        let visibility = self.rows_query.visibility(sidebar_pane_id.as_deref());
+        let intent = SidebarRefreshRowsIntent {
+            working_icon: working_icon.as_deref(),
+        };
+        let result = telemetry::timed_result_event!(
+            "sidebar.refresh",
+            {
+                rows = self.rows.len(),
+                visible = self.window_visible,
+                focused = self.sidebar_has_focus,
+            },
+            || {
+                self.apply_refresh_visibility(visibility);
+                let snapshot = self.rows_query.load(intent, visibility)?;
+                let view_count = snapshot.view_count;
+                self.apply_rows_snapshot(snapshot);
+                Ok::<usize, anyhow::Error>(view_count)
+            },
+            ok |view_count| { views = *view_count, },
+        );
+
+        if let Err(error) = result {
+            self.last_error = Some(error.to_string());
+        }
+        true
     }
 
     /// Request that the TUI exit and that the sidebar be disabled afterward.
-    pub(super) fn request_disable(&mut self) {
+    pub(super) fn request_disable(&mut self) -> SidebarDisableIntent {
         self.disable_requested = true;
         self.should_quit = true;
+        SidebarDisableIntent
     }
 
     /// Move manual selection to the next row.
@@ -137,65 +146,41 @@ impl SidebarApp {
 
     /// Switch tmux focus to the selected agent row's pane or window.
     pub(super) fn jump_to_selected(&mut self) {
-        let Some(row) = self.selected_row().cloned() else {
+        let Some(intent) = self.selected_jump_intent() else {
             return;
         };
-        let mut persistence_warning = None;
-        let rollback = match self.persist_selection_before_jump(&row) {
-            Ok(rollback) => rollback,
-            Err(error) => {
-                persistence_warning = Some(format!("selection state failed: {error}"));
-                None
+        match self.actions.execute_jump(intent) {
+            SidebarJumpExecution::Succeeded(outcome) => {
+                let outcome = *outcome;
+                self.reset_after_successful_jump(&outcome.row);
+                if let Some(error) = outcome.hook_error {
+                    self.last_error = Some(format!("hook failed: {error}"));
+                } else if let Some(warning) = outcome.persistence_warning {
+                    self.last_error = Some(warning);
+                } else {
+                    self.last_error = None;
+                }
             }
-        };
-        if let Err(error) = self.select_row_target(&row) {
-            let rollback_error = rollback
-                .and_then(|rollback| self.restore_persisted_selection(rollback).err())
-                .map(|error| format!("; selection restore failed: {error}"))
-                .unwrap_or_default();
-            let _ = self.refresh_rows();
-            self.last_error = Some(format!("jump failed: {error}{rollback_error}"));
-        } else {
-            self.clear_other_persisted_selections(&row.window_id);
-            self.wake_row_sidebar(&row);
-            let hook_result = self.run_selection_hooks_for_row(&row);
-            self.reset_after_successful_jump(&row);
-            if let Err(error) = hook_result {
-                self.last_error = Some(format!("hook failed: {error}"));
-            } else if let Some(warning) = persistence_warning {
-                self.last_error = Some(warning);
-            } else {
-                self.last_error = None;
+            SidebarJumpExecution::Failed(failure) => {
+                let rollback_error = failure
+                    .rollback_error
+                    .map(|error| format!("; selection restore failed: {error}"))
+                    .unwrap_or_default();
+                let _ = self.refresh_rows();
+                self.last_error = Some(format!("jump failed: {}{rollback_error}", failure.error));
             }
         }
     }
 
     /// Delete all observations for the selected agent session and update the model.
     pub(super) fn delete_selected_session(&mut self) {
-        let Some(index) = self.list_state.selected() else {
-            return;
-        };
-        let Some(row) = self.rows.get(index).cloned() else {
+        let Some(intent) = self.selected_delete_session_intent() else {
             return;
         };
 
-        if let Err(error) = self.store.delete_session(&row.selection.key) {
-            self.last_error = Some(format!("delete failed: {error}"));
-            return;
-        }
-        let _ = refresh_window_statuses(&self.store, &self.tmux, &self.status_icons);
-        let _ = super::notify_observation_changed(&self.tmux);
-
-        self.rows
-            .retain(|candidate| candidate.identity != row.identity);
-        self.last_error = None;
-        if self.rows.is_empty() {
-            self.list_state.select(None);
-            self.selected_identity = None;
-            self.selected_pane_id = None;
-            self.selected_window_id = None;
-        } else {
-            self.select_index_manual(index.min(self.rows.len() - 1));
+        match self.actions.execute_delete_session(intent) {
+            Ok(outcome) => self.apply_delete_outcome(outcome),
+            Err(error) => self.last_error = Some(format!("delete failed: {error}")),
         }
     }
 
@@ -269,39 +254,40 @@ impl SidebarApp {
         }
     }
 
-    fn refresh_rows_for_visibility(&mut self, visibility: TmuxPaneVisibility) -> bool {
-        let result = telemetry::timed_result_event!(
-            "sidebar.refresh",
-            {
-                rows = self.rows.len(),
-                visible = self.window_visible,
-                focused = self.sidebar_has_focus,
-            },
-            || {
-                self.window_visible = visibility.window_visible;
-                self.update_selection_mode_for_focus(visibility.pane_has_focus);
+    fn apply_rows_snapshot(&mut self, snapshot: SidebarRowsSnapshot) {
+        self.apply_refresh_visibility(snapshot.visibility);
+        self.rows = snapshot.rows;
+        self.last_error = None;
+        self.sync_selection();
+    }
 
-                let views = session_views(&self.store, &self.tmux)?;
-                let view_count = views.len();
-                let working_icon = self.working_icon().map(str::to_owned);
-                self.rows = build_rows_with_working_icon(
-                    &views,
-                    crate::state::now_unix_seconds(),
-                    &self.icons,
-                    working_icon.as_deref(),
-                    self.idle_after_seconds,
-                );
-                self.last_error = None;
-                self.sync_selection();
-                Ok::<usize, anyhow::Error>(view_count)
-            },
-            ok |view_count| { views = *view_count, },
-        );
+    fn apply_refresh_visibility(&mut self, visibility: TmuxPaneVisibility) {
+        self.window_visible = visibility.window_visible;
+        self.update_selection_mode_for_focus(visibility.pane_has_focus);
+    }
 
-        if let Err(error) = result {
-            self.last_error = Some(error.to_string());
+    fn selected_jump_intent(&self) -> Option<SidebarJumpIntent> {
+        self.selected_row().cloned().map(SidebarJumpIntent::new)
+    }
+
+    fn selected_delete_session_intent(&self) -> Option<SidebarDeleteSessionIntent> {
+        let index = self.list_state.selected()?;
+        let row = self.rows.get(index).cloned()?;
+        Some(SidebarDeleteSessionIntent::new(index, row))
+    }
+
+    fn apply_delete_outcome(&mut self, outcome: SidebarDeleteOutcome) {
+        self.rows
+            .retain(|candidate| candidate.identity != outcome.row.identity);
+        self.last_error = None;
+        if self.rows.is_empty() {
+            self.list_state.select(None);
+            self.selected_identity = None;
+            self.selected_pane_id = None;
+            self.selected_window_id = None;
+        } else {
+            self.select_index_manual(outcome.index.min(self.rows.len() - 1));
         }
-        true
     }
 
     fn sync_selection(&mut self) {
@@ -334,103 +320,6 @@ impl SidebarApp {
             .or_else(|| selection::host_window_index(&self.rows, self.host_window_id.as_deref()))
     }
 
-    fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
-        match &row.jump_target {
-            SidebarJumpTarget::Window {
-                session_name,
-                window_id,
-                pane_id,
-            } => {
-                self.tmux.select_window_id(window_id)?;
-                self.tmux.switch_client_to_session(session_name)?;
-                if let Some(pane_id) = pane_id {
-                    self.tmux.select_pane(pane_id)?;
-                }
-            }
-            SidebarJumpTarget::Session { session_name } => {
-                self.tmux.switch_client_to_session(session_name)?;
-            }
-            SidebarJumpTarget::None => {}
-        }
-        Ok(())
-    }
-
-    fn persist_selection_before_jump(
-        &self,
-        row: &SidebarRow,
-    ) -> Result<Option<PersistedSelectionRollback>> {
-        if row.window_id.trim().is_empty() {
-            return Ok(None);
-        }
-
-        let previous = PreviousSelectionOption::from(
-            self.tmux
-                .show_window_option(&row.window_id, SELECTED_TARGET_OPTION)?,
-        );
-        let attempted = row.identity.clone();
-        let encoded = encode_selected_target(&attempted)?;
-        self.tmux
-            .set_window_option(&row.window_id, SELECTED_TARGET_OPTION, encoded.as_str())?;
-
-        Ok(Some(PersistedSelectionRollback {
-            window_id: row.window_id.clone(),
-            attempted,
-            previous,
-        }))
-    }
-
-    fn restore_persisted_selection(&self, rollback: PersistedSelectionRollback) -> Result<()> {
-        let current = self
-            .tmux
-            .show_window_option(&rollback.window_id, SELECTED_TARGET_OPTION)?;
-        if current.as_deref().and_then(decode_selected_target) != Some(rollback.attempted) {
-            return Ok(());
-        }
-
-        match rollback.previous {
-            PreviousSelectionOption::Value(value) => self.tmux.set_window_option(
-                &rollback.window_id,
-                SELECTED_TARGET_OPTION,
-                value.as_str(),
-            ),
-            PreviousSelectionOption::Unset => self
-                .tmux
-                .unset_window_option(&rollback.window_id, SELECTED_TARGET_OPTION),
-        }
-    }
-
-    fn clear_other_persisted_selections(&self, selected_window_id: &str) {
-        if selected_window_id.trim().is_empty() {
-            return;
-        }
-
-        let Ok(windows) = self.tmux.list_windows(None) else {
-            return;
-        };
-        for window in windows {
-            if window.window_id != selected_window_id {
-                let _ = self
-                    .tmux
-                    .unset_window_option(&window.window_id, SELECTED_TARGET_OPTION);
-            }
-        }
-    }
-
-    fn run_selection_hooks_for_row(&self, row: &SidebarRow) -> Result<()> {
-        run_selection_hooks(
-            &self.selection_hooks,
-            &self.store,
-            &self.tmux.instance_id(),
-            row,
-        )
-    }
-
-    fn wake_row_sidebar(&self, row: &SidebarRow) {
-        if !row.window_id.trim().is_empty() {
-            let _ = lifecycle::wake_window(&self.tmux, &row.window_id);
-        }
-    }
-
     fn selected_row(&self) -> Option<&SidebarRow> {
         self.list_state
             .selected()
@@ -439,12 +328,7 @@ impl SidebarApp {
 
     fn persisted_host_identity_index(&self) -> Option<usize> {
         let host_window_id = self.host_window_id.as_deref()?;
-        let value = self
-            .tmux
-            .show_window_option(host_window_id, SELECTED_TARGET_OPTION)
-            .ok()
-            .flatten()?;
-        let identity = decode_selected_target(&value)?;
+        let identity = self.actions.persisted_selection_identity(host_window_id)?;
         selection::persisted_host_identity_index(
             &self.rows,
             self.host_window_id.as_deref(),
@@ -483,21 +367,6 @@ impl SidebarApp {
         }
     }
 
-    fn sidebar_visibility(&self) -> TmuxPaneVisibility {
-        let Some(pane_id) = self.sidebar_pane_id.as_deref() else {
-            return TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: true,
-            };
-        };
-        self.tmux
-            .pane_visibility(pane_id)
-            .unwrap_or(TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: true,
-            })
-    }
-
     fn update_selection_mode_for_focus(&mut self, sidebar_has_focus: bool) {
         self.sidebar_has_focus = sidebar_has_focus;
         if !sidebar_has_focus {
@@ -533,14 +402,23 @@ impl SidebarApp {
         host_window_id: Option<&str>,
         rows: Vec<SidebarRow>,
     ) -> Self {
-        let mut app = Self {
+        let store = crate::agent::sidebar::test_support::empty_state_store();
+        let rows_query = SidebarRowsQuery::new(
+            store.clone(),
+            tmux.clone(),
+            crate::agent::sidebar::test_support::test_icons(),
+            crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
+        );
+        let actions = SidebarActions::new(
             tmux,
-            store: crate::agent::sidebar::test_support::empty_state_store(),
-            status_icons: StatusIcons::default(),
-            icons: crate::agent::sidebar::test_support::test_icons(),
+            store,
+            crate::config::StatusIcons::default(),
+            Vec::new(),
+        );
+        let mut app = Self {
+            rows_query,
+            actions,
             working_frames: Vec::new(),
-            idle_after_seconds: crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
-            selection_hooks: Vec::new(),
             spinner_frame: 0,
             rows,
             list_state: ListState::default(),
@@ -565,12 +443,19 @@ impl SidebarApp {
 mod tests {
     use super::*;
     use crate::agent::sessions::AgentTmuxTarget;
+    use crate::agent::sidebar::selection::{
+        SELECTED_TARGET_OPTION, decode_selected_target, encode_selected_target,
+    };
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, agent_state, report_state, row_from_view,
     };
-    use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
+    use crate::config::{
+        DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, SidebarSelectionHookConfig, StatusIcons,
+    };
     use crate::state::{AgentSessionKey, AgentStatus};
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
+    use anyhow::Result;
+    use std::fs;
     use tempfile::{TempDir, tempdir};
 
     struct SidebarTmuxFixture {
@@ -638,6 +523,14 @@ mod tests {
 
     fn selected_index(app: &SidebarApp) -> Option<usize> {
         app.list_state.selected()
+    }
+
+    fn rows_snapshot(visibility: TmuxPaneVisibility, rows: Vec<SidebarRow>) -> SidebarRowsSnapshot {
+        SidebarRowsSnapshot {
+            visibility,
+            rows,
+            view_count: 0,
+        }
     }
 
     #[test]
@@ -710,6 +603,114 @@ mod tests {
     }
 
     #[test]
+    fn request_disable_returns_disable_intent_and_marks_app_for_exit() {
+        let mut app = SidebarApp::test(None, Vec::new());
+
+        let intent = app.request_disable();
+
+        assert_eq!(intent, SidebarDisableIntent);
+        assert!(app.should_quit());
+        assert!(app.disable_requested());
+    }
+
+    #[test]
+    fn selected_row_intents_capture_current_row_without_executing_side_effects() {
+        let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.next();
+
+        let jump = app.selected_jump_intent().expect("selected jump intent");
+        let delete = app
+            .selected_delete_session_intent()
+            .expect("selected delete intent");
+
+        assert_eq!(jump.row.title, "Second");
+        assert_eq!(delete.index, 1);
+        assert_eq!(delete.row.selection.key.session_id, "ses_b");
+        assert_eq!(app.rows().len(), 2);
+    }
+
+    #[test]
+    fn applying_rows_snapshot_syncs_focus_visibility_and_selection() {
+        let rows = vec![
+            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+        ];
+        let mut app = SidebarApp::test(Some("@1"), rows);
+        app.next();
+        let refreshed_rows = vec![
+            row_from_view(&agent_state(AgentStatus::Working, 200, "@1", "%10"), 200),
+            row_from_view(&agent_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
+        ];
+
+        app.apply_rows_snapshot(rows_snapshot(
+            TmuxPaneVisibility {
+                pane_has_focus: true,
+                window_visible: false,
+            },
+            refreshed_rows,
+        ));
+
+        assert!(!app.window_visible());
+        assert_eq!(app.selection_mode, SelectionMode::Manual);
+        assert_eq!(selected_index(&app), Some(1));
+        assert_eq!(app.selected_pane_id.as_deref(), Some("%20"));
+    }
+
+    #[test]
+    fn refresh_failure_still_updates_visibility_and_focus_state() -> Result<()> {
+        let Some(fixture) = TmuxFixture::new()? else {
+            return Ok(());
+        };
+        let temp = tempdir()?;
+        create_test_session(&fixture.tmux, "project", temp.path())?;
+        let pane = fixture
+            .tmux
+            .list_pane_snapshots()?
+            .into_iter()
+            .find(|pane| pane.session_name == "project")
+            .ok_or_else(|| anyhow::anyhow!("expected test sidebar pane"))?;
+
+        let state_base = temp.path().join("state");
+        let store = crate::state::test_support::store_with_path(&state_base)?;
+        let observations_dir = state_base.join("agent-observations");
+        fs::remove_dir(&observations_dir)?;
+        fs::write(&observations_dir, "not a directory")?;
+        let rows_query = SidebarRowsQuery::new(
+            store.clone(),
+            fixture.tmux.clone(),
+            crate::agent::sidebar::test_support::test_icons(),
+            DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
+        );
+        let actions = SidebarActions::new(
+            fixture.tmux.clone(),
+            store,
+            StatusIcons::default(),
+            Vec::new(),
+        );
+        let mut app = SidebarApp::new(
+            rows_query,
+            actions,
+            Vec::new(),
+            Some(pane.window_id),
+            Some(pane.pane_id),
+        );
+        app.window_visible = true;
+        app.sidebar_has_focus = true;
+        app.selection_mode = SelectionMode::Manual;
+
+        app.refresh_rows();
+
+        assert!(!app.window_visible());
+        assert_eq!(app.selection_mode, SelectionMode::FollowHost);
+        assert!(
+            app.last_error()
+                .is_some_and(|error| error.contains("failed to read state directory"))
+        );
+        Ok(())
+    }
+
+    #[test]
     fn hidden_idle_refresh_rebuilds_rows() {
         let rows = vec![
             row_from_view(
@@ -723,12 +724,14 @@ mod tests {
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(selected_index(&app), Some(1));
 
-        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
-            pane_has_focus: false,
-            window_visible: false,
-        });
+        app.apply_rows_snapshot(rows_snapshot(
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            },
+            Vec::new(),
+        ));
 
-        assert!(refreshed);
         assert!(!app.window_visible());
         assert!(app.rows().is_empty());
     }
@@ -741,12 +744,14 @@ mod tests {
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
 
-        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
-            pane_has_focus: false,
-            window_visible: false,
-        });
+        app.apply_rows_snapshot(rows_snapshot(
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            },
+            Vec::new(),
+        ));
 
-        assert!(refreshed);
         assert!(!app.window_visible());
         assert!(app.rows().is_empty());
     }
@@ -759,12 +764,14 @@ mod tests {
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
-        let refreshed = app.refresh_rows_for_visibility(TmuxPaneVisibility {
-            pane_has_focus: false,
-            window_visible: false,
-        });
+        app.apply_rows_snapshot(rows_snapshot(
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            },
+            Vec::new(),
+        ));
 
-        assert!(refreshed);
         assert!(!app.window_visible());
         assert!(app.rows().is_empty());
     }
@@ -943,7 +950,7 @@ mod tests {
         app.next();
         let target = app.rows()[1].clone();
 
-        app.persist_selection_before_jump(&target)?;
+        fixture.set_selected_row(&target)?;
         app.reset_after_successful_jump(&target);
 
         assert!(app.window_visible());
@@ -963,8 +970,7 @@ mod tests {
             server_row_in_window("ses_a", "First", &fixture.window_id),
             server_row_in_window("ses_b", "Second", &fixture.window_id),
         ];
-        let source = SidebarApp::test_with_tmux(fixture.tmux(), Some("@other"), rows.clone());
-        source.persist_selection_before_jump(&rows[1])?;
+        fixture.set_selected_row(&rows[1])?;
 
         let destination =
             SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), rows);
@@ -1111,80 +1117,6 @@ mod tests {
     }
 
     #[test]
-    fn rollback_does_not_overwrite_newer_persisted_selection() -> Result<()> {
-        let Some(fixture) = SidebarTmuxFixture::new()? else {
-            return Ok(());
-        };
-        let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
-        fixture.set_selected_row(&previous)?;
-        let rows = vec![server_row_in_window(
-            "ses_attempted",
-            "Attempted",
-            &fixture.window_id,
-        )];
-        let app =
-            SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), rows.clone());
-        let rollback = app
-            .persist_selection_before_jump(&rows[0])?
-            .ok_or_else(|| anyhow::anyhow!("expected persisted selection rollback"))?;
-        let newer = server_row_in_window("ses_newer", "Newer", &fixture.window_id);
-        fixture.set_selected_row(&newer)?;
-
-        app.restore_persisted_selection(rollback)?;
-
-        assert_eq!(fixture.selected_target()?, Some(newer.identity));
-        Ok(())
-    }
-
-    #[test]
-    fn successful_selection_clears_other_window_persisted_targets() -> Result<()> {
-        let Some(fixture) = SidebarTmuxFixture::new()? else {
-            return Ok(());
-        };
-        let other_window_id = fixture
-            .tmux()
-            .list_windows(None)?
-            .into_iter()
-            .map(|window| window.window_id)
-            .find(|window_id| window_id != &fixture.window_id)
-            .ok_or_else(|| anyhow::anyhow!("expected a second fixture window"))?;
-        let selected = server_row_in_window("ses_selected", "Selected", &fixture.window_id);
-        let stale = server_row_in_window("ses_stale", "Stale", &other_window_id);
-        let selected_encoded = encode_selected_target(&selected.identity)?;
-        let stale_encoded = encode_selected_target(&stale.identity)?;
-        let tmux = fixture.tmux();
-        tmux.set_window_option(
-            &fixture.window_id,
-            SELECTED_TARGET_OPTION,
-            selected_encoded.as_str(),
-        )?;
-        tmux.set_window_option(
-            &other_window_id,
-            SELECTED_TARGET_OPTION,
-            stale_encoded.as_str(),
-        )?;
-        let app = SidebarApp::test_with_tmux(
-            fixture.tmux(),
-            Some(&fixture.window_id),
-            vec![selected, stale],
-        );
-
-        app.clear_other_persisted_selections(&fixture.window_id);
-
-        assert_eq!(
-            fixture.raw_selected_target()?.as_deref(),
-            Some(selected_encoded.as_str())
-        );
-        assert_eq!(
-            fixture
-                .tmux()
-                .show_window_option(&other_window_id, SELECTED_TARGET_OPTION)?,
-            None
-        );
-        Ok(())
-    }
-
-    #[test]
     fn jump_failure_is_reported_without_panicking_or_quitting() {
         let rows = vec![row_from_view(
             &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
@@ -1210,12 +1142,13 @@ mod tests {
             100,
         )];
         let mut app = SidebarApp::test(Some("not-a-window"), rows);
-        app.selection_hooks = vec![SidebarSelectionHookConfig {
-            command: format!("touch '{}'", marker.display()),
-            agent_kind: Some("opencode".to_owned()),
-            producer_kind: None,
-            timeout_ms: Some(1000),
-        }];
+        app.actions
+            .set_selection_hooks_for_test(vec![SidebarSelectionHookConfig {
+                command: format!("touch '{}'", marker.display()),
+                agent_kind: Some("opencode".to_owned()),
+                producer_kind: None,
+                timeout_ms: Some(1000),
+            }]);
 
         app.jump_to_selected();
 
@@ -1239,12 +1172,13 @@ mod tests {
         )];
         let mut app = SidebarApp::test(None, rows);
         app.select_index_manual(0);
-        app.selection_hooks = vec![SidebarSelectionHookConfig {
-            command: format!("touch '{}'", marker.display()),
-            agent_kind: Some("opencode".to_owned()),
-            producer_kind: None,
-            timeout_ms: Some(1000),
-        }];
+        app.actions
+            .set_selection_hooks_for_test(vec![SidebarSelectionHookConfig {
+                command: format!("touch '{}'", marker.display()),
+                agent_kind: Some("opencode".to_owned()),
+                producer_kind: None,
+                timeout_ms: Some(1000),
+            }]);
 
         app.jump_to_selected();
 

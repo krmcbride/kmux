@@ -9,6 +9,7 @@ use std::io::IsTerminal;
 
 use anyhow::Result;
 
+use crate::agent::sidebar::actions::SidebarActions;
 use crate::agent::sidebar::app::SidebarApp;
 use crate::agent::sidebar::candidates::{
     DEFAULT_WIDTH, SIDEBAR_ROLE, SidebarCandidateMatcher, sidebar_candidate_snapshots,
@@ -19,6 +20,7 @@ use crate::agent::sidebar::commands::{
     sidebar_wake_hook_command,
 };
 use crate::agent::sidebar::model::SidebarIcons;
+use crate::agent::sidebar::rows::SidebarRowsQuery;
 use crate::agent::sidebar::runtime::run_terminal_app;
 use crate::config::{Config, SidebarSize};
 use crate::state::StateStore;
@@ -120,14 +122,27 @@ pub(super) fn run_tui() -> Result<()> {
         .working_frames()
         .map_or_else(Vec::new, <[String]>::to_vec);
     let icons = SidebarIcons::from_config(&config.status_icons);
-    let mut app = SidebarApp::new(
+    let rows_query = SidebarRowsQuery::new(
+        store.clone(),
+        tmux.clone(),
+        icons,
+        config.sidebar.idle_after_seconds(),
+    );
+    let actions = SidebarActions::new(
         tmux,
         store,
         config.status_icons.clone(),
-        icons,
-        working_frames,
-        config.sidebar.idle_after_seconds(),
         config.sidebar.selection_hooks,
+    );
+    let context = actions.current_context();
+    let host_window_id = context.as_ref().map(|context| context.window_id.clone());
+    let sidebar_pane_id = context.map(|context| context.pane_id);
+    let mut app = SidebarApp::new(
+        rows_query,
+        actions,
+        working_frames,
+        host_window_id,
+        sidebar_pane_id,
     );
     let disable_requested = run_terminal_app(&mut app)?;
     if disable_requested {

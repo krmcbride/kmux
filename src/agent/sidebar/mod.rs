@@ -3,6 +3,7 @@
 //! Sidebar lifecycle and rendering stay here so presentation, tmux pane repair,
 //! and keyboard navigation do not leak into workspace lifecycle workflows.
 
+mod actions;
 mod app;
 mod candidates;
 mod commands;
@@ -10,6 +11,7 @@ mod hooks;
 mod lifecycle;
 mod model;
 mod render;
+mod rows;
 mod runtime;
 mod selection;
 #[cfg(test)]
