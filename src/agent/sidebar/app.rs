@@ -29,6 +29,7 @@ pub(super) struct SidebarApp {
     rows: Vec<SidebarRow>,
     list_state: ListState,
     sidebar_pane_id: Option<String>,
+    host_session_name: Option<String>,
     host_window_id: Option<String>,
     selection_mode: SelectionMode,
     selected_identity: Option<SidebarRowIdentity>,
@@ -47,6 +48,7 @@ impl SidebarApp {
         rows_query: SidebarRowsQuery,
         actions: SidebarActions,
         working_frames: Vec<String>,
+        host_session_name: Option<String>,
         host_window_id: Option<String>,
         sidebar_pane_id: Option<String>,
     ) -> Self {
@@ -58,6 +60,7 @@ impl SidebarApp {
             rows: Vec::new(),
             list_state: ListState::default(),
             sidebar_pane_id,
+            host_session_name,
             host_window_id,
             selection_mode: SelectionMode::FollowHost,
             selected_identity: None,
@@ -209,7 +212,11 @@ impl SidebarApp {
         if self.selection_mode == SelectionMode::FollowHost {
             self.host_selection_index()
         } else {
-            selection::host_window_index(&self.rows, self.host_window_id.as_deref())
+            selection::host_context_index(
+                &self.rows,
+                self.host_window_id.as_deref(),
+                self.host_session_name.as_deref(),
+            )
         }
     }
 
@@ -310,14 +317,22 @@ impl SidebarApp {
             ),
         };
         match selected {
-            Some(index) => self.select_index_internal(index),
+            Some(index) => {
+                self.select_index_internal(index);
+                self.seed_host_selection_option(index);
+            }
             None => self.list_state.select(None),
         }
     }
 
     fn host_selection_index(&self) -> Option<usize> {
-        self.persisted_host_identity_index()
-            .or_else(|| selection::host_window_index(&self.rows, self.host_window_id.as_deref()))
+        self.persisted_host_identity_index().or_else(|| {
+            selection::host_context_index(
+                &self.rows,
+                self.host_window_id.as_deref(),
+                self.host_session_name.as_deref(),
+            )
+        })
     }
 
     fn selected_row(&self) -> Option<&SidebarRow> {
@@ -332,8 +347,26 @@ impl SidebarApp {
         selection::persisted_host_identity_index(
             &self.rows,
             self.host_window_id.as_deref(),
+            self.host_session_name.as_deref(),
             &identity,
         )
+    }
+
+    fn seed_host_selection_option(&self, index: usize) {
+        if self.selection_mode != SelectionMode::FollowHost {
+            return;
+        }
+        let Some(host_window_id) = self.host_window_id.as_deref() else {
+            return;
+        };
+        if self.actions.selection_option_exists(host_window_id) {
+            return;
+        }
+        if let Some(row) = self.rows.get(index) {
+            let _ = self
+                .actions
+                .persist_selection_identity(host_window_id, &row.identity);
+        }
     }
 
     fn reset_after_successful_jump(&mut self, row: &SidebarRow) {
@@ -394,11 +427,12 @@ impl SidebarApp {
 impl SidebarApp {
     /// Build a sidebar app with injected rows for unit tests.
     pub(super) fn test(host_window_id: Option<&str>, rows: Vec<SidebarRow>) -> Self {
-        Self::test_with_tmux(Tmux::new(), host_window_id, rows)
+        Self::test_with_tmux(Tmux::new(), None, host_window_id, rows)
     }
 
     pub(super) fn test_with_tmux(
         tmux: Tmux,
+        host_session_name: Option<&str>,
         host_window_id: Option<&str>,
         rows: Vec<SidebarRow>,
     ) -> Self {
@@ -423,6 +457,7 @@ impl SidebarApp {
             rows,
             list_state: ListState::default(),
             sidebar_pane_id: None,
+            host_session_name: host_session_name.map(str::to_owned),
             host_window_id: host_window_id.map(str::to_owned),
             selection_mode: SelectionMode::FollowHost,
             selected_identity: None,
@@ -692,6 +727,7 @@ mod tests {
             rows_query,
             actions,
             Vec::new(),
+            None,
             Some(pane.window_id),
             Some(pane.pane_id),
         );
@@ -794,6 +830,27 @@ mod tests {
         assert_eq!(selected_index(&app), Some(0));
         assert_eq!(app.active_index(), Some(1));
         assert_eq!(app.cursor_index(), Some(0));
+    }
+
+    #[test]
+    fn selection_follows_session_target_when_window_is_ambiguous() -> Result<()> {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
+            return Ok(());
+        };
+        let row = session_target_row("ses_dotfiles", "Dotfiles", "project");
+
+        let app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            vec![row.clone()],
+        );
+
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(app.active_index(), Some(0));
+        assert_eq!(app.cursor_index(), None);
+        assert_eq!(fixture.selected_target()?, Some(row.identity));
+        Ok(())
     }
 
     #[test]
@@ -946,7 +1003,12 @@ mod tests {
             server_row_in_window("ses_a", "First", &fixture.window_id),
             server_row_in_window("ses_b", "Second", &fixture.window_id),
         ];
-        let mut app = SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), rows);
+        let mut app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            rows,
+        );
         app.next();
         let target = app.rows()[1].clone();
 
@@ -972,8 +1034,12 @@ mod tests {
         ];
         fixture.set_selected_row(&rows[1])?;
 
-        let destination =
-            SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), rows);
+        let destination = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            rows,
+        );
 
         assert_eq!(selected_index(&destination), Some(1));
         assert_eq!(destination.active_index(), Some(1));
@@ -991,6 +1057,7 @@ mod tests {
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
+            Some("project"),
             Some(&fixture.window_id),
             vec![
                 server_row_in_window("ses_a", "First", &fixture.window_id),
@@ -1012,6 +1079,7 @@ mod tests {
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
+            Some("project"),
             Some(&fixture.window_id),
             vec![
                 server_row_in_window("ses_a", "First", &fixture.window_id),
@@ -1036,7 +1104,12 @@ mod tests {
             other_window_row,
             server_row_in_window("ses_b", "Host window", &fixture.window_id),
         ];
-        let app = SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), rows);
+        let app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            rows,
+        );
 
         assert_eq!(selected_index(&app), Some(1));
         assert_eq!(app.active_index(), Some(1));
@@ -1055,8 +1128,12 @@ mod tests {
             "Attempted",
             &fixture.window_id,
         ));
-        let mut app =
-            SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), vec![row]);
+        let mut app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            vec![row],
+        );
 
         app.jump_to_selected();
 
@@ -1079,8 +1156,12 @@ mod tests {
             "Attempted",
             &fixture.window_id,
         ));
-        let mut app =
-            SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), vec![row]);
+        let mut app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            vec![row],
+        );
 
         app.jump_to_selected();
 
@@ -1093,8 +1174,7 @@ mod tests {
     }
 
     #[test]
-    fn jump_failure_clears_new_persisted_selection_when_no_previous_selection_exists() -> Result<()>
-    {
+    fn jump_failure_preserves_seeded_initial_selection() -> Result<()> {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
@@ -1103,12 +1183,17 @@ mod tests {
             "Attempted",
             &fixture.window_id,
         ));
-        let mut app =
-            SidebarApp::test_with_tmux(fixture.tmux(), Some(&fixture.window_id), vec![row]);
+        let row_identity = row.identity.clone();
+        let mut app = SidebarApp::test_with_tmux(
+            fixture.tmux(),
+            Some("project"),
+            Some(&fixture.window_id),
+            vec![row],
+        );
 
         app.jump_to_selected();
 
-        assert_eq!(fixture.selected_target()?, None);
+        assert_eq!(fixture.selected_target()?, Some(row_identity));
         assert!(
             app.last_error()
                 .is_some_and(|error| error.contains("jump failed"))
@@ -1231,6 +1316,19 @@ mod tests {
         report.target.tmux_pane_current_command = None;
         report.target.git_worktree_path = None;
         report.target.directory = Some(directory.to_owned());
+        row_from_view(&report, 100)
+    }
+
+    fn session_target_row(session_id: &str, title: &str, session_name: &str) -> SidebarRow {
+        let mut report = report_state(AgentStatus::Working, 100, "", "");
+        report.key = session_key("opencode", session_id);
+        report.workspace_key = Some(format!("/repo/{session_id}"));
+        report.tmux_target = AgentTmuxTarget::Session;
+        report.title = Some(title.to_owned());
+        report.target.tmux_session_name = Some(session_name.to_owned());
+        report.target.tmux_window_id = None;
+        report.target.tmux_window_name = None;
+        report.target.tmux_pane_id = None;
         row_from_view(&report, 100)
     }
 

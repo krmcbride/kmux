@@ -147,6 +147,30 @@ impl SidebarActions {
         decode_selected_target(&value)
     }
 
+    /// Return whether the selected-target option exists, even if the value is stale or invalid.
+    pub(super) fn selection_option_exists(&self, window_id: &str) -> bool {
+        self.tmux
+            .show_window_option(window_id, SELECTED_TARGET_OPTION)
+            .ok()
+            .flatten()
+            .is_some()
+    }
+
+    /// Persist the selected logical row for a host tmux window.
+    pub(super) fn persist_selection_identity(
+        &self,
+        window_id: &str,
+        identity: &SidebarRowIdentity,
+    ) -> Result<()> {
+        if window_id.trim().is_empty() {
+            return Ok(());
+        }
+
+        let encoded = encode_selected_target(identity)?;
+        self.tmux
+            .set_window_option(window_id, SELECTED_TARGET_OPTION, encoded.as_str())
+    }
+
     /// Execute tmux navigation, selection persistence, wake, and hook effects for a jump.
     pub(super) fn execute_jump(&self, intent: SidebarJumpIntent) -> SidebarJumpExecution {
         let row = intent.row;
@@ -209,9 +233,7 @@ impl SidebarActions {
                 .show_window_option(&row.window_id, SELECTED_TARGET_OPTION)?,
         );
         let attempted = row.identity.clone();
-        let encoded = encode_selected_target(&attempted)?;
-        self.tmux
-            .set_window_option(&row.window_id, SELECTED_TARGET_OPTION, encoded.as_str())?;
+        self.persist_selection_identity(&row.window_id, &attempted)?;
 
         Ok(Some(PersistedSelectionRollback {
             window_id: row.window_id.clone(),

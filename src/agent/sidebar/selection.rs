@@ -58,25 +58,52 @@ pub(super) fn host_window_index(
     host_window_id.and_then(|window_id| row_index_by_window(rows, window_id))
 }
 
+/// Return the first row associated with the host window or, for session-level
+/// targets, the host session.
+pub(super) fn host_context_index(
+    rows: &[SidebarRow],
+    host_window_id: Option<&str>,
+    host_session_name: Option<&str>,
+) -> Option<usize> {
+    host_window_index(rows, host_window_id).or_else(|| {
+        let host_session_name = host_session_name?;
+        rows.iter()
+            .position(|row| row.window_id.is_empty() && row.session_name == host_session_name)
+    })
+}
+
 /// Return the remembered logical row index when it still belongs to the host window.
 pub(super) fn remembered_host_identity_index(
     rows: &[SidebarRow],
     host_window_id: Option<&str>,
+    host_session_name: Option<&str>,
     identity: Option<&SidebarRowIdentity>,
 ) -> Option<usize> {
-    let host_window_id = host_window_id?;
     let identity = identity?;
     let index = row_index_by_identity(rows, identity)?;
-    (rows[index].window_id == host_window_id).then_some(index)
+    row_matches_host_context(&rows[index], host_window_id, host_session_name).then_some(index)
 }
 
 /// Return the persisted row identity index when it still belongs to the host window.
 pub(super) fn persisted_host_identity_index(
     rows: &[SidebarRow],
     host_window_id: Option<&str>,
+    host_session_name: Option<&str>,
     identity: &SidebarRowIdentity,
 ) -> Option<usize> {
-    remembered_host_identity_index(rows, host_window_id, Some(identity))
+    remembered_host_identity_index(rows, host_window_id, host_session_name, Some(identity))
+}
+
+fn row_matches_host_context(
+    row: &SidebarRow,
+    host_window_id: Option<&str>,
+    host_session_name: Option<&str>,
+) -> bool {
+    if !row.window_id.is_empty() {
+        return host_window_id.is_some_and(|window_id| row.window_id == window_id);
+    }
+
+    host_session_name.is_some_and(|session_name| row.session_name == session_name)
 }
 
 /// Return the best row index for manual selection after row refreshes.
@@ -168,16 +195,53 @@ mod tests {
 
         assert_eq!(host_window_index(&rows, Some("@1")), Some(0));
         assert_eq!(
-            remembered_host_identity_index(&rows, Some("@1"), Some(&other_window_identity)),
+            remembered_host_identity_index(
+                &rows,
+                Some("@1"),
+                Some("project"),
+                Some(&other_window_identity)
+            ),
             None
         );
         assert_eq!(
-            persisted_host_identity_index(&rows, Some("@1"), &rows[1].identity),
+            persisted_host_identity_index(&rows, Some("@1"), Some("project"), &rows[1].identity),
             None
         );
         assert_eq!(
-            persisted_host_identity_index(&rows, Some("@2"), &rows[1].identity),
+            persisted_host_identity_index(&rows, Some("@2"), Some("project"), &rows[1].identity),
             Some(1)
+        );
+    }
+
+    #[test]
+    fn host_context_matches_session_target_rows_without_window_ids() {
+        let mut session_row = row("ses_session", "", "%1");
+        session_row.window_id.clear();
+        session_row.pane_id = None;
+        session_row.session_name = "project".to_owned();
+        let rows = vec![row("ses_a", "@1", "%2"), session_row];
+
+        assert_eq!(
+            host_context_index(&rows, Some("@missing"), Some("project")),
+            Some(1)
+        );
+        assert_eq!(
+            remembered_host_identity_index(
+                &rows,
+                Some("@missing"),
+                Some("project"),
+                Some(&rows[1].identity)
+            ),
+            Some(1)
+        );
+        assert_eq!(
+            remembered_host_identity_index(
+                &rows,
+                Some("@missing"),
+                Some("other"),
+                Some(&rows[1].identity)
+            ),
+            None
         );
     }
 

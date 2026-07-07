@@ -136,12 +136,14 @@ pub(super) fn run_tui() -> Result<()> {
         config.sidebar.selection_hooks,
     );
     let context = actions.current_context();
+    let host_session_name = context.as_ref().map(|context| context.session_name.clone());
     let host_window_id = context.as_ref().map(|context| context.window_id.clone());
-    let sidebar_pane_id = context.map(|context| context.pane_id);
+    let sidebar_pane_id = context.as_ref().map(|context| context.pane_id.clone());
     let mut app = SidebarApp::new(
         rows_query,
         actions,
         working_frames,
+        host_session_name,
         host_window_id,
         sidebar_pane_id,
     );
