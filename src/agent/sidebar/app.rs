@@ -33,8 +33,6 @@ pub(super) struct SidebarApp {
     sidebar_window_id: Option<String>,
     selection_mode: SelectionMode,
     selected_identity: Option<SidebarRowIdentity>,
-    selected_pane_id: Option<String>,
-    selected_window_id: Option<String>,
     sidebar_has_focus: bool,
     window_visible: bool,
     last_error: Option<String>,
@@ -64,8 +62,6 @@ impl SidebarApp {
             sidebar_window_id,
             selection_mode: SelectionMode::FollowSidebarContext,
             selected_identity: None,
-            selected_pane_id: None,
-            selected_window_id: None,
             sidebar_has_focus: false,
             window_visible: true,
             last_error: None,
@@ -290,8 +286,6 @@ impl SidebarApp {
         if self.rows.is_empty() {
             self.list_state.select(None);
             self.selected_identity = None;
-            self.selected_pane_id = None;
-            self.selected_window_id = None;
         } else {
             self.select_index_manual(outcome.index.min(self.rows.len() - 1));
         }
@@ -309,8 +303,6 @@ impl SidebarApp {
                 selection::manual_selection_index(
                     &self.rows,
                     self.selected_identity.as_ref(),
-                    self.selected_pane_id.as_deref(),
-                    self.selected_window_id.as_deref(),
                     self.list_state.selected(),
                 )
                 .unwrap_or(0),
@@ -396,9 +388,6 @@ impl SidebarApp {
         self.list_state.select(Some(index));
         if let Some(row) = self.rows.get(index) {
             self.selected_identity = Some(row.identity.clone());
-            self.selected_pane_id = row.pane_id.clone();
-            self.selected_window_id =
-                (!row.window_id.trim().is_empty()).then(|| row.window_id.clone());
         }
     }
 
@@ -463,8 +452,6 @@ impl SidebarApp {
             sidebar_window_id: sidebar_window_id.map(str::to_owned),
             selection_mode: SelectionMode::FollowSidebarContext,
             selected_identity: None,
-            selected_pane_id: None,
-            selected_window_id: None,
             sidebar_has_focus: false,
             window_visible: true,
             last_error: None,
@@ -695,7 +682,6 @@ mod tests {
         assert!(!app.window_visible());
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(selected_index(&app), Some(1));
-        assert_eq!(app.selected_pane_id.as_deref(), Some("%20"));
     }
 
     #[test]
@@ -897,12 +883,10 @@ mod tests {
 
         assert_eq!(app.selection_mode, SelectionMode::Manual);
         assert_eq!(selected_index(&app), Some(1));
-        assert_eq!(app.selected_window_id.as_deref(), Some("@2"));
-        assert_eq!(app.selected_pane_id.as_deref(), Some("%20"));
     }
 
     #[test]
-    fn manual_selection_tracks_exact_non_pane_row_when_windows_match() {
+    fn manual_selection_tracks_workspace_row_when_windows_match() {
         let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -942,8 +926,6 @@ mod tests {
         assert_eq!(selected_index(&app), Some(0));
         assert_eq!(app.active_index(), Some(0));
         assert_eq!(app.cursor_index(), None);
-        assert_eq!(app.selected_window_id.as_deref(), Some("@1"));
-        assert_eq!(app.selected_pane_id.as_deref(), Some("%1"));
     }
 
     #[test]

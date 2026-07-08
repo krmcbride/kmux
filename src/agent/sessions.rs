@@ -217,17 +217,6 @@ impl ResolvedAgentSession {
     pub fn is_window_tmux_target(&self) -> bool {
         self.tmux_target == AgentTmuxTarget::Window
     }
-
-    /// Return the stable key used to collapse multiple logical sessions into one row.
-    pub fn collapse_group_key(&self) -> String {
-        self.workspace_key()
-            .map(|key| format!("workspace:{key}"))
-            .or_else(|| {
-                self.tmux_window_id()
-                    .map(|window_id| format!("window:{window_id}"))
-            })
-            .unwrap_or_else(|| format!("session:{}/{}", self.key.agent_kind, self.key.session_id))
-    }
 }
 
 impl From<AgentLocationHints> for ResolvedAgentTarget {
@@ -442,10 +431,10 @@ fn session_view_from_observations(
     let workspace = location_observation
         .workspace_attachment
         .as_ref()
-        .and_then(ResolvedAgentWorkspace::from_attachment);
+        .and_then(ResolvedAgentWorkspace::from_attachment)?;
     Some(ResolvedAgentSession {
         key,
-        workspace,
+        workspace: Some(workspace),
         tmux_target: resolved_target.tmux_target,
         created_at: observations
             .iter()
@@ -516,20 +505,24 @@ fn observation_location_precision(observation: &EnrichedObservation) -> u8 {
 }
 
 fn collapse_workspace_views(views: Vec<ResolvedAgentSession>) -> Vec<ResolvedAgentSession> {
-    let mut by_target = BTreeMap::<String, ResolvedAgentSession>::new();
+    let mut by_workspace = BTreeMap::<String, ResolvedAgentSession>::new();
     for view in views {
-        let key = view.collapse_group_key();
-        match by_target.get_mut(&key) {
+        // Sidebar/status surfaces expose one primary agent session per Git root.
+        // Tmux targets remain navigation facts, not grouping keys.
+        let Some(key) = view.workspace_key().map(str::to_owned) else {
+            continue;
+        };
+        match by_workspace.get_mut(&key) {
             Some(current) if primary_view_is_better(&view, current) => {
                 *current = view;
             }
             Some(_) => {}
             None => {
-                by_target.insert(key, view);
+                by_workspace.insert(key, view);
             }
         }
     }
-    by_target.into_values().collect()
+    by_workspace.into_values().collect()
 }
 
 fn primary_view_is_better(

@@ -134,7 +134,7 @@ impl SidebarActions {
         self.tmux.current_context().ok().flatten()
     }
 
-    /// Return the persisted selected row identity for a sidebar window, if present and valid.
+    /// Return the persisted selected workspace row identity for a sidebar window.
     pub(super) fn persisted_selection_identity(
         &self,
         window_id: &str,
@@ -156,7 +156,7 @@ impl SidebarActions {
             .is_some()
     }
 
-    /// Persist the selected logical row for a sidebar tmux window.
+    /// Persist the selected workspace row for a sidebar tmux window.
     pub(super) fn persist_selection_identity(
         &self,
         window_id: &str,

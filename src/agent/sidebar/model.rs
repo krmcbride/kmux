@@ -34,7 +34,7 @@ impl SidebarIcons {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-/// Stable logical identity for a sidebar row.
+/// Stable workspace identity for a sidebar row.
 pub(super) struct SidebarRowIdentity {
     key: String,
 }
@@ -42,13 +42,15 @@ pub(super) struct SidebarRowIdentity {
 impl SidebarRowIdentity {
     /// Return whether this decoded identity is valid for selection state.
     pub(super) fn is_valid(&self) -> bool {
-        !self.key.trim().is_empty()
+        self.key
+            .strip_prefix("workspace:")
+            .is_some_and(|key| !key.trim().is_empty())
     }
 
-    fn from_view(view: &ResolvedAgentSession) -> Self {
-        Self {
-            key: view_identity_key(view),
-        }
+    fn from_view(view: &ResolvedAgentSession) -> Option<Self> {
+        view.workspace_key().map(|key| Self {
+            key: format!("workspace:{key}"),
+        })
     }
 }
 
@@ -105,7 +107,7 @@ impl SidebarRowState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Presentation-ready row rendered by the sidebar TUI.
+/// Presentation-ready workspace row rendered by the sidebar TUI.
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
     pub(super) selection: SidebarRowSelection,
@@ -156,7 +158,8 @@ impl SidebarRow {
         icons: &SidebarIcons,
         working_icon: Option<&str>,
         idle_after_seconds: u64,
-    ) -> Self {
+    ) -> Option<Self> {
+        let identity = SidebarRowIdentity::from_view(view)?;
         let primary = repo_label(view);
         let secondary = branch_label(view, &primary);
         let title = view
@@ -196,8 +199,8 @@ impl SidebarRow {
         let pane_id = view.tmux_pane_id().map(str::to_owned);
         let jump_target = jump_target_for_view(view);
 
-        Self {
-            identity: SidebarRowIdentity::from_view(view),
+        Some(Self {
+            identity,
             selection: SidebarRowSelection::from_view(view),
             created_at: view.created_at,
             state,
@@ -211,11 +214,13 @@ impl SidebarRow {
             window_id,
             pane_id,
             jump_target,
-        }
+        })
     }
 }
 
-/// Build sorted sidebar rows from reconciled agent session views.
+/// Build sorted sidebar workspace rows from reconciled agent session views.
+///
+/// Views without a resolved workspace identity are not renderable as sidebar rows.
 pub(super) fn build_rows_with_working_icon(
     views: &[ResolvedAgentSession],
     now: u64,
@@ -225,7 +230,7 @@ pub(super) fn build_rows_with_working_icon(
 ) -> Vec<SidebarRow> {
     let mut rows = views
         .iter()
-        .map(|view| {
+        .filter_map(|view| {
             SidebarRow::from_view_with_working_icon(
                 view,
                 now,
@@ -267,12 +272,6 @@ pub(super) fn row_index_by_identity(
     identity: &SidebarRowIdentity,
 ) -> Option<usize> {
     rows.iter().position(|row| &row.identity == identity)
-}
-
-/// Return the row index associated with a tmux pane id.
-pub(super) fn row_index_by_pane(rows: &[SidebarRow], pane_id: &str) -> Option<usize> {
-    rows.iter()
-        .position(|row| row.pane_id.as_deref() == Some(pane_id))
 }
 
 // Primary label should be stable and repo-oriented; fall back through paths,
@@ -351,17 +350,6 @@ fn compact_session_id(session_id: &str) -> &str {
     session_id.get(..12).unwrap_or(session_id)
 }
 
-fn view_identity_key(view: &ResolvedAgentSession) -> String {
-    view.workspace_key()
-        .map(|key| format!("workspace:{key}"))
-        .or_else(|| {
-            view.tmux_window_id()
-                .map(|window_id| format!("window:{window_id}"))
-        })
-        .or_else(|| view.tmux_pane_id().map(|pane_id| format!("pane:{pane_id}")))
-        .unwrap_or_else(|| format!("session:{}/{}", view.key.agent_kind, view.key.session_id))
-}
-
 fn jump_target_for_view(view: &ResolvedAgentSession) -> SidebarJumpTarget {
     match view.tmux_target {
         AgentTmuxTarget::Window => {
@@ -389,7 +377,9 @@ fn jump_target_for_view(view: &ResolvedAgentSession) -> SidebarJumpTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::test_support::{TEST_SLEEPING_ICON, report_state, test_icons};
+    use crate::agent::sidebar::test_support::{
+        TEST_SLEEPING_ICON, report_state, set_workspace, test_icons,
+    };
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
     fn build_rows(
@@ -514,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn row_model_uses_directory_identity_across_primary_session_changes() {
+    fn row_model_uses_workspace_identity_across_primary_session_changes() {
         let mut first = report_state(AgentStatus::Working, 120, "@1", "%1");
         first.key = crate::state::AgentSessionKey {
             agent_kind: "opencode".to_owned(),
@@ -587,7 +577,7 @@ mod tests {
         report.target.git_repo_name = None;
         report.target.git_repo_path = None;
         report.target.git_branch = None;
-        report.workspace = None;
+        set_workspace(&mut report, "/repo__worktrees/feature-sidebar");
 
         let rows = build_rows(&[report], 300, 1_800);
 
