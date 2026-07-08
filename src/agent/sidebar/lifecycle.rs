@@ -4,6 +4,9 @@
 //! pane. It owns tmux hooks, global sidebar options, reconciliation locking, and
 //! pane repair as sidebar/tmux lifecycle orchestration, not presentation, while
 //! keeping row modeling and rendering in sibling modules.
+//! tmux identity is a hierarchy of server -> session -> window -> pane. A kmux
+//! sidebar is itself a pane in each tmux window, so `sidebar_session_name` and
+//! `sidebar_window_id` describe the tmux context of that sidebar pane.
 
 use std::collections::HashSet;
 use std::io::IsTerminal;
@@ -136,15 +139,15 @@ pub(super) fn run_tui() -> Result<()> {
         config.sidebar.selection_hooks,
     );
     let context = actions.current_context();
-    let host_session_name = context.as_ref().map(|context| context.session_name.clone());
-    let host_window_id = context.as_ref().map(|context| context.window_id.clone());
+    let sidebar_session_name = context.as_ref().map(|context| context.session_name.clone());
+    let sidebar_window_id = context.as_ref().map(|context| context.window_id.clone());
     let sidebar_pane_id = context.as_ref().map(|context| context.pane_id.clone());
     let mut app = SidebarApp::new(
         rows_query,
         actions,
         working_frames,
-        host_session_name,
-        host_window_id,
+        sidebar_session_name,
+        sidebar_window_id,
         sidebar_pane_id,
     );
     let disable_requested = run_terminal_app(&mut app)?;

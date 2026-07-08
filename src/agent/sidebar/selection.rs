@@ -18,7 +18,7 @@ pub(super) const SELECTED_TARGET_OPTION: &str = "@kmux_sidebar_selected_target";
 /// Selection behavior mode for the sidebar list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SelectionMode {
-    FollowHost,
+    FollowSidebarContext,
     Manual,
 }
 
@@ -50,60 +50,66 @@ impl From<Option<String>> for PreviousSelectionOption {
     }
 }
 
-/// Return the first row index associated with the host tmux window.
-pub(super) fn host_window_index(
+/// Return the first row index associated with the sidebar tmux window.
+pub(super) fn sidebar_window_index(
     rows: &[SidebarRow],
-    host_window_id: Option<&str>,
+    sidebar_window_id: Option<&str>,
 ) -> Option<usize> {
-    host_window_id.and_then(|window_id| row_index_by_window(rows, window_id))
+    sidebar_window_id.and_then(|window_id| row_index_by_window(rows, window_id))
 }
 
-/// Return the first row associated with the host window or, for session-level
-/// targets, the host session.
-pub(super) fn host_context_index(
+/// Return the first row associated with the sidebar window or, for session-level
+/// targets, the sidebar session.
+pub(super) fn sidebar_context_index(
     rows: &[SidebarRow],
-    host_window_id: Option<&str>,
-    host_session_name: Option<&str>,
+    sidebar_window_id: Option<&str>,
+    sidebar_session_name: Option<&str>,
 ) -> Option<usize> {
-    host_window_index(rows, host_window_id).or_else(|| {
-        let host_session_name = host_session_name?;
+    sidebar_window_index(rows, sidebar_window_id).or_else(|| {
+        let sidebar_session_name = sidebar_session_name?;
         rows.iter()
-            .position(|row| row.window_id.is_empty() && row.session_name == host_session_name)
+            .position(|row| row.window_id.is_empty() && row.session_name == sidebar_session_name)
     })
 }
 
-/// Return the remembered logical row index when it still belongs to the host window.
-pub(super) fn remembered_host_identity_index(
+/// Return the remembered logical row index when it still belongs to the sidebar context.
+pub(super) fn remembered_sidebar_context_identity_index(
     rows: &[SidebarRow],
-    host_window_id: Option<&str>,
-    host_session_name: Option<&str>,
+    sidebar_window_id: Option<&str>,
+    sidebar_session_name: Option<&str>,
     identity: Option<&SidebarRowIdentity>,
 ) -> Option<usize> {
     let identity = identity?;
     let index = row_index_by_identity(rows, identity)?;
-    row_matches_host_context(&rows[index], host_window_id, host_session_name).then_some(index)
+    row_matches_sidebar_context(&rows[index], sidebar_window_id, sidebar_session_name)
+        .then_some(index)
 }
 
-/// Return the persisted row identity index when it still belongs to the host window.
-pub(super) fn persisted_host_identity_index(
+/// Return the persisted row identity index when it still belongs to the sidebar context.
+pub(super) fn persisted_sidebar_context_identity_index(
     rows: &[SidebarRow],
-    host_window_id: Option<&str>,
-    host_session_name: Option<&str>,
+    sidebar_window_id: Option<&str>,
+    sidebar_session_name: Option<&str>,
     identity: &SidebarRowIdentity,
 ) -> Option<usize> {
-    remembered_host_identity_index(rows, host_window_id, host_session_name, Some(identity))
+    remembered_sidebar_context_identity_index(
+        rows,
+        sidebar_window_id,
+        sidebar_session_name,
+        Some(identity),
+    )
 }
 
-fn row_matches_host_context(
+fn row_matches_sidebar_context(
     row: &SidebarRow,
-    host_window_id: Option<&str>,
-    host_session_name: Option<&str>,
+    sidebar_window_id: Option<&str>,
+    sidebar_session_name: Option<&str>,
 ) -> bool {
     if !row.window_id.is_empty() {
-        return host_window_id.is_some_and(|window_id| row.window_id == window_id);
+        return sidebar_window_id.is_some_and(|window_id| row.window_id == window_id);
     }
 
-    host_session_name.is_some_and(|session_name| row.session_name == session_name)
+    sidebar_session_name.is_some_and(|session_name| row.session_name == session_name)
 }
 
 /// Return the best row index for manual selection after row refreshes.
@@ -189,13 +195,13 @@ mod tests {
     }
 
     #[test]
-    fn host_selection_helpers_require_host_window_match() {
+    fn sidebar_selection_helpers_require_sidebar_window_match() {
         let rows = vec![row("ses_a", "@1", "%1"), row("ses_b", "@2", "%2")];
         let other_window_identity = rows[1].identity.clone();
 
-        assert_eq!(host_window_index(&rows, Some("@1")), Some(0));
+        assert_eq!(sidebar_window_index(&rows, Some("@1")), Some(0));
         assert_eq!(
-            remembered_host_identity_index(
+            remembered_sidebar_context_identity_index(
                 &rows,
                 Some("@1"),
                 Some("project"),
@@ -204,17 +210,27 @@ mod tests {
             None
         );
         assert_eq!(
-            persisted_host_identity_index(&rows, Some("@1"), Some("project"), &rows[1].identity),
+            persisted_sidebar_context_identity_index(
+                &rows,
+                Some("@1"),
+                Some("project"),
+                &rows[1].identity
+            ),
             None
         );
         assert_eq!(
-            persisted_host_identity_index(&rows, Some("@2"), Some("project"), &rows[1].identity),
+            persisted_sidebar_context_identity_index(
+                &rows,
+                Some("@2"),
+                Some("project"),
+                &rows[1].identity
+            ),
             Some(1)
         );
     }
 
     #[test]
-    fn host_context_matches_session_target_rows_without_window_ids() {
+    fn sidebar_context_matches_session_target_rows_without_window_ids() {
         let mut session_row = row("ses_session", "", "%1");
         session_row.window_id.clear();
         session_row.pane_id = None;
@@ -222,11 +238,11 @@ mod tests {
         let rows = vec![row("ses_a", "@1", "%2"), session_row];
 
         assert_eq!(
-            host_context_index(&rows, Some("@missing"), Some("project")),
+            sidebar_context_index(&rows, Some("@missing"), Some("project")),
             Some(1)
         );
         assert_eq!(
-            remembered_host_identity_index(
+            remembered_sidebar_context_identity_index(
                 &rows,
                 Some("@missing"),
                 Some("project"),
@@ -235,7 +251,7 @@ mod tests {
             Some(1)
         );
         assert_eq!(
-            remembered_host_identity_index(
+            remembered_sidebar_context_identity_index(
                 &rows,
                 Some("@missing"),
                 Some("other"),
