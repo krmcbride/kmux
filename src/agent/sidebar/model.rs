@@ -1,13 +1,13 @@
 //! View model construction for sidebar rows.
 //!
-//! This module turns merged agent session views into sorted, display-ready rows
-//! with stable identities, status-derived icons, elapsed-time labels, and compact
-//! primary/secondary text for the renderer.
+//! This module turns shared workspace activity rows into display-ready sidebar
+//! rows with stable identities, status-derived icons, elapsed-time labels, and
+//! compact primary/secondary text for the renderer.
 
 use std::collections::BTreeMap;
-use std::path::Path;
 
-use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
+use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentTarget};
+use crate::agent::workspace_activity::WorkspaceActivityRow;
 use crate::config::StatusIcons;
 use crate::state::{AgentSessionKey, AgentStatus};
 use serde::{Deserialize, Serialize};
@@ -47,10 +47,10 @@ impl SidebarRowIdentity {
             .is_some_and(|key| !key.trim().is_empty())
     }
 
-    fn from_view(view: &ResolvedAgentSession) -> Option<Self> {
-        view.workspace_key().map(|key| Self {
-            key: format!("workspace:{key}"),
-        })
+    fn from_activity(row: &WorkspaceActivityRow) -> Self {
+        Self {
+            key: format!("workspace:{}", row.workspace_key),
+        }
     }
 }
 
@@ -66,14 +66,14 @@ pub(super) struct SidebarRowSelection {
 }
 
 impl SidebarRowSelection {
-    fn from_view(view: &ResolvedAgentSession) -> Self {
+    fn from_activity(row: &WorkspaceActivityRow) -> Self {
         Self {
-            key: view.key.clone(),
-            status: view.status,
-            title: view.title.clone(),
-            context: view.context.clone(),
-            metadata: view.metadata().clone(),
-            target: view.target.clone(),
+            key: row.session.clone(),
+            status: row.status,
+            title: row.title.clone(),
+            context: row.context.clone(),
+            metadata: row.metadata.clone(),
+            target: row.target.clone(),
         }
     }
 }
@@ -152,113 +152,67 @@ impl SidebarRow {
 }
 
 impl SidebarRow {
-    fn from_view_with_working_icon(
-        view: &ResolvedAgentSession,
-        now: u64,
+    fn from_activity_with_working_icon(
+        row: &WorkspaceActivityRow,
         icons: &SidebarIcons,
         working_icon: Option<&str>,
         idle_after_seconds: u64,
-    ) -> Option<Self> {
-        let identity = SidebarRowIdentity::from_view(view)?;
-        let primary = repo_label(view);
-        let secondary = branch_label(view, &primary);
-        let title = view
-            .title
-            .as_deref()
-            .filter(|title| *title != primary && *title != secondary)
-            .or_else(|| {
-                view.tmux_pane_title()
-                    .filter(|title| *title != primary && *title != secondary)
-            })
-            .or_else(|| view.tmux_pane_current_command())
-            .map(str::to_owned)
-            .or_else(|| fallback_session_title(view, &primary, &secondary))
-            .unwrap_or_default();
-        let secondary_right = view
-            .context
-            .as_deref()
-            .map(str::trim)
-            .filter(|context| !context.is_empty())
-            .unwrap_or_default()
-            .to_owned();
-        let age = now.saturating_sub(view.status_changed_at);
-        let state = SidebarRowState::from_status(view.status, age, idle_after_seconds);
-        let elapsed = view.elapsed_secs(now);
+    ) -> Self {
+        let identity = SidebarRowIdentity::from_activity(row);
+        let state =
+            SidebarRowState::from_status(row.status, row.status_age_secs, idle_after_seconds);
         let icon = if state.is_idle() {
             icons.sleeping.clone()
         } else {
-            match view.status {
+            match row.status {
                 AgentStatus::Working => working_icon.unwrap_or(&icons.working).to_owned(),
                 AgentStatus::Waiting => icons.waiting.clone(),
                 AgentStatus::Done => icons.done.clone(),
             }
         };
 
-        let session_name = view.tmux_session_name().unwrap_or_default().to_owned();
-        let window_id = view.tmux_window_id().unwrap_or_default().to_owned();
-        let pane_id = view.tmux_pane_id().map(str::to_owned);
-        let jump_target = jump_target_for_view(view);
+        let session_name = row.tmux_session_name().unwrap_or_default().to_owned();
+        let window_id = row.tmux_window_id().unwrap_or_default().to_owned();
+        let pane_id = row.tmux_pane_id().map(str::to_owned);
+        let jump_target = jump_target_for_activity(row);
 
-        Some(Self {
+        Self {
             identity,
-            selection: SidebarRowSelection::from_view(view),
-            created_at: view.created_at,
+            selection: SidebarRowSelection::from_activity(row),
+            created_at: row.created_at,
             state,
             icon,
-            primary,
-            secondary,
-            secondary_right,
-            title,
-            elapsed: compact_elapsed(elapsed),
+            primary: row.primary.clone(),
+            secondary: row.secondary.clone(),
+            secondary_right: row.display_context.clone(),
+            title: row.display_title.clone(),
+            elapsed: compact_elapsed(row.elapsed_secs),
             session_name,
             window_id,
             pane_id,
             jump_target,
-        })
+        }
     }
 }
 
-/// Build sorted sidebar workspace rows from reconciled agent session views.
-///
-/// Views without a resolved workspace identity are not renderable as sidebar rows.
+/// Build sidebar rows from sorted workspace activity rows.
 pub(super) fn build_rows_with_working_icon(
-    views: &[ResolvedAgentSession],
-    now: u64,
+    activities: &[WorkspaceActivityRow],
     icons: &SidebarIcons,
     working_icon: Option<&str>,
     idle_after_seconds: u64,
 ) -> Vec<SidebarRow> {
-    let mut rows = views
+    activities
         .iter()
-        .filter_map(|view| {
-            SidebarRow::from_view_with_working_icon(
-                view,
-                now,
+        .map(|activity| {
+            SidebarRow::from_activity_with_working_icon(
+                activity,
                 icons,
                 working_icon,
                 idle_after_seconds,
             )
         })
-        .collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
-        (
-            &left.primary,
-            &left.secondary,
-            left.created_at,
-            &left.identity.key,
-            &left.selection.key.agent_kind,
-            &left.selection.key.session_id,
-        )
-            .cmp(&(
-                &right.primary,
-                &right.secondary,
-                right.created_at,
-                &right.identity.key,
-                &right.selection.key.agent_kind,
-                &right.selection.key.session_id,
-            ))
-    });
-    rows
+        .collect()
 }
 
 /// Return the row index associated with a tmux window id.
@@ -274,57 +228,6 @@ pub(super) fn row_index_by_identity(
     rows.iter().position(|row| &row.identity == identity)
 }
 
-// Primary label should be stable and repo-oriented; fall back through paths,
-// tmux window name, and finally session id.
-fn repo_label(view: &ResolvedAgentSession) -> String {
-    clean_label(view.git_repo_name())
-        .or_else(|| path_label(view.git_repo_path()))
-        .or_else(|| path_label(view.directory()))
-        .or_else(|| path_label(view.git_worktree_path()))
-        .or_else(|| clean_label(view.tmux_window_name()))
-        .unwrap_or_else(|| view.key.session_id.clone())
-}
-
-// Secondary label should add distinguishing context without repeating primary.
-fn branch_label(view: &ResolvedAgentSession, primary: &str) -> String {
-    clean_label(view.git_branch())
-        .or_else(|| distinct_label(view.kmux_workspace_slug(), primary))
-        .or_else(|| path_distinct_label(view.directory(), primary))
-        .or_else(|| path_distinct_label(view.git_worktree_path(), primary))
-        .or_else(|| distinct_label(view.tmux_window_name(), primary))
-        .or_else(|| fallback_session_label(view, primary))
-        .unwrap_or_default()
-}
-
-fn clean_label(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_owned)
-}
-
-fn distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
-    clean_label(value).filter(|value| value != primary)
-}
-
-fn path_label(value: Option<&str>) -> Option<String> {
-    clean_label(value).and_then(|value| {
-        Path::new(&value)
-            .file_name()
-            .map(|name| name.to_string_lossy().into_owned())
-            .filter(|name| !name.is_empty())
-    })
-}
-
-fn path_distinct_label(value: Option<&str>, primary: &str) -> Option<String> {
-    path_label(value).filter(|value| value != primary)
-}
-
-fn fallback_session_label(view: &ResolvedAgentSession, primary: &str) -> Option<String> {
-    let label = compact_session_id(&view.key.session_id).to_owned();
-    (label != primary).then_some(label)
-}
-
 fn compact_elapsed(seconds: u64) -> String {
     if seconds < 60 {
         "<1m".to_owned()
@@ -337,35 +240,22 @@ fn compact_elapsed(seconds: u64) -> String {
     }
 }
 
-fn fallback_session_title(
-    view: &ResolvedAgentSession,
-    primary: &str,
-    secondary: &str,
-) -> Option<String> {
-    let label = format!("session {}", compact_session_id(&view.key.session_id));
-    (label != primary && label != secondary).then_some(label)
-}
-
-fn compact_session_id(session_id: &str) -> &str {
-    session_id.get(..12).unwrap_or(session_id)
-}
-
-fn jump_target_for_view(view: &ResolvedAgentSession) -> SidebarJumpTarget {
-    match view.tmux_target {
+fn jump_target_for_activity(row: &WorkspaceActivityRow) -> SidebarJumpTarget {
+    match row.tmux_target {
         AgentTmuxTarget::Window => {
-            let Some(session_name) = view.tmux_session_name().map(str::to_owned) else {
+            let Some(session_name) = row.tmux_session_name().map(str::to_owned) else {
                 return SidebarJumpTarget::None;
             };
-            let Some(window_id) = view.tmux_window_id().map(str::to_owned) else {
+            let Some(window_id) = row.tmux_window_id().map(str::to_owned) else {
                 return SidebarJumpTarget::None;
             };
             SidebarJumpTarget::Window {
                 session_name,
                 window_id,
-                pane_id: view.tmux_pane_id().map(str::to_owned),
+                pane_id: row.tmux_pane_id().map(str::to_owned),
             }
         }
-        AgentTmuxTarget::Session => view
+        AgentTmuxTarget::Session => row
             .tmux_session_name()
             .map(str::to_owned)
             .map(|session_name| SidebarJumpTarget::Session { session_name })
@@ -377,9 +267,11 @@ fn jump_target_for_view(view: &ResolvedAgentSession) -> SidebarJumpTarget {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent::sessions::ResolvedAgentSession;
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, report_state, set_workspace, test_icons,
     };
+    use crate::agent::workspace_activity::workspace_activity_rows;
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
     fn build_rows(
@@ -388,7 +280,8 @@ mod tests {
         idle_after_seconds: u64,
     ) -> Vec<SidebarRow> {
         let icons = test_icons();
-        build_rows_with_working_icon(views, now, &icons, None, idle_after_seconds)
+        let activities = workspace_activity_rows(views, now);
+        build_rows_with_working_icon(&activities, &icons, None, idle_after_seconds)
     }
 
     #[test]
@@ -478,11 +371,13 @@ mod tests {
     #[test]
     fn row_model_uses_working_frame_only_for_working_rows() {
         let rows = build_rows_with_working_icon(
-            &[
-                report_state(AgentStatus::Working, 120, "@1", "%1"),
-                report_state(AgentStatus::Waiting, 120, "@2", "%2"),
-            ],
-            300,
+            &workspace_activity_rows(
+                &[
+                    report_state(AgentStatus::Working, 120, "@1", "%1"),
+                    report_state(AgentStatus::Waiting, 120, "@2", "%2"),
+                ],
+                300,
+            ),
             &test_icons(),
             Some("a"),
             1_800,

@@ -8,6 +8,7 @@ use anyhow::Result;
 
 use crate::agent::sessions::session_views;
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
+use crate::agent::workspace_activity::workspace_activity_rows;
 use crate::state::{StateStore, now_unix_seconds};
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
@@ -62,10 +63,10 @@ impl SidebarRowsQuery {
         visibility: TmuxPaneVisibility,
     ) -> Result<SidebarRowsSnapshot> {
         let views = session_views(&self.store, &self.tmux)?;
-        let view_count = views.len();
+        let activities = workspace_activity_rows(&views, now_unix_seconds());
+        let view_count = activities.len();
         let rows = build_rows_with_working_icon(
-            &views,
-            now_unix_seconds(),
+            &activities,
             &self.icons,
             intent.working_icon,
             self.idle_after_seconds,

@@ -2,6 +2,7 @@ use crate::agent::sessions::{
     AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget, ResolvedAgentWorkspace,
 };
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
+use crate::agent::workspace_activity::workspace_activity_rows;
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
 use crate::state::{AgentSessionKey, AgentStatus, StateStore};
 
@@ -22,9 +23,9 @@ pub(super) fn test_icons() -> SidebarIcons {
 /// Build the first sidebar row generated from a single agent session view.
 pub(super) fn row_from_view(view: &ResolvedAgentSession, now: u64) -> SidebarRow {
     let icons = test_icons();
+    let activities = workspace_activity_rows(std::slice::from_ref(view), now);
     build_rows_with_working_icon(
-        std::slice::from_ref(view),
-        now,
+        &activities,
         &icons,
         None,
         DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,

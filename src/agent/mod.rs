@@ -11,6 +11,7 @@ pub mod sessions;
 pub mod sidebar;
 pub mod status;
 pub(crate) mod status_badges;
+pub mod workspace_activity;
 
 use anyhow::Result;
 

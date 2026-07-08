@@ -183,11 +183,6 @@ impl ResolvedAgentSession {
         })
     }
 
-    /// Return the resolved tmux session name for navigation.
-    pub fn tmux_session_name(&self) -> Option<&str> {
-        self.target.tmux_session_name.as_deref()
-    }
-
     /// Return the resolved tmux window id for navigation.
     pub fn tmux_window_id(&self) -> Option<&str> {
         self.target.tmux_window_id.as_deref()
@@ -196,11 +191,6 @@ impl ResolvedAgentSession {
     /// Return the resolved tmux window name for display.
     pub fn tmux_window_name(&self) -> Option<&str> {
         self.target.tmux_window_name.as_deref()
-    }
-
-    /// Return the resolved tmux pane id when live pane precision is available.
-    pub fn tmux_pane_id(&self) -> Option<&str> {
-        self.target.tmux_pane_id.as_deref()
     }
 
     /// Return the live tmux pane title captured for display fallback.
@@ -993,7 +983,10 @@ mod tests {
 
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].tmux_target, AgentTmuxTarget::Session);
-        assert_eq!(views[0].tmux_session_name(), Some("project"));
+        assert_eq!(
+            views[0].target.tmux_session_name.as_deref(),
+            Some("project")
+        );
         assert_eq!(views[0].tmux_window_id(), None);
     }
 
@@ -1022,7 +1015,7 @@ mod tests {
 
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
-        assert_eq!(views[0].tmux_session_name(), None);
+        assert_eq!(views[0].target.tmux_session_name, None);
         assert_eq!(views[0].tmux_window_id(), None);
     }
 

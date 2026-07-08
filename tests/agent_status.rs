@@ -17,7 +17,7 @@ use support::{
 };
 
 #[test]
-fn status_renders_kmux_table_for_current_repo() -> Result<()> {
+fn status_renders_global_workspace_activity_table() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -119,7 +119,7 @@ status_icons:
     assert!(stdout.contains("TITLE"));
     assert!(!stdout.contains("GIT"));
     assert!(stdout.contains("project (main)"));
-    assert!(stdout.contains("feature-status (feature/status)"));
+    assert!(stdout.contains("project (feature/status)"));
     assert!(stdout.contains("done"));
     assert!(stdout.contains("working"));
 
@@ -139,6 +139,54 @@ status_icons:
         .stdout(predicate::str::contains(
             "\"workspace_slug\": \"feature-status\"",
         ));
+
+    Ok(())
+}
+
+#[test]
+fn status_without_filters_includes_agents_from_other_repos() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "")?;
+    let other_repo = temp.path().join("other-project");
+    fs::create_dir(&other_repo)?;
+    git(&other_repo, &["init", "--initial-branch", "main"])?;
+    git(
+        &other_repo,
+        &["config", "user.email", "test@example.invalid"],
+    )?;
+    git(&other_repo, &["config", "user.name", "Test User"])?;
+    fs::write(other_repo.join("README.md"), "test\n")?;
+    git(&other_repo, &["add", "README.md"])?;
+    git(&other_repo, &["commit", "-m", "initial"])?;
+    let other_repo_path = other_repo.display().to_string();
+
+    kmux(&other_repo, &config_home, &tmux)?
+        .args(set_opencode_status_args(
+            Some("working"),
+            "ses_other_repo",
+            "server",
+            "http://127.0.0.1:4096",
+            &[
+                ("--git-repo-name", "other-project"),
+                ("--git-repo-path", &other_repo_path),
+                ("--directory", &other_repo_path),
+                ("--git-branch", "main"),
+                ("--title", "Other repo agent"),
+            ],
+        ))
+        .assert()
+        .success();
+
+    let status = kmux(&repo, &config_home, &tmux)?
+        .arg("status")
+        .assert()
+        .success();
+    let stdout = String::from_utf8_lossy(&status.get_output().stdout);
+    assert!(stdout.contains("other-project (main)"));
+    assert!(stdout.contains("Other repo agent"));
 
     Ok(())
 }

@@ -6,23 +6,26 @@ use crate::agent::observations::{
     LocationUpdate, MetadataUpdate, ObservationCommand, ObservationUpdate,
 };
 use crate::agent::sessions::session_views;
+use crate::agent::workspace_activity::workspace_activity_rows;
 use crate::agent::{self, status, status_badges};
 use crate::cli;
 use crate::config::Config;
 use crate::state::{
     AgentObservationKey, AgentSessionKey, AgentStatus as StoredAgentStatus, StateStore,
+    now_unix_seconds,
 };
 use crate::tmux::Tmux;
 
-/// Print active agent sessions, optionally scoped to the current repo and enriched with Git state.
+/// Print active agent sessions from the global workspace activity model.
 pub(super) fn run_status(args: cli::StatusArgs) -> Result<()> {
     let cli::StatusArgs { filters, json, git } = args;
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
     let config = Config::load()?;
     let views = session_views(&store, &tmux)?;
+    let activities = workspace_activity_rows(&views, now_unix_seconds());
     let query = status::StatusQuery::new(filters, git);
-    let entries = status::status_entries(&views, &query, &config.status_icons)?;
+    let entries = status::status_entries(&activities, &query, &config.status_icons);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
