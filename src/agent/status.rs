@@ -9,7 +9,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use serde::Serialize;
 
-use crate::agent::query::{self, WorkspaceMatchMode, WorkspaceTarget};
+use crate::agent::query::{self, WorkspaceTarget};
 use crate::agent::sessions::ResolvedAgentSession;
 use crate::config::StatusIcons;
 use crate::git::{Git, WorktreeInfo};
@@ -119,9 +119,10 @@ fn current_repo_entries(
     let mut entries = Vec::new();
     for worktree in &worktrees {
         let target = workspace_target(worktree);
-        for view in views.iter().filter(|view| {
-            query::view_matches_workspace(view, &target, WorkspaceMatchMode::Identity)
-        }) {
+        for view in views
+            .iter()
+            .filter(|view| query::view_matches_workspace(view, &target))
+        {
             entries.push(entry_for_view(view, Some(worktree), now, show_git, icons));
         }
     }

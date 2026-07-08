@@ -1,23 +1,12 @@
 //! Query predicates for matching agent session views to kmux workspaces.
 //!
 //! The functions here do not load state themselves; callers provide already-built
-//! `ResolvedAgentSession` values and a workspace target, then choose the matching
-//! strictness needed for identity-sensitive actions or summary badges.
+//! `ResolvedAgentSession` values and a workspace target.
 
 use std::path::Path;
 
 use crate::agent::sessions::ResolvedAgentSession;
 use crate::paths::same_path;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Matching strategy for relating agent observations to a workspace.
-pub enum WorkspaceMatchMode {
-    /// Match the workspace identified by a status view without falling back from
-    /// conflicting path hints to looser branch or slug metadata.
-    Identity,
-    /// Match the resolved Git-root identity for summary badges.
-    AnyHint,
-}
 
 #[derive(Debug, Clone)]
 /// Workspace identity used when matching agent observations.
@@ -32,24 +21,11 @@ impl<'a> WorkspaceTarget<'a> {
     }
 }
 
-/// Return whether an agent view matches a workspace according to the requested mode.
-pub fn view_matches_workspace(
-    view: &ResolvedAgentSession,
-    target: &WorkspaceTarget<'_>,
-    mode: WorkspaceMatchMode,
-) -> bool {
-    match mode {
-        WorkspaceMatchMode::Identity => view_matches_workspace_identity(view, target),
-        WorkspaceMatchMode::AnyHint => view_has_any_workspace_hint(view, target),
-    }
-}
-
-// Identity mode requires filesystem identity. Branch and slug are useful display
-// hints, but they are not strong enough for identity-sensitive matching.
-fn view_matches_workspace_identity(
-    view: &ResolvedAgentSession,
-    target: &WorkspaceTarget<'_>,
-) -> bool {
+/// Return whether an agent view matches a workspace by filesystem identity.
+///
+/// A resolved workspace identity wins over stale path hints when available;
+/// otherwise the worktree path or reported directory must match the target.
+pub fn view_matches_workspace(view: &ResolvedAgentSession, target: &WorkspaceTarget<'_>) -> bool {
     if let Some(workspace) = view.workspace.as_ref() {
         return same_path(workspace.identity().root(), target.path);
     }
@@ -57,12 +33,6 @@ fn view_matches_workspace_identity(
     view.git_worktree_path()
         .or_else(|| view.directory())
         .is_some_and(|path| path_matches(path, target.path))
-}
-
-// Summary mode uses the same Git-root identity. Branches, slugs, and raw
-// directories are display hints rather than workspace identity.
-fn view_has_any_workspace_hint(view: &ResolvedAgentSession, target: &WorkspaceTarget<'_>) -> bool {
-    view_matches_workspace_identity(view, target)
 }
 
 fn path_matches(path: &str, target: &Path) -> bool {
@@ -77,7 +47,7 @@ mod tests {
     use std::path::PathBuf;
 
     #[test]
-    fn identity_match_uses_path_when_path_hint_exists() {
+    fn workspace_match_uses_path_when_path_hint_exists() {
         let mut view = view_with_target(AgentLocationHints {
             kmux_workspace_slug: Some("feature".to_owned()),
             git_branch: Some("feature".to_owned()),
@@ -86,22 +56,14 @@ mod tests {
         });
         let target = target("feature", "feature", "/repo/project__worktrees/new");
 
-        assert!(!view_matches_workspace(
-            &view,
-            &target,
-            WorkspaceMatchMode::Identity
-        ));
+        assert!(!view_matches_workspace(&view, &target));
 
         view.target.git_worktree_path = Some("/repo/project__worktrees/new".to_owned());
-        assert!(view_matches_workspace(
-            &view,
-            &target,
-            WorkspaceMatchMode::Identity
-        ));
+        assert!(view_matches_workspace(&view, &target));
     }
 
     #[test]
-    fn identity_match_requires_path_hint() {
+    fn workspace_match_requires_path_hint() {
         let target = target(
             "feature",
             "feature/auth",
@@ -113,15 +75,11 @@ mod tests {
             ..AgentLocationHints::default()
         });
 
-        assert!(!view_matches_workspace(
-            &slug_and_branch,
-            &target,
-            WorkspaceMatchMode::Identity
-        ));
+        assert!(!view_matches_workspace(&slug_and_branch, &target));
     }
 
     #[test]
-    fn identity_match_prefers_resolved_workspace_identity_over_stale_hints() {
+    fn workspace_match_prefers_resolved_workspace_identity_over_stale_hints() {
         let target = target("feature", "feature", "/repo/project__worktrees/new");
         let mut view = view_with_target(AgentLocationHints {
             git_worktree_path: Some("/repo/project__worktrees/old".to_owned()),
@@ -135,15 +93,11 @@ mod tests {
             .expect("workspace identity should be valid"),
         );
 
-        assert!(view_matches_workspace(
-            &view,
-            &target,
-            WorkspaceMatchMode::Identity
-        ));
+        assert!(view_matches_workspace(&view, &target));
     }
 
     #[test]
-    fn any_hint_match_accepts_worktree_path_or_directory() {
+    fn workspace_match_accepts_worktree_path_or_directory() {
         let target = target(
             "feature",
             "feature/auth",
@@ -167,31 +121,19 @@ mod tests {
         });
 
         for view in [&worktree_path, &directory] {
-            assert!(view_matches_workspace(
-                view,
-                &target,
-                WorkspaceMatchMode::AnyHint
-            ));
+            assert!(view_matches_workspace(view, &target));
         }
         for view in [&slug, &branch] {
-            assert!(!view_matches_workspace(
-                view,
-                &target,
-                WorkspaceMatchMode::AnyHint
-            ));
+            assert!(!view_matches_workspace(view, &target));
         }
     }
 
     #[test]
-    fn any_hint_match_requires_path_hint() {
+    fn workspace_match_requires_any_path_hint() {
         let target = WorkspaceTarget::new(Path::new("/repo/project"));
         let view = view_with_target(AgentLocationHints::default());
 
-        assert!(!view_matches_workspace(
-            &view,
-            &target,
-            WorkspaceMatchMode::AnyHint
-        ));
+        assert!(!view_matches_workspace(&view, &target));
     }
 
     fn target<'a>(_workspace_slug: &str, _branch: &str, path: &'a str) -> WorkspaceTarget<'a> {

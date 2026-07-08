@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::agent::query::{WorkspaceMatchMode, WorkspaceTarget, view_matches_workspace};
+use crate::agent::query::{WorkspaceTarget, view_matches_workspace};
 use crate::agent::sessions::{ResolvedAgentSession, session_views};
 use crate::cli;
 use crate::config::StatusIcons;
@@ -126,7 +126,7 @@ fn compact_age(seconds: u64) -> String {
     }
 }
 
-// Summarize all agent sessions that provide any hint for this workspace.
+// Summarize all agent sessions that match this workspace identity.
 fn format_agent(
     item: &WorkspaceInventoryItem,
     agents: &[ResolvedAgentSession],
@@ -135,7 +135,7 @@ fn format_agent(
     let target = workspace_target(item);
     let matching = agents
         .iter()
-        .filter(|agent| view_matches_workspace(agent, &target, WorkspaceMatchMode::AnyHint))
+        .filter(|agent| view_matches_workspace(agent, &target))
         .collect::<Vec<_>>();
     if matching.is_empty() {
         return "-".to_owned();
