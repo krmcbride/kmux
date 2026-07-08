@@ -7,7 +7,7 @@ use crate::agent::observations::{
 };
 use crate::agent::sessions::session_views;
 use crate::agent::workspace_activity::workspace_activity_rows;
-use crate::agent::{self, status, status_badges};
+use crate::agent::{self, status};
 use crate::cli;
 use crate::config::Config;
 use crate::state::{
@@ -47,12 +47,8 @@ pub(super) fn run_set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> 
     let config = Config::load()?;
     let tmux = Tmux::from_env();
     let store = StateStore::new()?;
-    let outcome = agent::observations::apply_observation_command(&store, command)?;
-
-    if outcome.should_notify() {
-        let _ = status_badges::refresh_window_statuses(&store, &tmux, &config.status_icons);
-        let _ = agent::notify_observation_changed(&tmux);
-    }
+    agent::observations::apply_observation_command(&store, command)?;
+    agent::refresh_observation_surfaces(&store, &tmux, &config.status_icons);
     Ok(())
 }
 

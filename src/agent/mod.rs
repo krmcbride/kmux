@@ -13,11 +13,18 @@ pub mod status;
 pub mod status_badges;
 pub mod workspace_activity;
 
-use anyhow::Result;
-
+use crate::config::StatusIcons;
+use crate::state::StateStore;
 use crate::tmux::Tmux;
 
-/// Notify live agent presentation surfaces that observation state changed.
-pub fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
-    sidebar::notify_observation_changed(tmux)
+/// Refresh presentation surfaces after persisted observation state changes.
+///
+/// This is an explicit, synchronous stopgap for what may eventually become an
+/// evented observation-applied flow. For now every successful observation
+/// mutation should refresh badges and wake sidebars, and those presentation
+/// updates stay best-effort so UI refresh failures do not roll back persisted
+/// agent state.
+pub fn refresh_observation_surfaces(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) {
+    let _ = status_badges::refresh_window_statuses(store, tmux, icons);
+    let _ = sidebar::notify_observation_changed(tmux);
 }

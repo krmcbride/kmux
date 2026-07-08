@@ -1,8 +1,9 @@
 //! Sidebar action intents and side-effect execution.
 //!
-//! Tmux navigation, selected-target option persistence, hook execution, deletion,
-//! badge refresh, and sidebar wake fanout live here so `SidebarApp` can stay
-//! focused on UI state transitions.
+//! Tmux navigation, selected-target option persistence, hook execution, and
+//! deletion side effects live here so `SidebarApp` can stay focused on UI state
+//! transitions. Shared observation-surface fanout policy lives at the agent
+//! boundary.
 
 use anyhow::Result;
 
@@ -13,7 +14,6 @@ use super::selection::{
     PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
     decode_selected_target, encode_selected_target,
 };
-use crate::agent::status_badges::refresh_window_statuses;
 use crate::config::{SidebarSelectionHookConfig, StatusIcons};
 use crate::state::{AgentObservationState, AgentSessionKey, StateStore};
 use crate::tmux::Tmux;
@@ -212,8 +212,7 @@ impl SidebarActions {
         intent: SidebarDeleteSessionIntent,
     ) -> Result<SidebarDeleteOutcome> {
         self.store.delete_session(&intent.row.selection.key)?;
-        let _ = refresh_window_statuses(&self.store, &self.tmux, &self.status_icons);
-        let _ = super::notify_observation_changed(&self.tmux);
+        crate::agent::refresh_observation_surfaces(&self.store, &self.tmux, &self.status_icons);
         Ok(SidebarDeleteOutcome {
             index: intent.index,
             row: intent.row,

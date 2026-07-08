@@ -49,24 +49,8 @@ pub struct LocationUpdate {
     pub directory: Option<String>,
 }
 
-/// Result of applying an observation command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ObservationCommandOutcome {
-    notify_observers: bool,
-}
-
-impl ObservationCommandOutcome {
-    /// Return whether downstream badge/sidebar observers should be notified.
-    pub fn should_notify(self) -> bool {
-        self.notify_observers
-    }
-}
-
 /// Apply one observation command to the store using the current wall clock time.
-pub fn apply_observation_command(
-    store: &StateStore,
-    command: ObservationCommand,
-) -> Result<ObservationCommandOutcome> {
+pub fn apply_observation_command(store: &StateStore, command: ObservationCommand) -> Result<()> {
     apply_observation_command_at(store, command, now_unix_seconds())
 }
 
@@ -74,16 +58,14 @@ fn apply_observation_command_at(
     store: &StateStore,
     command: ObservationCommand,
     now: u64,
-) -> Result<ObservationCommandOutcome> {
+) -> Result<()> {
     match command {
         ObservationCommand::DeleteSession(session) => store.delete_session(&session)?,
         ObservationCommand::DeleteObservation(key) => store.delete_observation(&key)?,
         ObservationCommand::Upsert(update) => upsert_observation(store, *update, now)?,
     }
 
-    Ok(ObservationCommandOutcome {
-        notify_observers: true,
-    })
+    Ok(())
 }
 
 fn upsert_observation(store: &StateStore, update: ObservationUpdate, now: u64) -> Result<()> {
@@ -222,9 +204,7 @@ mod tests {
             },
         }));
 
-        let outcome = apply_observation_command_at(&store, command, 100)?;
-
-        assert!(outcome.should_notify());
+        apply_observation_command_at(&store, command, 100)?;
         let observation = store
             .get_observation(&key)?
             .ok_or_else(|| anyhow::anyhow!("expected observation to be stored"))?;
