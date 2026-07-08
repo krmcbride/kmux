@@ -12,11 +12,7 @@ use crate::tmux::Tmux;
 const KMUX_STATUS_OPTION: &str = "@kmux_status";
 
 /// Refresh each tmux window's kmux status option from the highest-priority agent in it.
-pub(crate) fn refresh_window_statuses(
-    store: &StateStore,
-    tmux: &Tmux,
-    icons: &StatusIcons,
-) -> Result<()> {
+pub fn refresh_window_statuses(store: &StateStore, tmux: &Tmux, icons: &StatusIcons) -> Result<()> {
     let views = session_views(store, tmux)?;
     let mut by_window = HashMap::<String, AgentStatus>::new();
     for view in views {

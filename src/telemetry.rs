@@ -18,7 +18,7 @@ use tracing_subscriber::fmt::MakeWriter;
 const TELEMETRY_FILENAME: &str = "telemetry.jsonl";
 
 /// Initialize opt-in JSONL telemetry. Failures are ignored so telemetry never breaks kmux.
-pub(crate) fn init() {
+pub fn init() {
     if !telemetry_enabled() {
         return;
     }
@@ -60,14 +60,14 @@ fn elapsed_ms(started: Instant) -> u64 {
 }
 
 /// Run an operation and return its value with elapsed milliseconds.
-pub(crate) fn timed<T>(operation: impl FnOnce() -> T) -> (T, u64) {
+pub fn timed<T>(operation: impl FnOnce() -> T) -> (T, u64) {
     let started = Instant::now();
     let value = operation();
     (value, elapsed_ms(started))
 }
 
 /// Run a fallible operation and return its result with elapsed milliseconds.
-pub(crate) fn timed_result<T, E>(operation: impl FnOnce() -> Result<T, E>) -> (Result<T, E>, u64) {
+pub fn timed_result<T, E>(operation: impl FnOnce() -> Result<T, E>) -> (Result<T, E>, u64) {
     let started = Instant::now();
     let result = operation();
     (result, elapsed_ms(started))

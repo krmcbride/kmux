@@ -13,19 +13,19 @@ use crate::git::Git;
 use crate::state::AgentStatus as StoredAgentStatus;
 
 /// Input for querying the status surface from resolved sessions.
-pub(crate) struct StatusQuery {
+pub struct StatusQuery {
     filters: Vec<String>,
     show_git: bool,
 }
 
 impl StatusQuery {
     /// Build a status query from command-boundary input.
-    pub(crate) fn new(filters: Vec<String>, show_git: bool) -> Self {
+    pub fn new(filters: Vec<String>, show_git: bool) -> Self {
         Self { filters, show_git }
     }
 
     /// Return whether Git status decoration should be included.
-    pub(crate) fn show_git(&self) -> bool {
+    pub fn show_git(&self) -> bool {
         self.show_git
     }
 }
@@ -38,7 +38,7 @@ struct GitInfo {
 }
 
 #[derive(Debug, Serialize)]
-pub(crate) struct StatusEntry {
+pub struct StatusEntry {
     agent_kind: String,
     session_id: String,
     workspace_key: String,
@@ -73,7 +73,7 @@ struct DisplayRow {
 }
 
 /// Build status entries from the shared global workspace activity model.
-pub(crate) fn status_entries(
+pub fn status_entries(
     activities: &[WorkspaceActivityRow],
     query: &StatusQuery,
     icons: &StatusIcons,
@@ -171,7 +171,7 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
 }
 
 /// Print status entries in the stable human-readable table format.
-pub(crate) fn print_table(entries: &[StatusEntry], show_git: bool) {
+pub fn print_table(entries: &[StatusEntry], show_git: bool) {
     let rows = entries
         .iter()
         .map(|entry| DisplayRow {

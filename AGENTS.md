@@ -8,8 +8,10 @@ These instructions apply to this repository in addition to the user-level agent 
 
 ## Rust Module Style
 
-- Use `pub(crate)` primarily at crate boundary declarations in `src/lib.rs`, such as top-level modules that are internal to the crate.
-- Inside regular modules, prefer normal Rust visibility: private by default, `pub` for the module's intended internal API, and narrower visibility such as `pub(super)` only for a clearly local boundary such as test support.
+- Use `pub(crate)` primarily at crate boundary declarations in `src/lib.rs`, such as top-level modules that are internal to the crate. A `pub(crate) mod foo` bounds the effective visibility of `pub` items inside it, so `pub fn` or `pub struct` inside an internal module remains crate-reachable only.
+- Inside regular modules, prefer normal Rust visibility: private by default, `pub` for the module's intended internal API, and narrower visibility such as `pub(super)` only for a clearly local boundary such as test support. Do not use `pub(crate)` as the default way to share items between internal modules.
+- Outside `src/lib.rs`, keep `pub(crate)` only when Rust cannot express the intended boundary with ordinary module visibility, such as a crate-scoped `macro_rules!` re-export (`pub(crate) use my_macro;`), or when there is a documented crate-wide exception.
+- When editing Rust visibility, search for `pub(crate)` outside `src/lib.rs`; each remaining instance should have a specific reason.
 - Keep public items before private items where practical:
   - public structs, enums, and type aliases before private helper types
   - public impl methods before private impl methods

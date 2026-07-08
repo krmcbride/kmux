@@ -5,12 +5,12 @@
 
 mod workspace;
 
-pub(crate) mod observations;
+pub mod observations;
 pub mod query;
 pub mod sessions;
 pub mod sidebar;
 pub mod status;
-pub(crate) mod status_badges;
+pub mod status_badges;
 pub mod workspace_activity;
 
 use anyhow::Result;
@@ -18,6 +18,6 @@ use anyhow::Result;
 use crate::tmux::Tmux;
 
 /// Notify live agent presentation surfaces that observation state changed.
-pub(crate) fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
+pub fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
     sidebar::notify_observation_changed(tmux)
 }

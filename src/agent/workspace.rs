@@ -42,7 +42,7 @@ impl AgentWorkspaceAttachment {
     }
 
     #[cfg(test)]
-    pub(crate) fn for_test(path: impl ToString) -> Self {
+    pub(super) fn for_test(path: impl ToString) -> Self {
         let path = path.to_string();
         attachment(path.clone(), PathBuf::from(path))
     }

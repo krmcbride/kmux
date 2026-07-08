@@ -15,7 +15,7 @@ use crate::state::{
 
 /// Persistence command to apply to the agent observation store.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ObservationCommand {
+pub enum ObservationCommand {
     DeleteSession(AgentSessionKey),
     DeleteObservation(AgentObservationKey),
     Upsert(Box<ObservationUpdate>),
@@ -23,47 +23,47 @@ pub(crate) enum ObservationCommand {
 
 /// Sanitized application input for recording one producer observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ObservationUpdate {
-    pub(crate) key: AgentObservationKey,
-    pub(crate) status: Option<AgentStatus>,
-    pub(crate) title: Option<String>,
-    pub(crate) context: Option<String>,
-    pub(crate) metadata: MetadataUpdate,
-    pub(crate) target: LocationUpdate,
+pub struct ObservationUpdate {
+    pub key: AgentObservationKey,
+    pub status: Option<AgentStatus>,
+    pub title: Option<String>,
+    pub context: Option<String>,
+    pub metadata: MetadataUpdate,
+    pub target: LocationUpdate,
 }
 
 /// Sanitized agent-specific metadata mutation for one producer observation.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct MetadataUpdate {
-    pub(crate) set: BTreeMap<String, String>,
-    pub(crate) clear: BTreeSet<String>,
+pub struct MetadataUpdate {
+    pub set: BTreeMap<String, String>,
+    pub clear: BTreeSet<String>,
 }
 
 /// Sanitized location update reported by an external producer.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(crate) struct LocationUpdate {
-    pub(crate) tmux_instance: Option<String>,
-    pub(crate) git_repo_name: Option<String>,
-    pub(crate) git_repo_path: Option<String>,
-    pub(crate) git_branch: Option<String>,
-    pub(crate) directory: Option<String>,
+pub struct LocationUpdate {
+    pub tmux_instance: Option<String>,
+    pub git_repo_name: Option<String>,
+    pub git_repo_path: Option<String>,
+    pub git_branch: Option<String>,
+    pub directory: Option<String>,
 }
 
 /// Result of applying an observation command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ObservationCommandOutcome {
+pub struct ObservationCommandOutcome {
     notify_observers: bool,
 }
 
 impl ObservationCommandOutcome {
     /// Return whether downstream badge/sidebar observers should be notified.
-    pub(crate) fn should_notify(self) -> bool {
+    pub fn should_notify(self) -> bool {
         self.notify_observers
     }
 }
 
 /// Apply one observation command to the store using the current wall clock time.
-pub(crate) fn apply_observation_command(
+pub fn apply_observation_command(
     store: &StateStore,
     command: ObservationCommand,
 ) -> Result<ObservationCommandOutcome> {
