@@ -33,7 +33,6 @@ pub struct ResolvedAgentWorkspace {
 pub struct ResolvedAgentSession {
     pub key: AgentSessionKey,
     pub workspace: Option<ResolvedAgentWorkspace>,
-    pub workspace_key: Option<String>,
     pub tmux_target: AgentTmuxTarget,
     pub created_at: u64,
     pub status: AgentStatus,
@@ -134,10 +133,7 @@ impl ResolvedAgentSession {
 
     /// Return the resolved workspace grouping key, if the session is attached to Git.
     pub fn workspace_key(&self) -> Option<&str> {
-        self.workspace
-            .as_ref()
-            .map(ResolvedAgentWorkspace::key)
-            .or(self.workspace_key.as_deref())
+        self.workspace.as_ref().map(ResolvedAgentWorkspace::key)
     }
 
     /// Return the resolved canonical Git worktree path, if available.
@@ -447,14 +443,9 @@ fn session_view_from_observations(
         .workspace_attachment
         .as_ref()
         .and_then(ResolvedAgentWorkspace::from_attachment);
-    let workspace_key = location_observation
-        .workspace_attachment
-        .as_ref()
-        .map(|attachment| attachment.key().to_owned());
     Some(ResolvedAgentSession {
         key,
         workspace,
-        workspace_key,
         tmux_target: resolved_target.tmux_target,
         created_at: observations
             .iter()

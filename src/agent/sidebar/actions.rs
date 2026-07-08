@@ -366,7 +366,7 @@ impl SidebarActions {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::test_support::{report_state, row_from_view};
+    use crate::agent::sidebar::test_support::{report_state, row_from_view, set_workspace};
     use crate::state::{
         AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
         AgentStatus,
@@ -588,7 +588,7 @@ mod tests {
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
         report.key = session_key("opencode", session_id);
-        report.workspace_key = Some(format!("/repo/{window_id}/{session_id}"));
+        set_workspace(&mut report, format!("/repo/{window_id}/{session_id}"));
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
         row_from_view(&report, 100)

@@ -1,4 +1,6 @@
-use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
+use crate::agent::sessions::{
+    AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget, ResolvedAgentWorkspace,
+};
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
 use crate::state::{AgentSessionKey, AgentStatus, StateStore};
@@ -42,8 +44,9 @@ pub(super) fn report_state(
             agent_kind: "opencode".to_owned(),
             session_id: format!("ses_{pane_id}"),
         },
-        workspace: None,
-        workspace_key: Some(format!("/repo__worktrees/feature-sidebar/{window_id}")),
+        workspace: Some(resolved_workspace(format!(
+            "/repo__worktrees/feature-sidebar/{window_id}"
+        ))),
         tmux_target: AgentTmuxTarget::Window,
         created_at: status_changed_at,
         status,
@@ -71,6 +74,17 @@ pub(super) fn report_state(
             directory: None,
         },
     }
+}
+
+/// Replace the resolved workspace identity on a test session view.
+pub(super) fn set_workspace(view: &mut ResolvedAgentSession, path: impl ToString) {
+    view.workspace = Some(resolved_workspace(path));
+}
+
+fn resolved_workspace(path: impl ToString) -> ResolvedAgentWorkspace {
+    let path = path.to_string();
+    ResolvedAgentWorkspace::from_canonical_root(path.clone().into(), path)
+        .expect("test workspace should be valid")
 }
 
 /// Build the standard sidebar test agent state.

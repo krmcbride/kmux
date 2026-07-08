@@ -342,7 +342,9 @@ fn unix_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
+    use crate::agent::sessions::{
+        AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget, ResolvedAgentWorkspace,
+    };
     use crate::state::{AgentSessionKey, AgentStatus};
 
     #[test]
@@ -404,13 +406,19 @@ mod tests {
         git_branch: &str,
         title: &str,
     ) -> ResolvedAgentSession {
+        let workspace_path = format!("/repo/{session_id}");
         ResolvedAgentSession {
             key: AgentSessionKey {
                 agent_kind: agent_kind.to_owned(),
                 session_id: session_id.to_owned(),
             },
-            workspace: None,
-            workspace_key: Some(format!("/repo/{session_id}")),
+            workspace: Some(
+                ResolvedAgentWorkspace::from_canonical_root(
+                    workspace_path.clone().into(),
+                    workspace_path.clone(),
+                )
+                .expect("test workspace should be valid"),
+            ),
             tmux_target: AgentTmuxTarget::Window,
             created_at: 100,
             status: AgentStatus::Working,
@@ -423,7 +431,7 @@ mod tests {
             metadata: Default::default(),
             target: ResolvedAgentTarget {
                 kmux_workspace_slug: Some(git_branch.replace('/', "-")),
-                git_worktree_path: Some(format!("/repo/{session_id}")),
+                git_worktree_path: Some(workspace_path),
                 git_branch: Some(git_branch.to_owned()),
                 tmux_session_name: Some("project".to_owned()),
                 tmux_window_id: Some("@1".to_owned()),

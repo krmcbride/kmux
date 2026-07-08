@@ -488,7 +488,7 @@ mod tests {
         SELECTED_TARGET_OPTION, decode_selected_target, encode_selected_target,
     };
     use crate::agent::sidebar::test_support::{
-        TEST_SLEEPING_ICON, agent_state, report_state, row_from_view,
+        TEST_SLEEPING_ICON, agent_state, report_state, row_from_view, set_workspace,
     };
     use crate::config::{
         DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, SidebarSelectionHookConfig, StatusIcons,
@@ -1305,7 +1305,7 @@ mod tests {
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
         report.key = session_key("opencode", session_id);
-        report.workspace_key = Some(format!("/repo/{window_id}/{session_id}"));
+        set_workspace(&mut report, format!("/repo/{window_id}/{session_id}"));
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
         row_from_view(&report, 100)
@@ -1314,7 +1314,7 @@ mod tests {
     fn no_jump_row(session_id: &str, title: &str, directory: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, "", "");
         report.key = session_key("opencode", session_id);
-        report.workspace_key = Some(directory.to_owned());
+        set_workspace(&mut report, directory);
         report.tmux_target = AgentTmuxTarget::None;
         report.title = Some(title.to_owned());
         report.target.tmux_instance = None;
@@ -1332,7 +1332,7 @@ mod tests {
     fn session_target_row(session_id: &str, title: &str, session_name: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, "", "");
         report.key = session_key("opencode", session_id);
-        report.workspace_key = Some(format!("/repo/{session_id}"));
+        set_workspace(&mut report, format!("/repo/{session_id}"));
         report.tmux_target = AgentTmuxTarget::Session;
         report.title = Some(title.to_owned());
         report.target.tmux_session_name = Some(session_name.to_owned());

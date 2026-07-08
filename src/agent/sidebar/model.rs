@@ -587,6 +587,7 @@ mod tests {
         report.target.git_repo_name = None;
         report.target.git_repo_path = None;
         report.target.git_branch = None;
+        report.workspace = None;
 
         let rows = build_rows(&[report], 300, 1_800);
 

@@ -147,7 +147,6 @@ mod tests {
                 session_id: "ses".to_owned(),
             },
             workspace: None,
-            workspace_key: None,
             tmux_target: crate::agent::sessions::AgentTmuxTarget::None,
             created_at: 100,
             status: AgentStatus::Working,
