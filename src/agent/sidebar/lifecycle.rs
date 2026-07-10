@@ -34,7 +34,11 @@ const SIDEBAR_ROLE_OPTION: &str = "@kmux_role";
 const SIDEBAR_ENABLED_OPTION: &str = "@kmux_sidebar_enabled";
 const SIDEBAR_WIDTH_OPTION: &str = "@kmux_sidebar_width";
 const SIDEBAR_LOCK_CHANNEL: &str = "kmux-sidebar-reconcile";
-const SIDEBAR_RECONCILE_HOOKS: &[&str] = &["after-new-window[90]", "after-new-session[90]"];
+const SIDEBAR_RECONCILE_HOOKS: &[&str] = &[
+    "after-new-window[90]",
+    "after-new-session[90]",
+    "window-resized[90]",
+];
 const SIDEBAR_WAKE_HOOKS: &[&str] = &[
     "after-select-window[90]",
     "after-select-pane[90]",

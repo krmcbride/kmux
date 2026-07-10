@@ -37,6 +37,10 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
         tmux.global_hook("after-new-window[90]")?
             .contains("sidebar refresh")
     );
+    assert!(
+        tmux.global_hook("window-resized[90]")?
+            .contains("sidebar refresh")
+    );
     let wake_hook = tmux.global_hook("after-select-window[90]")?;
     assert!(wake_hook.contains("sidebar wake"));
     assert!(wake_hook.contains("#{window_id}"));
@@ -99,6 +103,37 @@ fn sidebar_refresh_is_noop_when_sidebar_is_disabled() -> Result<()> {
 
     assert_eq!(tmux.sidebar_pane_count()?, 0);
     assert_eq!(tmux.global_option("@kmux_sidebar_enabled")?, None);
+    Ok(())
+}
+
+#[test]
+fn sidebar_window_resize_restores_configured_width() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "sidebar: {width: 30}\n")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["sidebar", "on"])
+        .assert()
+        .success();
+
+    let window_id = tmux.current_window_id()?;
+    let sidebar_pane = tmux.tmux_output(&[
+        "list-panes",
+        "-t",
+        &window_id,
+        "-f",
+        "#{==:#{@kmux_role},sidebar}",
+        "-F",
+        "#{pane_id}",
+    ])?;
+    assert!(!sidebar_pane.is_empty());
+
+    tmux.tmux_output(&["resize-window", "-t", &window_id, "-x", "160"])?;
+
+    assert!(tmux.wait_for_pane_format(&sidebar_pane, "#{pane_width}", "30")?);
     Ok(())
 }
 
