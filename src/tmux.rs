@@ -3,6 +3,16 @@
 //! This module owns tmux target syntax, format-string parsing, user-option
 //! access, and socket/environment handling. Higher-level workflows should use
 //! this boundary instead of constructing tmux commands or parsing tmux output.
+//!
+//! A tmux window is tiled by a recursive split tree. Pane leaves may be grouped
+//! side by side, where their widths and intervening separators add together, or
+//! stacked, where they share width and the widest child determines the group's
+//! minimum. Retaining this topology matters because a flat list of pane
+//! rectangles cannot describe every nested layout's resize constraints.
+//!
+//! One physical window may also be linked into multiple sessions. Commands that
+//! list all sessions can therefore report the same window and pane IDs more than
+//! once; callers that operate on physical windows must deduplicate by ID.
 
 use std::ffi::OsString;
 use std::path::Path;
@@ -39,12 +49,20 @@ pub struct TmuxContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// tmux window metadata used by workspace and sidebar workflows.
+/// Parsed recursive `#{window_layout}` topology used to calculate minimum pane geometry.
+pub struct TmuxWindowLayout {
+    root: TmuxLayoutCell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Tmux window identity, width, and activity metadata used by workflows.
 pub struct TmuxWindow {
     pub session_name: String,
     pub window_id: String,
     pub window_index: String,
     pub window_name: String,
+    pub window_width: u16,
+    pub layout: TmuxWindowLayout,
     pub active: bool,
 }
 
@@ -69,6 +87,7 @@ pub struct TmuxPaneSnapshot {
     pub pane_left: u16,
     pub pane_width: u16,
     pub window_width: u16,
+    pub window_layout: TmuxWindowLayout,
     pub title: Option<String>,
     pub current_command: Option<String>,
     pub current_path: Option<String>,
@@ -79,17 +98,181 @@ pub struct TmuxPaneSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Size specification for creating a tmux split.
-pub enum TmuxSplitSize {
-    Cells(u16),
-    Percent(u16),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// Visibility state for a tmux pane and its containing window.
 pub struct TmuxPaneVisibility {
     pub pane_has_focus: bool,
     pub window_visible: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum TmuxLayoutCell {
+    /// A physical pane leaf, identified without tmux's leading `%` sigil.
+    Pane(String),
+    /// Children arranged side by side, consuming the sum of their widths and separators.
+    Horizontal(Vec<Self>),
+    /// Children stacked top to bottom, sharing the width of their widest child.
+    Vertical(Vec<Self>),
+}
+
+impl TmuxWindowLayout {
+    /// Return the minimum cell width for this recursive layout.
+    ///
+    /// Each pane needs one content cell. Side-by-side children add their widths
+    /// and one separator per boundary, while stacked children use the largest
+    /// child width. Excluding a pane models the content layout that remains when
+    /// an existing sidebar is removed from the tree before recalculating its size.
+    pub fn minimum_width(&self, excluded_pane_id: Option<&str>) -> u16 {
+        let excluded_pane_id = excluded_pane_id.map(|pane_id| pane_id.trim_start_matches('%'));
+        self.root.minimum_width(excluded_pane_id).unwrap_or(1)
+    }
+
+    fn parse(value: &str) -> Result<Self> {
+        let (_, body) = value
+            .split_once(',')
+            .with_context(|| format!("invalid tmux window layout {value:?}: missing checksum"))?;
+        let mut parser = TmuxLayoutParser::new(body, value);
+        let root = parser.parse_cell()?;
+        if !parser.is_finished() {
+            bail!(
+                "invalid tmux window layout {value:?}: trailing input at byte {}",
+                parser.offset
+            );
+        }
+        Ok(Self { root })
+    }
+}
+
+impl TmuxLayoutCell {
+    fn minimum_width(&self, excluded_pane_id: Option<&str>) -> Option<u16> {
+        match self {
+            Self::Pane(pane_id) => (excluded_pane_id != Some(pane_id.as_str())).then_some(1),
+            Self::Horizontal(children) => {
+                let mut width = 0u16;
+                let mut count = 0u16;
+                for child_width in children
+                    .iter()
+                    .filter_map(|child| child.minimum_width(excluded_pane_id))
+                {
+                    if count > 0 {
+                        width = width.saturating_add(1);
+                    }
+                    width = width.saturating_add(child_width);
+                    count = count.saturating_add(1);
+                }
+                (count > 0).then_some(width)
+            }
+            Self::Vertical(children) => children
+                .iter()
+                .filter_map(|child| child.minimum_width(excluded_pane_id))
+                .max(),
+        }
+    }
+}
+
+struct TmuxLayoutParser<'a> {
+    body: &'a str,
+    original: &'a str,
+    offset: usize,
+}
+
+impl<'a> TmuxLayoutParser<'a> {
+    fn new(body: &'a str, original: &'a str) -> Self {
+        Self {
+            body,
+            original,
+            offset: 0,
+        }
+    }
+
+    fn parse_cell(&mut self) -> Result<TmuxLayoutCell> {
+        self.parse_number_before(b'x', "width")?;
+        self.parse_number_before(b',', "height")?;
+        self.parse_number_before(b',', "x offset")?;
+        self.parse_number("y offset")?;
+
+        match self.peek() {
+            Some(b',') => {
+                self.offset += 1;
+                let pane_id = self.parse_number("pane id")?;
+                Ok(TmuxLayoutCell::Pane(pane_id.to_owned()))
+            }
+            Some(b'{') => self
+                .parse_children(b'{', b'}')
+                .map(TmuxLayoutCell::Horizontal),
+            Some(b'[') => self
+                .parse_children(b'[', b']')
+                .map(TmuxLayoutCell::Vertical),
+            _ => bail!(
+                "invalid tmux window layout {:?}: expected pane or child layout at byte {}",
+                self.original,
+                self.offset
+            ),
+        }
+    }
+
+    fn parse_children(&mut self, open: u8, close: u8) -> Result<Vec<TmuxLayoutCell>> {
+        self.expect(open)?;
+        let mut children = Vec::new();
+        loop {
+            children.push(self.parse_cell()?);
+            match self.peek() {
+                Some(b',') => self.offset += 1,
+                Some(value) if value == close => {
+                    self.offset += 1;
+                    return Ok(children);
+                }
+                _ => {
+                    bail!(
+                        "invalid tmux window layout {:?}: expected separator or {:?} at byte {}",
+                        self.original,
+                        char::from(close),
+                        self.offset
+                    )
+                }
+            }
+        }
+    }
+
+    fn parse_number_before(&mut self, delimiter: u8, field: &str) -> Result<()> {
+        self.parse_number(field)?;
+        self.expect(delimiter)
+    }
+
+    fn parse_number(&mut self, field: &str) -> Result<&'a str> {
+        let start = self.offset;
+        while self.peek().is_some_and(|value| value.is_ascii_digit()) {
+            self.offset += 1;
+        }
+        if start == self.offset {
+            bail!(
+                "invalid tmux window layout {:?}: expected {field} at byte {}",
+                self.original,
+                self.offset
+            );
+        }
+        Ok(&self.body[start..self.offset])
+    }
+
+    fn expect(&mut self, expected: u8) -> Result<()> {
+        if self.peek() != Some(expected) {
+            bail!(
+                "invalid tmux window layout {:?}: expected {:?} at byte {}",
+                self.original,
+                char::from(expected),
+                self.offset
+            );
+        }
+        self.offset += 1;
+        Ok(())
+    }
+
+    fn peek(&self) -> Option<u8> {
+        self.body.as_bytes().get(self.offset).copied()
+    }
+
+    fn is_finished(&self) -> bool {
+        self.offset == self.body.len()
+    }
 }
 
 // Unit Separator (U+001F) delimits rich tmux format output where fields such as
@@ -299,8 +482,7 @@ impl Tmux {
 
     /// List windows in one session, or all sessions when no session is provided.
     pub fn list_windows(&self, session_name: Option<&str>) -> Result<Vec<TmuxWindow>> {
-        let format =
-            "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_active}";
+        let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
         let output = if let Some(session_name) = session_name {
             let target = format!("{session_name}:");
             self.stdout(["list-windows", "-t", &target, "-F", format])?
@@ -321,7 +503,7 @@ impl Tmux {
     pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
         let separator = TMUX_FIELD_SEPARATOR;
         let format = format!(
-            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
+            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{window_layout}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
         );
         let output = self.stdout(["list-panes", "-a", "-F", &format])?;
         parse_pane_snapshots(&output)
@@ -404,37 +586,28 @@ impl Tmux {
         Ok(())
     }
 
-    /// Create a detached horizontal split to the left of a target window and return its pane id.
+    /// Create a detached full-height split with a concrete cell width at the window's left edge.
     pub fn split_window_left(
         &self,
         target_window: &str,
-        size: TmuxSplitSize,
+        width: u16,
         command: &str,
     ) -> Result<String> {
-        let mut args = vec![
+        let args = vec![
             OsString::from("split-window"),
             OsString::from("-d"),
             OsString::from("-h"),
             OsString::from("-b"),
+            OsString::from("-f"),
             OsString::from("-t"),
             OsString::from(target_window),
-        ];
-        match size {
-            TmuxSplitSize::Cells(cells) => {
-                args.push(OsString::from("-l"));
-                args.push(OsString::from(cells.to_string()));
-            }
-            TmuxSplitSize::Percent(percent) => {
-                args.push(OsString::from("-p"));
-                args.push(OsString::from(percent.to_string()));
-            }
-        }
-        args.extend([
+            OsString::from("-l"),
+            OsString::from(width.to_string()),
             OsString::from("-P"),
             OsString::from("-F"),
             OsString::from("#{pane_id}"),
             OsString::from(command),
-        ]);
+        ];
         self.stdout(args)
     }
 
@@ -546,7 +719,7 @@ fn parse_pane_snapshots(output: &str) -> Result<Vec<TmuxPaneSnapshot>> {
 
 fn parse_window(line: &str) -> Result<TmuxWindow> {
     let fields = line.split('\t').collect::<Vec<_>>();
-    if fields.len() != 5 {
+    if fields.len() != 7 {
         bail!("unexpected tmux window format: {line:?}");
     }
 
@@ -555,8 +728,16 @@ fn parse_window(line: &str) -> Result<TmuxWindow> {
         window_id: fields[1].to_owned(),
         window_index: fields[2].to_owned(),
         window_name: fields[3].to_owned(),
-        active: fields[4] == "1",
+        window_width: parse_window_u16(line, "window_width", fields[4])?,
+        layout: TmuxWindowLayout::parse(fields[6])?,
+        active: fields[5] == "1",
     })
+}
+
+fn parse_window_u16(line: &str, field: &str, value: &str) -> Result<u16> {
+    value
+        .parse::<u16>()
+        .with_context(|| format!("invalid {field} value {value:?} in tmux window record {line:?}"))
 }
 
 fn parse_pane(line: &str) -> Result<TmuxPane> {
@@ -577,7 +758,7 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
 // titles and paths can contain tabs.
 fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
-    if fields.len() != 16 {
+    if fields.len() != 17 {
         bail!("unexpected tmux pane snapshot format: {line:?}");
     }
 
@@ -591,13 +772,14 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         pane_left: parse_pane_snapshot_u16(line, "pane_left", fields[6])?,
         pane_width: parse_pane_snapshot_u16(line, "pane_width", fields[7])?,
         window_width: parse_pane_snapshot_u16(line, "window_width", fields[8])?,
-        title: non_empty_string(fields[9]),
-        current_command: non_empty_string(fields[10]),
-        current_path: non_empty_string(fields[11]),
-        pane_active: tmux_bool(fields[12]),
-        window_active: tmux_bool(fields[13]),
-        session_attached: tmux_attached(fields[14]),
-        kmux_role: non_empty_string(fields[15]),
+        window_layout: TmuxWindowLayout::parse(fields[9])?,
+        title: non_empty_string(fields[10]),
+        current_command: non_empty_string(fields[11]),
+        current_path: non_empty_string(fields[12]),
+        pane_active: tmux_bool(fields[13]),
+        window_active: tmux_bool(fields[14]),
+        session_attached: tmux_attached(fields[15]),
+        kmux_role: non_empty_string(fields[16]),
     })
 }
 
@@ -731,6 +913,19 @@ pub mod test_support {
         ])?;
         Ok(())
     }
+
+    /// Build a horizontal window layout for pane-snapshot tests.
+    pub fn test_window_layout(pane_ids: &[&str]) -> TmuxWindowLayout {
+        let panes = pane_ids
+            .iter()
+            .map(|pane_id| TmuxLayoutCell::Pane(pane_id.trim_start_matches('%').to_owned()))
+            .collect::<Vec<_>>();
+        let root = match panes.as_slice() {
+            [pane] => pane.clone(),
+            _ => TmuxLayoutCell::Horizontal(panes),
+        };
+        TmuxWindowLayout { root }
+    }
 }
 
 #[cfg(test)]
@@ -765,7 +960,7 @@ mod tests {
     fn parses_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}{separator}{separator}{separator}0{separator}0{separator}0{separator}"
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,3{separator}{separator}{separator}{separator}0{separator}0{separator}0{separator}"
         );
 
         let panes = parse_pane_snapshots(&output)?;
@@ -780,6 +975,7 @@ mod tests {
         assert_eq!(panes[0].pane_left, 0);
         assert_eq!(panes[0].pane_width, 42);
         assert_eq!(panes[0].window_width, 120);
+        assert_eq!(panes[0].window_layout.minimum_width(None), 1);
         assert_eq!(panes[0].title.as_deref(), Some("kmux"));
         assert_eq!(panes[0].current_command.as_deref(), Some("nvim"));
         assert_eq!(panes[0].current_path.as_deref(), Some("/repo/feature"));
@@ -800,7 +996,7 @@ mod tests {
     fn malformed_pane_snapshot_geometry_reports_field_context() {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar"
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar"
         );
 
         let error = parse_pane_snapshots(&output)
@@ -814,13 +1010,17 @@ mod tests {
 
     #[test]
     fn parses_windows() -> Result<()> {
-        let windows = parse_windows("project\t@1\t2\tkmux-feature\t1\nproject\t@2\t3\tscratch\t0")?;
+        let windows = parse_windows(
+            "project\t@1\t2\tkmux-feature\t120\t1\tb25d,120x24,0,0,1\nproject\t@2\t3\tscratch\t80\t0\tb25d,80x24,0,0,2",
+        )?;
 
         assert_eq!(windows.len(), 2);
         assert_eq!(windows[0].session_name, "project");
         assert_eq!(windows[0].window_id, "@1");
         assert_eq!(windows[0].window_index, "2");
         assert_eq!(windows[0].window_name, "kmux-feature");
+        assert_eq!(windows[0].window_width, 120);
+        assert_eq!(windows[0].layout.minimum_width(None), 1);
         assert!(windows[0].active);
         assert!(!windows[1].active);
         Ok(())
@@ -828,13 +1028,58 @@ mod tests {
 
     #[test]
     fn parses_window() -> Result<()> {
-        let window = parse_window("project\t@1\t2\tkmux-feature\t1")?;
+        let window = parse_window("project\t@1\t2\tkmux-feature\t120\t1\tb25d,120x24,0,0,1")?;
 
         assert_eq!(window.session_name, "project");
         assert_eq!(window.window_id, "@1");
         assert_eq!(window.window_name, "kmux-feature");
+        assert_eq!(window.window_width, 120);
         assert!(window.active);
         Ok(())
+    }
+
+    #[test]
+    fn malformed_window_width_reports_field_context() {
+        let error = parse_window("project\t@1\t2\tkmux-feature\twide\t1\tb25d,120x24,0,0,1")
+            .expect_err("malformed window width should fail parsing");
+        let message = error.to_string();
+
+        assert!(message.contains("window_width"));
+        assert!(message.contains("wide"));
+        assert!(message.contains("tmux window record"));
+    }
+
+    #[test]
+    fn window_layout_calculates_nested_minimum_width() -> Result<()> {
+        let horizontal = TmuxWindowLayout::parse("89f5,80x24,0,0{39x24,0,0,0,40x24,40,0,1}")?;
+        let vertical = TmuxWindowLayout::parse("1247,80x24,0,0[80x11,0,0,0,80x12,0,12,1]")?;
+        let staggered = TmuxWindowLayout::parse(
+            "0000,20x20,0,0{9x20,0,0[9x9,0,0{4x9,0,0,0,4x9,5,0,1},9x10,0,10,2],10x20,10,0[10x9,10,0,3,10x10,10,10{4x10,10,10,4,5x10,15,10,5}]}",
+        )?;
+
+        assert_eq!(horizontal.minimum_width(None), 3);
+        assert_eq!(vertical.minimum_width(None), 1);
+        assert_eq!(staggered.minimum_width(None), 7);
+        Ok(())
+    }
+
+    #[test]
+    fn window_layout_excludes_sidebar_pane_from_minimum_width() -> Result<()> {
+        let layout = TmuxWindowLayout::parse(
+            "0000,20x20,0,0{12x20,0,0,9,7x20,13,0{3x20,13,0,1,3x20,17,0,2}}",
+        )?;
+
+        assert_eq!(layout.minimum_width(None), 5);
+        assert_eq!(layout.minimum_width(Some("%9")), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_window_layout_reports_context() {
+        let error = TmuxWindowLayout::parse("invalid")
+            .expect_err("malformed window layout should fail parsing");
+
+        assert!(error.to_string().contains("tmux window layout"));
     }
 
     #[test]

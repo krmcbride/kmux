@@ -3,25 +3,29 @@
 //! This module recognizes panes that can safely be treated as sidebar panes:
 //! panes explicitly marked during the current tmux server lifetime, and inactive
 //! left-edge panes whose geometry exactly matches the sidebar we would create.
+//! For an unmarked restored pane, the candidate itself is excluded from the
+//! recursive layout minimum before applying the shared sizing policy. This asks
+//! whether the remaining content would have produced that exact sidebar width.
 
 use std::collections::HashMap;
 
-use crate::tmux::{TmuxPaneSnapshot, TmuxSplitSize};
+use crate::config::SidebarWidth;
+use crate::tmux::TmuxPaneSnapshot;
 
-/// Default sidebar width in cells when config does not specify one.
-pub(super) const DEFAULT_WIDTH: u16 = 42;
+use super::sizing::target_width;
+
 /// tmux pane role value used to mark kmux sidebar panes.
 pub(super) const SIDEBAR_ROLE: &str = "sidebar";
 
 /// Recognizes live and restored panes that belong to the kmux sidebar.
 pub(super) struct SidebarCandidateMatcher {
-    size: Option<TmuxSplitSize>,
+    width: Option<SidebarWidth>,
 }
 
 impl SidebarCandidateMatcher {
     /// Build the matcher used to recognize live and restored sidebar panes.
-    pub(super) fn new(size: Option<TmuxSplitSize>) -> Self {
-        Self { size }
+    pub(super) fn new(width: Option<SidebarWidth>) -> Self {
+        Self { width }
     }
 
     /// Return whether a pane should be treated as kmux sidebar state during reconciliation.
@@ -34,24 +38,17 @@ impl SidebarCandidateMatcher {
     }
 
     fn is_restored_sidebar_shape(&self, pane: &TmuxPaneSnapshot) -> bool {
-        pane.kmux_role.is_none()
-            && !pane.pane_active
-            && pane.pane_left == 0
-            && self
-                .size
-                .is_some_and(|size| pane.pane_width == sidebar_width_cells(size, pane.window_width))
+        if pane.kmux_role.is_some() || pane.pane_active || pane.pane_left != 0 {
+            return false;
+        }
+        let Some(width) = self.width else {
+            return false;
+        };
+        // Use the same content-only geometry and target calculation as lifecycle
+        // reconciliation so restoration cannot recognize a width we would not create.
+        let minimum_content_width = pane.window_layout.minimum_width(Some(&pane.pane_id));
+        pane.pane_width == target_width(width, pane.window_width, minimum_content_width)
     }
-}
-
-/// Convert an absolute or percentage sidebar size into cell width for a window.
-pub(super) fn sidebar_width_cells(size: TmuxSplitSize, window_width: u16) -> u16 {
-    match size {
-        TmuxSplitSize::Cells(width) => width,
-        TmuxSplitSize::Percent(percent) => ((u32::from(window_width) * u32::from(percent)) / 100)
-            .try_into()
-            .unwrap_or(u16::MAX),
-    }
-    .max(1)
 }
 
 /// Iterate panes that look like kmux sidebar panes.
@@ -75,10 +72,13 @@ pub(super) fn sidebar_candidates_by_window<'a>(
 ) -> HashMap<String, &'a TmuxPaneSnapshot> {
     let mut matches = HashMap::<String, Vec<&TmuxPaneSnapshot>>::new();
     for pane in sidebar_candidate_snapshots(panes, matcher) {
-        matches
-            .entry(pane.window_id.clone())
-            .or_default()
-            .push(pane);
+        let window_matches = matches.entry(pane.window_id.clone()).or_default();
+        if window_matches
+            .iter()
+            .all(|existing| existing.pane_id != pane.pane_id)
+        {
+            window_matches.push(pane);
+        }
     }
     matches
         .into_iter()
@@ -115,13 +115,13 @@ mod tests {
         let mut active = pane_snapshot("%5", "@1", 0, 30, Some("kmux"), None, None);
         active.pane_active = true;
         let tagged = pane_snapshot("%4", "@1", 10, 90, Some("shell"), None, Some(SIDEBAR_ROLE));
-        let matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
+        let matcher = test_matcher(Some(fixed_width(30)));
 
-        assert!(matcher.is_sidebar_candidate(&restored));
-        assert!(!matcher.is_sidebar_candidate(&wide));
-        assert!(!matcher.is_sidebar_candidate(&not_left));
-        assert!(!matcher.is_sidebar_candidate(&active));
-        assert!(matcher.is_sidebar_candidate(&tagged));
+        assert!(is_candidate(&matcher, &restored));
+        assert!(!is_candidate(&matcher, &wide));
+        assert!(!is_candidate(&matcher, &not_left));
+        assert!(!is_candidate(&matcher, &active));
+        assert!(is_candidate(&matcher, &tagged));
     }
 
     #[test]
@@ -137,7 +137,7 @@ mod tests {
             Some(SIDEBAR_ROLE),
         );
         let panes = vec![restored, marked];
-        let matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
+        let matcher = test_matcher(Some(fixed_width(30)));
 
         let sidebar = sidebar_candidates_by_window(&panes, &matcher)
             .remove("@1")
@@ -151,7 +151,7 @@ mod tests {
         let restored = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
         let unrelated = pane_snapshot("%2", "@1", 30, 90, Some("fish"), Some("fish"), None);
         let panes = vec![unrelated, restored];
-        let matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
+        let matcher = test_matcher(Some(fixed_width(30)));
 
         let sidebar = sidebar_candidates_by_window(&panes, &matcher)
             .remove("@1")
@@ -165,7 +165,7 @@ mod tests {
         let first = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
         let second = pane_snapshot("%2", "@1", 0, 30, Some("sh"), Some("sh"), None);
         let panes = vec![first, second];
-        let matcher = test_matcher(Some(TmuxSplitSize::Cells(30)));
+        let matcher = test_matcher(Some(fixed_width(30)));
 
         assert!(
             sidebar_candidates_by_window(&panes, &matcher)
@@ -188,8 +188,63 @@ mod tests {
         );
         let matcher = test_matcher(None);
 
-        assert!(!matcher.is_sidebar_candidate(&restored));
-        assert!(matcher.is_sidebar_candidate(&marked));
+        assert!(!is_candidate(&matcher, &restored));
+        assert!(is_candidate(&matcher, &marked));
+    }
+
+    #[test]
+    fn sidebar_candidates_match_policy_width_for_each_window() {
+        let policy = SidebarWidth {
+            min: 30,
+            percent: 25,
+            max: 50,
+        };
+        let narrow = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
+        let mut proportional = pane_snapshot("%2", "@2", 0, 40, Some("fish"), Some("fish"), None);
+        proportional.window_width = 160;
+        let panes = vec![narrow, proportional];
+        let matcher = test_matcher(Some(policy));
+
+        let sidebars = sidebar_candidates_by_window(&panes, &matcher);
+
+        assert_eq!(sidebars.len(), 2);
+        assert_eq!(sidebars["@1"].pane_width, 30);
+        assert_eq!(sidebars["@2"].pane_width, 40);
+    }
+
+    #[test]
+    fn sidebar_candidates_match_narrow_multi_pane_layout_cap() {
+        let policy = SidebarWidth::default();
+        let mut sidebar = pane_snapshot("%1", "@1", 0, 16, Some("kmux"), Some("kmux"), None);
+        sidebar.window_width = 20;
+        sidebar.window_layout = crate::tmux::test_support::test_window_layout(&["%1", "%2", "%3"]);
+        let mut first_content = pane_snapshot("%2", "@1", 17, 1, Some("fish"), Some("fish"), None);
+        first_content.window_width = 20;
+        let mut second_content = pane_snapshot("%3", "@1", 19, 1, Some("fish"), Some("fish"), None);
+        second_content.window_width = 20;
+        let panes = vec![sidebar, first_content, second_content];
+        let matcher = test_matcher(Some(policy));
+
+        let matched = sidebar_candidates_by_window(&panes, &matcher)
+            .remove("@1")
+            .expect("narrow sidebar should match layout-aware cap");
+
+        assert_eq!(matched.pane_id, "%1");
+    }
+
+    #[test]
+    fn sidebar_candidates_deduplicate_linked_window_snapshots() {
+        let restored = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
+        let mut linked = restored.clone();
+        linked.session_name = "linked-project".to_owned();
+        let panes = vec![restored, linked];
+        let matcher = test_matcher(Some(fixed_width(30)));
+
+        let matched = sidebar_candidates_by_window(&panes, &matcher)
+            .remove("@1")
+            .expect("linked snapshot should reuse one physical sidebar");
+
+        assert_eq!(matched.pane_id, "%1");
     }
 
     fn pane_snapshot(
@@ -211,6 +266,7 @@ mod tests {
             pane_left,
             pane_width,
             window_width: 120,
+            window_layout: crate::tmux::test_support::test_window_layout(&[pane_id]),
             title: title.map(str::to_owned),
             current_command: current_command.map(str::to_owned),
             current_path: None,
@@ -221,7 +277,19 @@ mod tests {
         }
     }
 
-    fn test_matcher(size: Option<TmuxSplitSize>) -> SidebarCandidateMatcher {
-        SidebarCandidateMatcher { size }
+    fn fixed_width(width: u16) -> SidebarWidth {
+        SidebarWidth {
+            min: width,
+            percent: 20,
+            max: width,
+        }
+    }
+
+    fn test_matcher(width: Option<SidebarWidth>) -> SidebarCandidateMatcher {
+        SidebarCandidateMatcher { width }
+    }
+
+    fn is_candidate(matcher: &SidebarCandidateMatcher, pane: &TmuxPaneSnapshot) -> bool {
+        matcher.is_sidebar_candidate(pane)
     }
 }

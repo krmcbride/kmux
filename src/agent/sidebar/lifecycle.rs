@@ -16,8 +16,8 @@ use anyhow::Result;
 use crate::agent::sidebar::actions::SidebarActions;
 use crate::agent::sidebar::app::SidebarApp;
 use crate::agent::sidebar::candidates::{
-    DEFAULT_WIDTH, SIDEBAR_ROLE, SidebarCandidateMatcher, sidebar_candidate_snapshots,
-    sidebar_candidates_by_window, sidebar_width_cells,
+    SIDEBAR_ROLE, SidebarCandidateMatcher, sidebar_candidate_snapshots,
+    sidebar_candidates_by_window,
 };
 use crate::agent::sidebar::commands::{
     shell_quote, sidebar_off_command, sidebar_refresh_command, sidebar_tui_command,
@@ -26,13 +26,13 @@ use crate::agent::sidebar::commands::{
 use crate::agent::sidebar::model::SidebarIcons;
 use crate::agent::sidebar::rows::SidebarRowsQuery;
 use crate::agent::sidebar::runtime::run_terminal_app;
-use crate::config::{Config, SidebarSize};
+use crate::agent::sidebar::sizing::target_width;
+use crate::config::Config;
 use crate::state::StateStore;
-use crate::tmux::{Tmux, TmuxPane, TmuxPaneSnapshot, TmuxSplitSize, TmuxWindow};
+use crate::tmux::{Tmux, TmuxPane, TmuxPaneSnapshot, TmuxWindow};
 
 const SIDEBAR_ROLE_OPTION: &str = "@kmux_role";
 const SIDEBAR_ENABLED_OPTION: &str = "@kmux_sidebar_enabled";
-const SIDEBAR_WIDTH_OPTION: &str = "@kmux_sidebar_width";
 const SIDEBAR_LOCK_CHANNEL: &str = "kmux-sidebar-reconcile";
 const SIDEBAR_RECONCILE_HOOKS: &[&str] = &[
     "after-new-window[90]",
@@ -62,7 +62,6 @@ pub(super) fn enable() -> Result<()> {
     let tmux = Tmux::from_env();
     let _lock = SidebarLock::acquire(&tmux)?;
     tmux.set_global_option(SIDEBAR_ENABLED_OPTION, "1")?;
-    tmux.set_global_option(SIDEBAR_WIDTH_OPTION, &configured_width_label(&config))?;
     install_hooks(&tmux)?;
     reconcile_locked(&tmux, &config)?;
     print_user_message("sidebar enabled");
@@ -75,7 +74,6 @@ pub(super) fn disable() -> Result<()> {
     let _lock = SidebarLock::acquire(&tmux)?;
     tmux.unset_global_option(SIDEBAR_ENABLED_OPTION)?;
     remove_hooks(&tmux)?;
-    tmux.unset_global_option(SIDEBAR_WIDTH_OPTION)?;
     let panes = tmux.list_pane_snapshots()?;
     let matcher = SidebarCandidateMatcher::new(None);
     for pane in sidebar_candidate_snapshots(&panes, &matcher) {
@@ -179,20 +177,29 @@ fn request_disable_async() -> Result<()> {
 // Reconcile under the global sidebar lock: one sidebar pane per window, marked
 // with kmux role metadata and running the current sidebar command.
 fn reconcile_locked(tmux: &Tmux, config: &Config) -> Result<()> {
-    let windows = unique_windows(tmux.list_windows(None)?);
     let command = sidebar_tui_command()?;
-    let size = split_size(config);
+    let width_policy = config.sidebar.width;
+    // Killing duplicate sidebars changes the physical split tree. Prune first,
+    // then query fresh window geometry so narrow-window caps use the retained layout.
     prune_extra_sidebars(tmux)?;
+    let windows = unique_windows(tmux.list_windows(None)?);
     let panes = tmux.list_pane_snapshots()?;
-    let matcher = SidebarCandidateMatcher::new(Some(size));
+    let matcher = SidebarCandidateMatcher::new(Some(width_policy));
     let mut sidebars_by_window = sidebar_candidates_by_window(&panes, &matcher);
 
     for window in windows {
-        if let Some(pane) = sidebars_by_window.remove(&window.window_id) {
-            heal_sidebar_pane(tmux, pane, size, &command)?;
+        let sidebar = sidebars_by_window.remove(&window.window_id);
+        let minimum_content_width = window
+            .layout
+            .minimum_width(sidebar.map(|sidebar| sidebar.pane_id.as_str()));
+        let width = target_width(width_policy, window.window_width, minimum_content_width);
+        if let Some(pane) = sidebar {
+            heal_sidebar_pane(tmux, pane, width, &command)?;
             continue;
         }
-        let pane_id = tmux.split_window_left(&window.window_id, size, &command)?;
+        // The adapter uses a full-window split: a normal tmux split is relative
+        // to one pane and would not guarantee a full-height left-edge sidebar.
+        let pane_id = tmux.split_window_left(&window.window_id, width, &command)?;
         tmux.set_pane_option(&pane_id, SIDEBAR_ROLE_OPTION, SIDEBAR_ROLE)?;
     }
 
@@ -227,11 +234,10 @@ fn prune_extra_sidebars(tmux: &Tmux) -> Result<()> {
 fn heal_sidebar_pane(
     tmux: &Tmux,
     pane: &TmuxPaneSnapshot,
-    size: TmuxSplitSize,
+    width: u16,
     command: &str,
 ) -> Result<()> {
-    let width = sidebar_width_cells(size, pane.window_width);
-    if width > 0 && pane.pane_width != width {
+    if pane.pane_width != width {
         let _ = tmux.resize_pane_width(&pane.pane_id, width);
     }
     if should_respawn_sidebar_pane(pane) {
@@ -314,27 +320,6 @@ impl Drop for SidebarLock<'_> {
     }
 }
 
-fn split_size(config: &Config) -> TmuxSplitSize {
-    match configured_width(config) {
-        SidebarSize::Absolute(width) => TmuxSplitSize::Cells(width),
-        SidebarSize::Percent(percent) => TmuxSplitSize::Percent(percent),
-    }
-}
-
-fn configured_width_label(config: &Config) -> String {
-    match configured_width(config) {
-        SidebarSize::Absolute(width) => width.to_string(),
-        SidebarSize::Percent(percent) => format!("{percent}%"),
-    }
-}
-
-fn configured_width(config: &Config) -> SidebarSize {
-    config
-        .sidebar
-        .width
-        .unwrap_or(SidebarSize::Absolute(DEFAULT_WIDTH))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,21 +362,6 @@ mod tests {
         assert!(should_respawn_sidebar_pane(&unmarked_running_kmux));
     }
 
-    #[test]
-    fn configured_width_supports_absolute_and_percent_sizes() {
-        let mut config = Config::default();
-        config.sidebar.width = Some(SidebarSize::Absolute(30));
-
-        assert_eq!(split_size(&config), TmuxSplitSize::Cells(30));
-        assert_eq!(configured_width_label(&config), "30");
-
-        config.sidebar.width = Some(SidebarSize::Percent(25));
-
-        assert_eq!(split_size(&config), TmuxSplitSize::Percent(25));
-        assert_eq!(configured_width_label(&config), "25%");
-        assert_eq!(sidebar_width_cells(split_size(&config), 120), 30);
-    }
-
     fn pane_snapshot(kmux_role: Option<&str>, current_command: Option<&str>) -> TmuxPaneSnapshot {
         TmuxPaneSnapshot {
             session_name: "project".to_owned(),
@@ -401,8 +371,9 @@ mod tests {
             pane_id: "%1".to_owned(),
             pane_index: "1".to_owned(),
             pane_left: 0,
-            pane_width: DEFAULT_WIDTH,
+            pane_width: 42,
             window_width: 120,
+            window_layout: crate::tmux::test_support::test_window_layout(&["%1"]),
             title: None,
             current_command: current_command.map(str::to_owned),
             current_path: None,

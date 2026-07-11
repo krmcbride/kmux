@@ -122,6 +122,26 @@ impl TmuxFixture {
         Ok(panes)
     }
 
+    pub fn sidebar_pane_for_window(&self, window_id: &str) -> Result<String> {
+        let output = self.tmux_output(&[
+            "list-panes",
+            "-t",
+            window_id,
+            "-F",
+            "#{pane_id}\t#{@kmux_role}",
+        ])?;
+        for line in output.lines() {
+            if let Some((pane_id, role)) = line.split_once('\t')
+                && role == "sidebar"
+            {
+                return Ok(pane_id.to_owned());
+            }
+        }
+        Err(anyhow!(
+            "sidebar pane for tmux window '{window_id}' not found"
+        ))
+    }
+
     pub fn unique_window_count(&self) -> Result<usize> {
         let output = self.tmux_output(&["list-windows", "-a", "-F", "#{window_id}"])?;
         Ok(output

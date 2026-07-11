@@ -1953,6 +1953,7 @@ mod tests {
             pane_left: 0,
             pane_width: 80,
             window_width: 120,
+            window_layout: crate::tmux::test_support::test_window_layout(&[pane_id]),
             title: Some("pane title".to_owned()),
             current_command: Some("opencode".to_owned()),
             current_path: Some(current_path.to_owned()),

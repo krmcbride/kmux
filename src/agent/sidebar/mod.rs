@@ -16,6 +16,7 @@ mod render;
 mod rows;
 mod runtime;
 mod selection;
+mod sizing;
 #[cfg(test)]
 mod test_support;
 

@@ -12,6 +12,10 @@ pub const DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS: u64 = 30 * 60;
 /// Default maximum time a sidebar selection hook may run before kmux stops it.
 pub const DEFAULT_SIDEBAR_SELECTION_HOOK_TIMEOUT_MS: u64 = 1000;
 
+const DEFAULT_SIDEBAR_MIN_WIDTH: u16 = 36;
+const DEFAULT_SIDEBAR_WIDTH_PERCENT: u16 = 20;
+const DEFAULT_SIDEBAR_MAX_WIDTH: u16 = 52;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 /// User-facing kmux configuration loaded from YAML.
@@ -185,9 +189,9 @@ pub struct PaneConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-/// Sidebar sizing, idle-row behavior, and selection hooks.
+/// Bounded sidebar sizing, idle-row behavior, and selection hooks.
 pub struct SidebarConfig {
-    pub width: Option<SidebarSize>,
+    pub width: SidebarWidth,
     pub idle_after_seconds: Option<u64>,
     pub selection_hooks: Vec<SidebarSelectionHookConfig>,
 }
@@ -200,11 +204,49 @@ impl SidebarConfig {
     }
 
     fn validate(&self) -> Result<()> {
+        self.width.validate()?;
         if self.idle_after_seconds == Some(0) {
             bail!("sidebar.idle_after_seconds must be greater than zero");
         }
         for hook in &self.selection_hooks {
             hook.validate()?;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Bounded proportional width policy for sidebar panes.
+pub struct SidebarWidth {
+    /// Minimum preferred width in terminal cells when the window can fit it.
+    pub min: u16,
+    /// Preferred width as a percentage of the total tmux window width.
+    pub percent: u16,
+    /// Maximum width in terminal cells.
+    pub max: u16,
+}
+
+impl Default for SidebarWidth {
+    fn default() -> Self {
+        Self {
+            min: DEFAULT_SIDEBAR_MIN_WIDTH,
+            percent: DEFAULT_SIDEBAR_WIDTH_PERCENT,
+            max: DEFAULT_SIDEBAR_MAX_WIDTH,
+        }
+    }
+}
+
+impl SidebarWidth {
+    fn validate(&self) -> Result<()> {
+        if self.min == 0 {
+            bail!("sidebar.width.min must be greater than zero");
+        }
+        if !(1..=100).contains(&self.percent) {
+            bail!("sidebar.width.percent must be between 1 and 100");
+        }
+        if self.min > self.max {
+            bail!("sidebar.width.min must not exceed sidebar.width.max");
         }
         Ok(())
     }
@@ -249,63 +291,6 @@ impl SidebarSelectionHookConfig {
             bail!("sidebar.selection_hooks.timeout_ms must be greater than zero");
         }
         Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Sidebar width as an absolute cell count or tmux percentage.
-pub enum SidebarSize {
-    Absolute(u16),
-    Percent(u16),
-}
-
-impl<'de> Deserialize<'de> for SidebarSize {
-    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        use serde::de;
-
-        struct Visitor;
-
-        impl de::Visitor<'_> for Visitor {
-            type Value = SidebarSize;
-
-            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str("a number or percentage string like '15%'")
-            }
-
-            fn visit_u64<E: de::Error>(self, value: u64) -> Result<Self::Value, E> {
-                let value = u16::try_from(value)
-                    .map_err(|_| de::Error::custom("value is too large for u16"))?;
-                Ok(SidebarSize::Absolute(value))
-            }
-
-            fn visit_i64<E: de::Error>(self, value: i64) -> Result<Self::Value, E> {
-                if value < 0 {
-                    return Err(de::Error::custom("value cannot be negative"));
-                }
-                self.visit_u64(value as u64)
-            }
-
-            fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
-                if let Some(percent) = value.trim().strip_suffix('%') {
-                    let percent = percent
-                        .trim()
-                        .parse::<u16>()
-                        .map_err(|_| de::Error::custom("invalid percentage"))?;
-                    if !(1..=100).contains(&percent) {
-                        return Err(de::Error::custom("percentage must be 1-100"));
-                    }
-                    return Ok(SidebarSize::Percent(percent));
-                }
-
-                let value = value
-                    .trim()
-                    .parse::<u16>()
-                    .map_err(|_| de::Error::custom("invalid numeric value"))?;
-                Ok(SidebarSize::Absolute(value))
-            }
-        }
-
-        deserializer.deserialize_any(Visitor)
     }
 }
 
@@ -388,7 +373,9 @@ files:
     - .opencode
   symlink:
     - codebook.toml
-sidebar: {width: 42, idle_after_seconds: 900}
+sidebar:
+  width: {min: 36, percent: 20, max: 52}
+  idle_after_seconds: 900
 "#,
         )
         .expect("active global config should parse");
@@ -407,7 +394,14 @@ sidebar: {width: 42, idle_after_seconds: 900}
         assert_eq!(config.post_create, ["direnv allow"]);
         assert_eq!(config.files.copy_entries(), [".envrc", ".opencode"]);
         assert_eq!(config.files.symlink_entries(), ["codebook.toml"]);
-        assert_eq!(config.sidebar.width, Some(SidebarSize::Absolute(42)));
+        assert_eq!(
+            config.sidebar.width,
+            SidebarWidth {
+                min: 36,
+                percent: 20,
+                max: 52,
+            }
+        );
         assert_eq!(config.sidebar.idle_after_seconds(), 900);
         assert!(config.sidebar.selection_hooks.is_empty());
     }
@@ -529,15 +523,60 @@ sidebar:
     }
 
     #[test]
-    fn parses_sidebar_percentage_size() {
-        let config = Config::from_yaml_str("sidebar: {width: '15%'}\n")
+    fn omitted_sidebar_width_uses_complete_default_policy() {
+        let config = Config::from_yaml_str("sidebar: {idle_after_seconds: 900}\n")
             .expect("sidebar config should parse");
-        let width = config
-            .sidebar
-            .width
-            .expect("sidebar width should be parsed");
 
-        assert_eq!(width, SidebarSize::Percent(15));
+        assert_eq!(config.sidebar.width, SidebarWidth::default());
+    }
+
+    #[test]
+    fn rejects_invalid_sidebar_width_policy() {
+        for (yaml, field) in [
+            (
+                "sidebar: {width: {min: 0, percent: 20, max: 52}}\n",
+                "sidebar.width.min",
+            ),
+            (
+                "sidebar: {width: {min: 36, percent: 0, max: 52}}\n",
+                "sidebar.width.percent",
+            ),
+            (
+                "sidebar: {width: {min: 36, percent: 101, max: 52}}\n",
+                "sidebar.width.percent",
+            ),
+            (
+                "sidebar: {width: {min: 53, percent: 20, max: 52}}\n",
+                "sidebar.width.min",
+            ),
+        ] {
+            let error = Config::from_yaml_str(yaml).expect_err("invalid width should fail");
+            assert!(error.to_string().contains(field));
+        }
+    }
+
+    #[test]
+    fn rejects_legacy_sidebar_width_forms() {
+        for yaml in [
+            "sidebar: {width: 42}\n",
+            "sidebar: {width: '42'}\n",
+            "sidebar: {width: '15%'}\n",
+        ] {
+            Config::from_yaml_str(yaml).expect_err("legacy sidebar width should fail");
+        }
+    }
+
+    #[test]
+    fn rejects_partial_or_unknown_sidebar_width_fields() {
+        for yaml in [
+            "sidebar: {width: {min: 36, percent: 20}}\n",
+            "sidebar: {width: {min: 36, percent: 20, max: 52, preferred: 40}}\n",
+        ] {
+            let error = Config::from_yaml_str(yaml).expect_err("invalid width shape should fail");
+            assert!(
+                error.to_string().contains("sidebar.width") || error.to_string().contains("field")
+            );
+        }
     }
 
     #[test]
