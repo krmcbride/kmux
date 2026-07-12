@@ -6,7 +6,7 @@
  * current pane and update the window status option reliably.
  */
 
-import type { TuiPlugin } from "@opencode-ai/plugin/tui";
+import type { TuiPlugin, TuiPluginApi } from "@opencode-ai/plugin/tui";
 
 import { waitForKmuxChild } from "./kmux-child-process";
 import { KmuxCommandQueue } from "./kmux-command-queue";
@@ -49,7 +49,9 @@ const forwardedEventTypes = [
 const metadataEventTypes = ["session.updated", "message.updated", "message.removed"] as const;
 
 function clean(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
+  if (typeof value !== "string") {
+    return undefined;
+  }
   const trimmed = value.trim();
   return trimmed || undefined;
 }
@@ -65,7 +67,9 @@ function producerInstance(): string {
 }
 
 function pushArg(cmd: string[], flag: string, value: string | undefined) {
-  if (value) cmd.push(flag, value);
+  if (value) {
+    cmd.push(flag, value);
+  }
 }
 
 function runKmux(cmd: ReadonlyArray<string>): Promise<number> {
@@ -108,8 +112,12 @@ function statusFromEvent(event: { type: string; properties?: unknown }): KmuxSta
           ? (status as { type?: unknown }).type
           : status;
 
-      if (statusType === "busy" || statusType === "retry") return "working";
-      if (statusType === "idle") return "done";
+      if (statusType === "busy" || statusType === "retry") {
+        return "working";
+      }
+      if (statusType === "idle") {
+        return "done";
+      }
       return undefined;
     }
     case "permission.asked":
@@ -132,7 +140,9 @@ function eventSessionID(event: { properties?: unknown }): string | undefined {
     typeof event.properties === "object" && event.properties !== null
       ? (event.properties as { sessionID?: unknown })
       : undefined;
-  if (typeof properties?.sessionID !== "string") return undefined;
+  if (typeof properties?.sessionID !== "string") {
+    return undefined;
+  }
   return properties.sessionID;
 }
 
@@ -143,11 +153,17 @@ function eventMatchesActiveSession(
 ): boolean {
   const rootSessionID = activeSessionID(state, api);
   const sessionID = eventSessionID(event);
-  if (!rootSessionID || !sessionID) return false;
-  if (sessionID === rootSessionID) return true;
+  if (!rootSessionID || !sessionID) {
+    return false;
+  }
+  if (sessionID === rootSessionID) {
+    return true;
+  }
 
   const session = api.state.session.get(sessionID);
-  if (session?.parentID === rootSessionID) return true;
+  if (session?.parentID === rootSessionID) {
+    return true;
+  }
 
   const properties =
     typeof event.properties === "object" && event.properties !== null
@@ -166,7 +182,9 @@ function recordEventStatus(
   status: KmuxStatus,
 ) {
   const sessionID = eventSessionID(event);
-  if (sessionID) state.sessionStatus.set(sessionID, status);
+  if (sessionID) {
+    state.sessionStatus.set(sessionID, status);
+  }
 }
 
 function statusPriority(status: KmuxStatus): number {
@@ -185,13 +203,17 @@ function statusPriority(status: KmuxStatus): number {
 function mostImportantStatus(statuses: KmuxStatus[]): KmuxStatus {
   let best: KmuxStatus = "clear";
   for (const status of statuses) {
-    if (statusPriority(status) > statusPriority(best)) best = status;
+    if (statusPriority(status) > statusPriority(best)) {
+      best = status;
+    }
   }
   return best;
 }
 
 function sessionBelongsToRoot(api: TuiApi, sessionID: string, rootSessionID: string) {
-  if (sessionID === rootSessionID) return true;
+  if (sessionID === rootSessionID) {
+    return true;
+  }
   return api.state.session.get(sessionID)?.parentID === rootSessionID;
 }
 
@@ -206,8 +228,12 @@ function cachedFamilySessionIDs(
 }
 
 function formatNumber(num: number): string {
-  if (num >= 1000000) return `${(num / 1000000).toFixed(1)}M`;
-  if (num >= 1000) return `${(num / 1000).toFixed(1)}K`;
+  if (num >= 1000000) {
+    return `${(num / 1000000).toFixed(1)}M`;
+  }
+  if (num >= 1000) {
+    return `${(num / 1000).toFixed(1)}K`;
+  }
   return num.toString();
 }
 
@@ -220,17 +246,23 @@ function lastAssistantWithOutputTokens(
 ): AssistantMessage | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i];
-    if (message && isAssistantWithOutputTokens(message)) return message;
+    if (message && isAssistantWithOutputTokens(message)) {
+      return message;
+    }
   }
 }
 
 function sessionTitle(state: TuiReporterState, api: TuiApi): string | undefined {
   const sessionID = activeSessionID(state, api);
-  if (!sessionID) return undefined;
+  if (!sessionID) {
+    return undefined;
+  }
 
   const session = api.state.session.get(sessionID);
   const title = session?.title?.trim();
-  if (title) return title;
+  if (title) {
+    return title;
+  }
 
   const slug = session?.slug?.trim();
   return slug || undefined;
@@ -238,11 +270,15 @@ function sessionTitle(state: TuiReporterState, api: TuiApi): string | undefined 
 
 function contextUsage(state: TuiReporterState, api: TuiApi): string | undefined {
   const sessionID = activeSessionID(state, api);
-  if (!sessionID) return undefined;
+  if (!sessionID) {
+    return undefined;
+  }
 
   const messages = api.state.session.messages(sessionID);
   const last = lastAssistantWithOutputTokens(messages);
-  if (!last) return undefined;
+  if (!last) {
+    return undefined;
+  }
 
   const tokens =
     last.tokens.input +
@@ -250,7 +286,9 @@ function contextUsage(state: TuiReporterState, api: TuiApi): string | undefined 
     last.tokens.reasoning +
     last.tokens.cache.read +
     last.tokens.cache.write;
-  if (tokens <= 0) return undefined;
+  if (tokens <= 0) {
+    return undefined;
+  }
 
   const model = api.state.provider.find((item) => item.id === last.providerID)?.models[
     last.modelID
@@ -277,7 +315,9 @@ function reportStatus(
   status: KmuxStatus,
 ) {
   const sessionID = activeSessionID(state, api) ?? state.lastRootSessionID;
-  if (!sessionID) return;
+  if (!sessionID) {
+    return;
+  }
 
   const deleting = status === "clear";
   const title = deleting ? undefined : sessionTitle(state, api);
@@ -300,11 +340,15 @@ function reportStatus(
     workspaceID,
     instance,
   });
-  if (state.lastReportKey === reportKey) return;
+  if (state.lastReportKey === reportKey) {
+    return;
+  }
   state.lastReportKey = reportKey;
 
   const cmd = ["kmux", "set-agent-status"];
-  if (!deleting) cmd.push(status);
+  if (!deleting) {
+    cmd.push(status);
+  }
   cmd.push(
     "--agent-kind",
     AGENT_KIND,
@@ -323,8 +367,11 @@ function reportStatus(
     pushArg(cmd, "--title", title);
     pushArg(cmd, "--context", context);
     pushArg(cmd, "--tmux-instance", tmuxInstance);
-    if (workspaceID) cmd.push("--agent-meta", `workspace_id=${workspaceID}`);
-    else cmd.push("--clear-agent-meta", "workspace_id");
+    if (workspaceID) {
+      cmd.push("--agent-meta", `workspace_id=${workspaceID}`);
+    } else {
+      cmd.push("--clear-agent-meta", "workspace_id");
+    }
     pushArg(cmd, "--directory", directory);
   }
 
@@ -339,7 +386,9 @@ function activeRouteSessionID(api: TuiApi) {
 
 function activeSessionID(state: TuiReporterState, api: TuiApi) {
   const sessionID = activeRouteSessionID(api);
-  if (!sessionID) return state.lastRootSessionID;
+  if (!sessionID) {
+    return state.lastRootSessionID;
+  }
 
   // Subagent routes have their own session IDs, but kmux should track the parent row.
   const session = api.state.session.get(sessionID);
@@ -349,10 +398,14 @@ function activeSessionID(state: TuiReporterState, api: TuiApi) {
 }
 
 function statusFromCurrentSession(state: TuiReporterState, api: TuiApi): KmuxStatus {
-  if (!api.state.ready) return "clear";
+  if (!api.state.ready) {
+    return "clear";
+  }
 
   const rootSessionID = activeSessionID(state, api);
-  if (!rootSessionID) return "clear";
+  if (!rootSessionID) {
+    return "clear";
+  }
 
   const routeSessionID = activeRouteSessionID(api);
   const sessionIDs = new Set([...cachedFamilySessionIDs(state, api, rootSessionID), rootSessionID]);
@@ -386,7 +439,7 @@ function statusFromCurrentSession(state: TuiReporterState, api: TuiApi): KmuxSta
   return mostImportantStatus(statuses);
 }
 
-const tui: TuiPlugin = async (api) => {
+const tui: TuiPlugin = async (api: TuiPluginApi) => {
   const state: TuiReporterState = {
     sessionStatus: new Map(),
     reportedProducerInstances: new Map(),
@@ -399,7 +452,9 @@ const tui: TuiPlugin = async (api) => {
   };
   const disposers = forwardedEventTypes.map((type) =>
     api.event.on(type, (event) => {
-      if (!eventMatchesActiveSession(state, api, event)) return;
+      if (!eventMatchesActiveSession(state, api, event)) {
+        return;
+      }
       const status = statusFromEvent(event);
       if (status) {
         recordEventStatus(state, event, status);
@@ -410,7 +465,9 @@ const tui: TuiPlugin = async (api) => {
   disposers.push(
     ...metadataEventTypes.map((type) =>
       api.event.on(type, (event) => {
-        if (!eventMatchesActiveSession(state, api, event)) return;
+        if (!eventMatchesActiveSession(state, api, event)) {
+          return;
+        }
         reportStatus(state, spawnKmux, api, statusFromCurrentSession(state, api));
       }),
     ),
@@ -424,7 +481,9 @@ const tui: TuiPlugin = async (api) => {
 
   api.lifecycle.onDispose(async () => {
     clearInterval(timer);
-    for (const dispose of disposers) dispose();
+    for (const dispose of disposers) {
+      dispose();
+    }
     await kmuxCommands.drain();
   });
 };

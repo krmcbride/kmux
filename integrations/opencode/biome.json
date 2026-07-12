@@ -31,6 +31,7 @@
       "style": {
         "useBlockStatements": "error",
         "noNestedTernary": "error",
+        "noParameterAssign": "error",
         "useExplicitLengthCheck": "error"
       },
       "complexity": {

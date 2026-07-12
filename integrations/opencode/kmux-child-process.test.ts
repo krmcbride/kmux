@@ -41,4 +41,28 @@ describe("waitForKmuxChild", () => {
     childExited.resolve(143);
     expect(waiting).rejects.toThrow("kmux command timed out");
   });
+
+  test("escalates from SIGTERM to SIGKILL after the kill timeout", async () => {
+    const childExited = deferred<number>();
+    const forceKillCalled = deferred<void>();
+    const signals: Array<number | undefined> = [];
+    const waiting = waitForKmuxChild(
+      {
+        exited: childExited.promise,
+        kill(signal) {
+          signals.push(signal);
+          if (signal === 9) {
+            childExited.resolve(137);
+            forceKillCalled.resolve();
+          }
+        },
+      },
+      0,
+      0,
+    );
+
+    await forceKillCalled.promise;
+    expect(signals).toEqual([15, 9]);
+    expect(waiting).rejects.toThrow("kmux command timed out");
+  });
 });

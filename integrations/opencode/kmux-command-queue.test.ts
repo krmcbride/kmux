@@ -48,7 +48,9 @@ describe("KmuxCommandQueue", () => {
     const queue = new KmuxCommandQueue(async (command) => {
       const name = command[0] ?? "missing";
       calls.push(name);
-      if (name === "rejected") throw new Error("spawn failed");
+      if (name === "rejected") {
+        throw new Error("spawn failed");
+      }
       return name === "non-zero" ? 1 : 0;
     });
 

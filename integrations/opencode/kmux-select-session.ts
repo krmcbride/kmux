@@ -22,7 +22,9 @@ type HookPayload = {
 };
 
 function clean(value: unknown): string | undefined {
-  if (typeof value !== "string") return undefined;
+  if (typeof value !== "string") {
+    return undefined;
+  }
   const trimmed = value.trim();
   return trimmed || undefined;
 }
@@ -37,7 +39,9 @@ function optionalRecord(value: unknown): Record<string, unknown> | undefined {
 function parsePayload(input: string): HookPayload {
   const parsed: unknown = JSON.parse(input);
   const payload = optionalRecord(parsed);
-  if (!payload) throw new Error("kmux hook payload must be a JSON object");
+  if (!payload) {
+    throw new Error("kmux hook payload must be a JSON object");
+  }
   return payload;
 }
 
@@ -64,10 +68,14 @@ function serverUrl(): string | undefined {
 }
 
 function validHttpUrl(value: string | undefined): string | undefined {
-  if (!value) return undefined;
+  if (!value) {
+    return undefined;
+  }
   try {
     const url = new URL(value);
-    if (url.protocol !== "http:" && url.protocol !== "https:") return undefined;
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      return undefined;
+    }
     return url.toString();
   } catch {
     return undefined;
@@ -83,7 +91,9 @@ function selectionEndpoint(
   const basePath = endpoint.pathname.replace(/\/$/, "");
   endpoint.pathname = `${basePath}/tui/select-session`;
   endpoint.search = "";
-  if (directory) endpoint.searchParams.set("directory", directory);
+  if (directory) {
+    endpoint.searchParams.set("directory", directory);
+  }
   endpoint.searchParams.set("workspace", workspaceID);
   return endpoint;
 }
@@ -93,7 +103,9 @@ function authHeaders(): Record<string, string> {
     "Content-Type": "application/json",
   };
   const password = clean(Bun.env.OPENCODE_SERVER_PASSWORD);
-  if (!password) return headers;
+  if (!password) {
+    return headers;
+  }
 
   const username = clean(Bun.env.OPENCODE_SERVER_USERNAME) ?? "opencode";
   headers.Authorization = `Basic ${btoa(`${username}:${password}`)}`;
@@ -102,7 +114,9 @@ function authHeaders(): Record<string, string> {
 
 function timeoutMs(): number {
   const configured = clean(Bun.env.KMUX_OPENCODE_SELECT_TIMEOUT_MS);
-  if (!configured) return DEFAULT_TIMEOUT_MS;
+  if (!configured) {
+    return DEFAULT_TIMEOUT_MS;
+  }
   const parsed = Number(configured);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }
@@ -134,10 +148,14 @@ async function selectSession(
 
 async function main() {
   const payload = parsePayload(await Bun.stdin.text());
-  if (agentKind(payload) !== AGENT_KIND) return;
+  if (agentKind(payload) !== AGENT_KIND) {
+    return;
+  }
 
   const selectedSessionID = sessionID(payload);
-  if (!selectedSessionID) throw new Error("kmux hook payload is missing agent.session_id");
+  if (!selectedSessionID) {
+    throw new Error("kmux hook payload is missing agent.session_id");
+  }
 
   const workspaceID = selectedWorkspaceID(payload);
   if (!workspaceID) {

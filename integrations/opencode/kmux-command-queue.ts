@@ -35,7 +35,9 @@ export class KmuxCommandQueue {
   }
 
   drain(timeoutMs?: number): Promise<boolean> {
-    if (timeoutMs === undefined) return this.tail.then(() => true);
+    if (timeoutMs === undefined) {
+      return this.tail.then(() => true);
+    }
     return new Promise((resolve) => {
       const timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
       void this.tail.then(() => {
