@@ -7,13 +7,10 @@
  */
 
 import type { Plugin } from "@opencode-ai/plugin";
-import type {
-  GlobalEvent,
-  Message,
-  Provider,
-  Session,
-  SessionStatus,
-} from "@opencode-ai/sdk";
+import type { GlobalEvent, Message, Provider, Session, SessionStatus } from "@opencode-ai/sdk";
+
+import { waitForKmuxChild } from "./kmux-child-process";
+import { KmuxCommandQueue } from "./kmux-command-queue";
 
 type PluginInput = Parameters<Plugin>[0];
 type OpenCodeClient = PluginInput["client"];
@@ -42,6 +39,7 @@ declare const Bun: {
   env: Record<string, string | undefined>;
   spawn(input: { cmd: string[]; stdout?: "ignore"; stderr?: "ignore" }): {
     exited: Promise<number>;
+    kill(signal?: number): void;
   };
 };
 
@@ -49,6 +47,16 @@ const AGENT_KIND = "opencode";
 const PRODUCER_KIND = "server";
 const INITIAL_SESSION_LIMIT = 200;
 const REPORT_DEBOUNCE_MS = 150;
+const COMMAND_TIMEOUT_MS = 2000;
+
+function runKmux(cmd: ReadonlyArray<string>): Promise<number> {
+  const child = Bun.spawn({
+    cmd: [...cmd],
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return waitForKmuxChild(child, COMMAND_TIMEOUT_MS);
+}
 
 function responseData<T>(response: unknown): T | undefined {
   if (response && typeof response === "object" && "data" in response) {
@@ -71,9 +79,7 @@ function authHeaders(): Record<string, string> | undefined {
   return { Authorization: `Basic ${btoa(`${username}:${password}`)}` };
 }
 
-function statusFromSessionStatus(
-  status: SessionStatus | unknown,
-): KmuxStatus | undefined {
+function statusFromSessionStatus(status: SessionStatus | unknown): KmuxStatus | undefined {
   const statusType =
     typeof status === "object" && status !== null && "type" in status
       ? (status as { type?: unknown }).type
@@ -83,10 +89,7 @@ function statusFromSessionStatus(
   return undefined;
 }
 
-function statusFromEventType(
-  type: string,
-  properties: unknown,
-): KmuxStatus | undefined {
+function statusFromEventType(type: string, properties: unknown): KmuxStatus | undefined {
   switch (type) {
     case "session.status":
       return statusFromSessionStatus(
@@ -125,9 +128,7 @@ function statusPriority(status: KmuxStatus): number {
   }
 }
 
-function mostImportantStatus(
-  statuses: Iterable<KmuxStatus>,
-): KmuxStatus | undefined {
+function mostImportantStatus(statuses: Iterable<KmuxStatus>): KmuxStatus | undefined {
   let best: KmuxStatus = "clear";
   for (const status of statuses) {
     if (statusPriority(status) > statusPriority(best)) best = status;
@@ -142,10 +143,7 @@ function eventSessionID(properties: unknown): string | undefined {
 
   const info = (properties as { info?: unknown }).info;
   if (typeof info !== "object" || info === null) return undefined;
-  return (
-    clean((info as { sessionID?: unknown }).sessionID) ??
-    clean((info as { id?: unknown }).id)
-  );
+  return clean((info as { sessionID?: unknown }).sessionID) ?? clean((info as { id?: unknown }).id);
 }
 
 function eventSessionInfo(properties: unknown): SessionInfo | undefined {
@@ -173,9 +171,7 @@ function messageTokens(message: AssistantMessage): number | undefined {
   );
 }
 
-function isAssistantWithOutputTokens(
-  message: Message,
-): message is AssistantMessage {
+function isAssistantWithOutputTokens(message: Message): message is AssistantMessage {
   return message.role === "assistant" && message.tokens.output > 0;
 }
 
@@ -192,11 +188,7 @@ function sessionTokens(session: SessionInfo): number | undefined {
   const tokens = session.tokens;
   if (!tokens) return undefined;
   const total =
-    tokens.input +
-    tokens.output +
-    tokens.reasoning +
-    tokens.cache.read +
-    tokens.cache.write;
+    tokens.input + tokens.output + tokens.reasoning + tokens.cache.read + tokens.cache.write;
   return total > 0 ? total : undefined;
 }
 
@@ -208,15 +200,12 @@ class KmuxServerReporter {
   private readonly statuses = new Map<string, KmuxStatus>();
   private readonly lastReport = new Map<string, string>();
   private readonly reportedRoots = new Set<string>();
-  private readonly modelLimits = new Map<
-    string,
-    Promise<Map<string, number>>
-  >();
-  private readonly pendingReports = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
+  private readonly modelLimits = new Map<string, Promise<Map<string, number>>>();
+  private readonly pendingReports = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly reportRevisions = new Map<string, number>();
+  private nextReportRevision = 0;
   private readonly abort = new AbortController();
+  private readonly commandQueue = new KmuxCommandQueue(runKmux);
   private disposed = false;
 
   constructor(input: PluginInput) {
@@ -227,6 +216,7 @@ class KmuxServerReporter {
 
   async start() {
     await this.bootstrap();
+    if (this.disposed) return;
     void this.streamEvents();
   }
 
@@ -236,17 +226,17 @@ class KmuxServerReporter {
     for (const timer of this.pendingReports.values()) clearTimeout(timer);
     this.pendingReports.clear();
     for (const rootID of this.reportedRoots) this.clearReport(rootID);
+    await this.commandQueue.drain();
   }
 
   private async bootstrap() {
     const sessions = await this.bootstrapSessions();
+    if (this.disposed) return;
     for (const session of sessions) this.recordSession(session);
 
-    const statusResponse = await this.client.session
-      .status()
-      .catch(() => undefined);
-    const statuses =
-      responseData<Record<string, SessionStatus>>(statusResponse) ?? {};
+    const statusResponse = await this.client.session.status().catch(() => undefined);
+    if (this.disposed) return;
+    const statuses = responseData<Record<string, SessionStatus>>(statusResponse) ?? {};
     const rootIDs = new Set<string>();
     for (const [sessionID, status] of Object.entries(statuses)) {
       const kmuxStatus = statusFromSessionStatus(status);
@@ -297,9 +287,7 @@ class KmuxServerReporter {
   }
 
   private async handleGlobalEvent(event: GlobalEvent) {
-    const payload = event.payload as
-      | { type?: string; properties?: unknown }
-      | undefined;
+    const payload = event.payload as { type?: string; properties?: unknown } | undefined;
     if (!payload || payload.type === "sync" || !payload.type) return;
 
     const properties = "properties" in payload ? payload.properties : undefined;
@@ -341,11 +329,7 @@ class KmuxServerReporter {
     this.sessions.set(session.id, {
       ...previous,
       ...session,
-      directory:
-        clean(session.directory) ??
-        clean(fallbackDirectory) ??
-        previous?.directory ??
-        "",
+      directory: clean(session.directory) ?? clean(fallbackDirectory) ?? previous?.directory ?? "",
       workspaceID: clean(session.workspaceID),
       project: "project" in session ? session.project : previous?.project,
     });
@@ -356,20 +340,16 @@ class KmuxServerReporter {
     const deletedSessionIDs = new Set(
       [...this.sessions.keys()].filter(
         (storedSessionID) =>
-          storedSessionID === sessionID ||
-          this.hasAncestor(storedSessionID, sessionID),
+          storedSessionID === sessionID || this.hasAncestor(storedSessionID, sessionID),
       ),
     );
     deletedSessionIDs.add(sessionID);
     const deletedStatusIDs = [...this.statuses.keys()].filter(
       (statusSessionID) =>
-        deletedSessionIDs.has(statusSessionID) ||
-        this.hasAncestor(statusSessionID, sessionID),
+        deletedSessionIDs.has(statusSessionID) || this.hasAncestor(statusSessionID, sessionID),
     );
-    for (const deletedSessionID of deletedSessionIDs)
-      this.sessions.delete(deletedSessionID);
-    for (const statusSessionID of deletedStatusIDs)
-      this.statuses.delete(statusSessionID);
+    for (const deletedSessionID of deletedSessionIDs) this.sessions.delete(deletedSessionID);
+    for (const statusSessionID of deletedStatusIDs) this.statuses.delete(statusSessionID);
   }
 
   private hasAncestor(sessionID: string, ancestorID: string): boolean {
@@ -421,18 +401,21 @@ class KmuxServerReporter {
 
   private scheduleReport(rootID: string) {
     if (this.disposed) return;
+    const revision = ++this.nextReportRevision;
+    this.reportRevisions.set(rootID, revision);
     const existing = this.pendingReports.get(rootID);
     if (existing) clearTimeout(existing);
     this.pendingReports.set(
       rootID,
       setTimeout(() => {
         this.pendingReports.delete(rootID);
-        void this.reportRoot(rootID);
+        void this.reportRoot(rootID, revision);
       }, REPORT_DEBOUNCE_MS),
     );
   }
 
-  private async reportRoot(rootID: string) {
+  private async reportRoot(rootID: string, revision: number) {
+    if (this.disposed) return;
     const root = this.sessions.get(rootID);
     if (!root) return;
     const status = this.rootStatus(rootID);
@@ -443,6 +426,7 @@ class KmuxServerReporter {
 
     const title = clean(root.title) ?? clean(root.slug);
     const context = await this.contextUsage(root);
+    if (this.disposed || this.reportRevisions.get(rootID) !== revision) return;
     const directory = clean(root.directory) ?? clean(root.project?.worktree);
     const workspaceID = clean(root.workspaceID);
     const reportKey = JSON.stringify({
@@ -487,6 +471,7 @@ class KmuxServerReporter {
   }
 
   private clearReport(rootID: string, deleteSession = false) {
+    this.reportRevisions.delete(rootID);
     this.lastReport.delete(rootID);
     this.reportedRoots.delete(rootID);
     this.spawnKmux([
@@ -514,21 +499,15 @@ class KmuxServerReporter {
         },
       })
       .catch(() => undefined);
-    const messages = (
-      responseData<{ info: Message }[]>(messagesResponse) ?? []
-    ).map((message) => message.info);
+    const messages = (responseData<{ info: Message }[]>(messagesResponse) ?? []).map(
+      (message) => message.info,
+    );
     const lastAssistant = lastAssistantMessageWithTokens(messages);
-    const tokens = lastAssistant
-      ? messageTokens(lastAssistant)
-      : sessionTokens(root);
+    const tokens = lastAssistant ? messageTokens(lastAssistant) : sessionTokens(root);
     if (!tokens) return undefined;
 
     const limit = lastAssistant
-      ? await this.contextLimit(
-          root.directory,
-          lastAssistant.providerID,
-          lastAssistant.modelID,
-        )
+      ? await this.contextLimit(root.directory, lastAssistant.providerID, lastAssistant.modelID)
       : undefined;
     const pct = limit ? `${Math.round((tokens / limit) * 100)}%` : undefined;
     return pct ? `${formatNumber(tokens)} (${pct})` : formatNumber(tokens);
@@ -557,8 +536,7 @@ class KmuxServerReporter {
     const response = await this.client.config.providers(
       directory ? { query: { directory } } : undefined,
     );
-    const providers =
-      responseData<{ providers: Provider[] }>(response)?.providers ?? [];
+    const providers = responseData<{ providers: Provider[] }>(response)?.providers ?? [];
     const limits = new Map<string, number>();
     for (const provider of providers) {
       for (const [modelID, model] of Object.entries(provider.models)) {
@@ -570,11 +548,9 @@ class KmuxServerReporter {
   }
 
   private spawnKmux(cmd: string[]) {
-    try {
-      void Bun.spawn({ cmd, stdout: "ignore", stderr: "ignore" }).exited;
-    } catch {
-      // Keep OpenCode usable if kmux is unavailable in this server environment.
-    }
+    // Keep OpenCode usable if kmux is unavailable. Failed or non-zero commands
+    // remain best-effort, while later changed reports continue through the queue.
+    void this.commandQueue.enqueue(cmd);
   }
 }
 

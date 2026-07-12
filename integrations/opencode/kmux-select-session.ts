@@ -125,9 +125,7 @@ async function selectSession(
     });
     if (!response.ok) {
       const body = await response.text().catch(() => "");
-      throw new Error(
-        `OpenCode select-session failed: HTTP ${response.status} ${body}`.trim(),
-      );
+      throw new Error(`OpenCode select-session failed: HTTP ${response.status} ${body}`.trim());
     }
   } finally {
     clearTimeout(timeout);
@@ -139,22 +137,17 @@ async function main() {
   if (agentKind(payload) !== AGENT_KIND) return;
 
   const selectedSessionID = sessionID(payload);
-  if (!selectedSessionID)
-    throw new Error("kmux hook payload is missing agent.session_id");
+  if (!selectedSessionID) throw new Error("kmux hook payload is missing agent.session_id");
 
   const workspaceID = selectedWorkspaceID(payload);
   if (!workspaceID) {
-    console.error(
-      "OpenCode select-session skipped: selected session has no agent workspace ID",
-    );
+    console.error("OpenCode select-session skipped: selected session has no agent workspace ID");
     return;
   }
 
   const configuredServerUrl = serverUrl();
   if (!configuredServerUrl) {
-    console.error(
-      "OpenCode select-session skipped: OPENCODE_SERVER_URL is not set",
-    );
+    console.error("OpenCode select-session skipped: OPENCODE_SERVER_URL is not set");
     return;
   }
 

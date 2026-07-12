@@ -8,20 +8,32 @@
 
 import type { TuiPlugin } from "@opencode-ai/plugin/tui";
 
+import { waitForKmuxChild } from "./kmux-child-process";
+import { KmuxCommandQueue } from "./kmux-command-queue";
+
 type KmuxStatus = "working" | "waiting" | "done" | "clear";
 type TuiApi = Parameters<TuiPlugin>[0];
 type Message = ReturnType<TuiApi["state"]["session"]["messages"]>[number];
 type AssistantMessage = Extract<Message, { role: "assistant" }>;
+type SpawnKmux = (cmd: string[]) => void;
+type TuiReporterState = {
+  lastReportKey?: string;
+  lastRootSessionID?: string;
+  sessionStatus: Map<string, KmuxStatus>;
+  reportedProducerInstances: Map<string, string>;
+};
 
 declare const Bun: {
   env: Record<string, string | undefined>;
   spawn(input: { cmd: string[]; stdout?: "ignore"; stderr?: "ignore" }): {
     exited: Promise<number>;
+    kill(signal?: number): void;
   };
 };
 
 const AGENT_KIND = "opencode";
 const PRODUCER_KIND = "tui";
+const COMMAND_TIMEOUT_MS = 2000;
 
 const forwardedEventTypes = [
   "session.status",
@@ -34,17 +46,7 @@ const forwardedEventTypes = [
   "question.rejected",
 ] as const;
 
-const metadataEventTypes = [
-  "session.updated",
-  "message.updated",
-  "message.removed",
-] as const;
-
-let lastReportKey: string | undefined;
-let lastRootSessionID: string | undefined;
-let currentReportedSessionID: string | undefined;
-const sessionStatus = new Map<string, KmuxStatus>();
-const reportedProducerInstances = new Map<string, string>();
+const metadataEventTypes = ["session.updated", "message.updated", "message.removed"] as const;
 
 function clean(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
@@ -58,9 +60,7 @@ function envValue(name: string): string | undefined {
 
 function producerInstance(): string {
   const tmuxInstance =
-    envValue("KMUX_TMUX_SOCKET_NAME") ??
-    envValue("TMUX")?.split(",")[0] ??
-    "default";
+    envValue("KMUX_TMUX_SOCKET_NAME") ?? envValue("TMUX")?.split(",")[0] ?? "default";
   return `${tmuxInstance}/${envValue("TMUX_PANE") ?? "no-pane"}`;
 }
 
@@ -68,24 +68,18 @@ function pushArg(cmd: string[], flag: string, value: string | undefined) {
   if (value) cmd.push(flag, value);
 }
 
-function spawnKmux(cmd: string[]) {
-  try {
-    void Bun.spawn({
-      cmd,
-      stdout: "ignore",
-      stderr: "ignore",
-    }).exited;
-  } catch {
-    // Keep OpenCode usable if kmux is unavailable or this TUI is outside tmux.
-  }
+function runKmux(cmd: ReadonlyArray<string>): Promise<number> {
+  const child = Bun.spawn({
+    cmd: [...cmd],
+    stdout: "ignore",
+    stderr: "ignore",
+  });
+  return waitForKmuxChild(child, COMMAND_TIMEOUT_MS);
 }
 
-function clearSessionReport(sessionID: string) {
-  const instance =
-    reportedProducerInstances.get(sessionID) ?? producerInstance();
-  reportedProducerInstances.delete(sessionID);
-  if (currentReportedSessionID === sessionID)
-    currentReportedSessionID = undefined;
+function clearSessionReport(state: TuiReporterState, spawnKmux: SpawnKmux, sessionID: string) {
+  const instance = state.reportedProducerInstances.get(sessionID) ?? producerInstance();
+  state.reportedProducerInstances.delete(sessionID);
   spawnKmux([
     "kmux",
     "set-agent-status",
@@ -101,10 +95,7 @@ function clearSessionReport(sessionID: string) {
   ]);
 }
 
-function statusFromEvent(event: {
-  type: string;
-  properties?: unknown;
-}): KmuxStatus | undefined {
+function statusFromEvent(event: { type: string; properties?: unknown }): KmuxStatus | undefined {
   switch (event.type) {
     case "session.status": {
       const properties =
@@ -146,10 +137,11 @@ function eventSessionID(event: { properties?: unknown }): string | undefined {
 }
 
 function eventMatchesActiveSession(
+  state: TuiReporterState,
   api: TuiApi,
   event: { properties?: unknown },
 ): boolean {
-  const rootSessionID = activeSessionID(api);
+  const rootSessionID = activeSessionID(state, api);
   const sessionID = eventSessionID(event);
   if (!rootSessionID || !sessionID) return false;
   if (sessionID === rootSessionID) return true;
@@ -169,11 +161,12 @@ function eventMatchesActiveSession(
 }
 
 function recordEventStatus(
+  state: TuiReporterState,
   event: { properties?: unknown },
   status: KmuxStatus,
 ) {
   const sessionID = eventSessionID(event);
-  if (sessionID) sessionStatus.set(sessionID, status);
+  if (sessionID) state.sessionStatus.set(sessionID, status);
 }
 
 function statusPriority(status: KmuxStatus): number {
@@ -197,17 +190,17 @@ function mostImportantStatus(statuses: KmuxStatus[]): KmuxStatus {
   return best;
 }
 
-function sessionBelongsToRoot(
-  api: TuiApi,
-  sessionID: string,
-  rootSessionID: string,
-) {
+function sessionBelongsToRoot(api: TuiApi, sessionID: string, rootSessionID: string) {
   if (sessionID === rootSessionID) return true;
   return api.state.session.get(sessionID)?.parentID === rootSessionID;
 }
 
-function cachedFamilySessionIDs(api: TuiApi, rootSessionID: string): string[] {
-  return Array.from(sessionStatus.keys()).filter((sessionID) =>
+function cachedFamilySessionIDs(
+  state: TuiReporterState,
+  api: TuiApi,
+  rootSessionID: string,
+): string[] {
+  return Array.from(state.sessionStatus.keys()).filter((sessionID) =>
     sessionBelongsToRoot(api, sessionID, rootSessionID),
   );
 }
@@ -218,9 +211,7 @@ function formatNumber(num: number): string {
   return num.toString();
 }
 
-function isAssistantWithOutputTokens(
-  message: Message,
-): message is AssistantMessage {
+function isAssistantWithOutputTokens(message: Message): message is AssistantMessage {
   return message.role === "assistant" && message.tokens.output > 0;
 }
 
@@ -233,8 +224,8 @@ function lastAssistantWithOutputTokens(
   }
 }
 
-function sessionTitle(api: TuiApi): string | undefined {
-  const sessionID = activeSessionID(api);
+function sessionTitle(state: TuiReporterState, api: TuiApi): string | undefined {
+  const sessionID = activeSessionID(state, api);
   if (!sessionID) return undefined;
 
   const session = api.state.session.get(sessionID);
@@ -245,8 +236,8 @@ function sessionTitle(api: TuiApi): string | undefined {
   return slug || undefined;
 }
 
-function contextUsage(api: TuiApi): string | undefined {
-  const sessionID = activeSessionID(api);
+function contextUsage(state: TuiReporterState, api: TuiApi): string | undefined {
+  const sessionID = activeSessionID(state, api);
   if (!sessionID) return undefined;
 
   const messages = api.state.session.messages(sessionID);
@@ -261,46 +252,42 @@ function contextUsage(api: TuiApi): string | undefined {
     last.tokens.cache.write;
   if (tokens <= 0) return undefined;
 
-  const model = api.state.provider.find((item) => item.id === last.providerID)
-    ?.models[last.modelID];
+  const model = api.state.provider.find((item) => item.id === last.providerID)?.models[
+    last.modelID
+  ];
   const pct = model?.limit.context
     ? `${Math.round((tokens / model.limit.context) * 100)}%`
     : undefined;
   return pct ? `${formatNumber(tokens)} (${pct})` : formatNumber(tokens);
 }
 
-function activeSessionDirectory(
-  api: TuiApi,
-  sessionID: string,
-): string | undefined {
+function activeSessionDirectory(api: TuiApi, sessionID: string): string | undefined {
   const session = api.state.session.get(sessionID);
   return clean(session?.directory) ?? envValue("PWD");
 }
 
-function activeSessionWorkspaceID(
-  api: TuiApi,
-  sessionID: string,
-): string | undefined {
+function activeSessionWorkspaceID(api: TuiApi, sessionID: string): string | undefined {
   return clean(api.state.session.get(sessionID)?.workspaceID);
 }
 
-function reportStatus(api: TuiApi, status: KmuxStatus) {
-  const sessionID = activeSessionID(api) ?? lastRootSessionID;
+function reportStatus(
+  state: TuiReporterState,
+  spawnKmux: SpawnKmux,
+  api: TuiApi,
+  status: KmuxStatus,
+) {
+  const sessionID = activeSessionID(state, api) ?? state.lastRootSessionID;
   if (!sessionID) return;
 
   const deleting = status === "clear";
-  const title = deleting ? undefined : sessionTitle(api);
-  const context = deleting ? undefined : contextUsage(api);
+  const title = deleting ? undefined : sessionTitle(state, api);
+  const context = deleting ? undefined : contextUsage(state, api);
   const paneID = envValue("TMUX_PANE");
   const tmuxInstance = envValue("KMUX_TMUX_SOCKET_NAME");
-  const directory = deleting
-    ? undefined
-    : activeSessionDirectory(api, sessionID);
-  const workspaceID = deleting
-    ? undefined
-    : activeSessionWorkspaceID(api, sessionID);
+  const directory = deleting ? undefined : activeSessionDirectory(api, sessionID);
+  const workspaceID = deleting ? undefined : activeSessionWorkspaceID(api, sessionID);
   const instance = deleting
-    ? (reportedProducerInstances.get(sessionID) ?? producerInstance())
+    ? (state.reportedProducerInstances.get(sessionID) ?? producerInstance())
     : producerInstance();
   const reportKey = JSON.stringify({
     status,
@@ -313,8 +300,8 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     workspaceID,
     instance,
   });
-  if (lastReportKey === reportKey) return;
-  lastReportKey = reportKey;
+  if (state.lastReportKey === reportKey) return;
+  state.lastReportKey = reportKey;
 
   const cmd = ["kmux", "set-agent-status"];
   if (!deleting) cmd.push(status);
@@ -329,11 +316,10 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
     instance,
   );
   if (deleting) {
-    clearSessionReport(sessionID);
+    clearSessionReport(state, spawnKmux, sessionID);
     return;
   } else {
-    reportedProducerInstances.set(sessionID, instance);
-    currentReportedSessionID = sessionID;
+    state.reportedProducerInstances.set(sessionID, instance);
     pushArg(cmd, "--title", title);
     pushArg(cmd, "--context", context);
     pushArg(cmd, "--tmux-instance", tmuxInstance);
@@ -347,33 +333,29 @@ function reportStatus(api: TuiApi, status: KmuxStatus) {
 
 function activeRouteSessionID(api: TuiApi) {
   const current = api.route.current;
-  const sessionID =
-    current.name === "session" ? current.params?.sessionID : undefined;
+  const sessionID = current.name === "session" ? current.params?.sessionID : undefined;
   return typeof sessionID === "string" ? sessionID : undefined;
 }
 
-function activeSessionID(api: TuiApi) {
+function activeSessionID(state: TuiReporterState, api: TuiApi) {
   const sessionID = activeRouteSessionID(api);
-  if (!sessionID) return lastRootSessionID;
+  if (!sessionID) return state.lastRootSessionID;
 
   // Subagent routes have their own session IDs, but kmux should track the parent row.
   const session = api.state.session.get(sessionID);
   const rootSessionID = session?.parentID ?? sessionID;
-  lastRootSessionID = rootSessionID;
+  state.lastRootSessionID = rootSessionID;
   return rootSessionID;
 }
 
-function statusFromCurrentSession(api: TuiApi): KmuxStatus {
+function statusFromCurrentSession(state: TuiReporterState, api: TuiApi): KmuxStatus {
   if (!api.state.ready) return "clear";
 
-  const rootSessionID = activeSessionID(api);
+  const rootSessionID = activeSessionID(state, api);
   if (!rootSessionID) return "clear";
 
   const routeSessionID = activeRouteSessionID(api);
-  const sessionIDs = new Set([
-    ...cachedFamilySessionIDs(api, rootSessionID),
-    rootSessionID,
-  ]);
+  const sessionIDs = new Set([...cachedFamilySessionIDs(state, api, rootSessionID), rootSessionID]);
   if (routeSessionID && routeSessionID !== rootSessionID) {
     sessionIDs.add(routeSessionID);
   }
@@ -405,34 +387,45 @@ function statusFromCurrentSession(api: TuiApi): KmuxStatus {
 }
 
 const tui: TuiPlugin = async (api) => {
+  const state: TuiReporterState = {
+    sessionStatus: new Map(),
+    reportedProducerInstances: new Map(),
+  };
+  const kmuxCommands = new KmuxCommandQueue(runKmux);
+  const spawnKmux: SpawnKmux = (cmd) => {
+    // Keep OpenCode usable if kmux is unavailable. Failed or non-zero commands
+    // remain best-effort, while later changed reports continue through the queue.
+    void kmuxCommands.enqueue(cmd);
+  };
   const disposers = forwardedEventTypes.map((type) =>
     api.event.on(type, (event) => {
-      if (!eventMatchesActiveSession(api, event)) return;
+      if (!eventMatchesActiveSession(state, api, event)) return;
       const status = statusFromEvent(event);
       if (status) {
-        recordEventStatus(event, status);
-        reportStatus(api, statusFromCurrentSession(api));
+        recordEventStatus(state, event, status);
+        reportStatus(state, spawnKmux, api, statusFromCurrentSession(state, api));
       }
     }),
   );
   disposers.push(
     ...metadataEventTypes.map((type) =>
       api.event.on(type, (event) => {
-        if (!eventMatchesActiveSession(api, event)) return;
-        reportStatus(api, statusFromCurrentSession(api));
+        if (!eventMatchesActiveSession(state, api, event)) return;
+        reportStatus(state, spawnKmux, api, statusFromCurrentSession(state, api));
       }),
     ),
   );
 
-  reportStatus(api, statusFromCurrentSession(api));
+  reportStatus(state, spawnKmux, api, statusFromCurrentSession(state, api));
 
   const timer = setInterval(() => {
-    reportStatus(api, statusFromCurrentSession(api));
+    reportStatus(state, spawnKmux, api, statusFromCurrentSession(state, api));
   }, 300);
 
-  api.lifecycle.onDispose(() => {
+  api.lifecycle.onDispose(async () => {
     clearInterval(timer);
     for (const dispose of disposers) dispose();
+    await kmuxCommands.drain();
   });
 };
 

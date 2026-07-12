@@ -70,46 +70,49 @@ fn apply_observation_command_at(
 
 fn upsert_observation(store: &StateStore, update: ObservationUpdate, now: u64) -> Result<()> {
     let key = update.key.clone();
-    let previous = store.get_observation(&key)?;
-    let status_supplied = update.status.is_some();
-    let timing = next_observation_timing(previous.as_ref(), update.status, now);
-    let mut state = previous.unwrap_or_else(|| AgentObservationState {
-        key: key.clone(),
-        created_at: now,
-        status: None,
-        status_observed_at: None,
-        status_changed_at: None,
-        working_elapsed_secs: 0,
-        observed_at: now,
-        title: None,
-        context: None,
-        metadata: BTreeMap::new(),
-        metadata_cleared: BTreeSet::new(),
-        target: AgentLocationHints::default(),
-    });
+    let state_key = key.clone();
+    let inferred_repo = infer_repo_metadata_from_paths(&[update.target.directory.as_deref()]);
+    store.mutate_observation(&key, move |previous| {
+        let status_supplied = update.status.is_some();
+        let timing = next_observation_timing(previous.as_ref(), update.status, now);
+        let mut state = previous.unwrap_or_else(|| AgentObservationState {
+            key: state_key.clone(),
+            created_at: now,
+            status: None,
+            status_observed_at: None,
+            status_changed_at: None,
+            working_elapsed_secs: 0,
+            observed_at: now,
+            title: None,
+            context: None,
+            metadata: BTreeMap::new(),
+            metadata_cleared: BTreeSet::new(),
+            target: AgentLocationHints::default(),
+        });
 
-    state.key = key;
-    if status_supplied {
-        state.status = update.status;
-        state.status_observed_at = Some(now);
-    }
-    state.status_changed_at = timing.status_changed_at;
-    state.working_elapsed_secs = timing.working_elapsed_secs;
-    state.observed_at = now;
-    if let Some(title) = update.title {
-        state.title = Some(title);
-    }
-    if let Some(context) = update.context {
-        state.context = Some(context);
-    }
-    update
-        .metadata
-        .apply_to(&mut state.metadata, &mut state.metadata_cleared);
-    update.target.apply_to(&mut state.target);
-    clear_obsolete_producer_hints(&mut state.target);
-    enrich_missing_repo_metadata(&mut state.target);
+        state.key = state_key;
+        if status_supplied {
+            state.status = update.status;
+            state.status_observed_at = Some(now);
+        }
+        state.status_changed_at = timing.status_changed_at;
+        state.working_elapsed_secs = timing.working_elapsed_secs;
+        state.observed_at = now;
+        if let Some(title) = update.title {
+            state.title = Some(title);
+        }
+        if let Some(context) = update.context {
+            state.context = Some(context);
+        }
+        update
+            .metadata
+            .apply_to(&mut state.metadata, &mut state.metadata_cleared);
+        update.target.apply_to(&mut state.target);
+        clear_obsolete_producer_hints(&mut state.target);
+        apply_inferred_repo_metadata(&mut state.target, inferred_repo);
 
-    store.upsert_observation(&state)
+        Ok(Some(state))
+    })
 }
 
 impl MetadataUpdate {
@@ -155,11 +158,10 @@ fn apply_optional(target: &mut Option<String>, value: Option<String>) {
 
 // Fill missing repo fields opportunistically from path hints so sparse producer
 // reports still show useful repo/branch labels.
-fn enrich_missing_repo_metadata(target: &mut AgentLocationHints) {
-    let metadata = infer_repo_metadata_from_paths(&[
-        target.directory.as_deref(),
-        target.git_worktree_path.as_deref(),
-    ]);
+fn apply_inferred_repo_metadata(
+    target: &mut AgentLocationHints,
+    metadata: crate::paths::RepoMetadata,
+) {
     if target.git_repo_path.is_none() {
         target.git_repo_path = metadata.repo_path.clone();
     }
