@@ -12,6 +12,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
 use directories::BaseDirs;
+use sha2::{Digest, Sha256};
 
 use crate::telemetry;
 
@@ -284,22 +285,23 @@ fn delete_file_if_exists(path: &Path) -> Result<()> {
     }
 }
 
-// Filenames encode every identity component so multiple producers can report
-// the same logical session without overwriting each other.
+// Keep arbitrary external identities out of filesystem component lengths. The
+// persisted JSON remains the readable source of truth and is validated against
+// the requested key when loaded.
 fn observation_filename(key: &AgentObservationKey) -> String {
-    format!(
-        "{}__{}__{}__{}.json",
-        filename_component(&key.session.agent_kind),
-        filename_component(&key.session.session_id),
-        filename_component(&key.producer_kind),
-        filename_component(&key.producer_instance),
-    )
-}
-
-// Hex-encode arbitrary key text into portable filename components without
-// introducing collisions between escaped and literal separator characters.
-fn filename_component(value: &str) -> String {
-    value.bytes().map(|byte| format!("{byte:02x}")).collect()
+    let mut digest = Sha256::new();
+    digest.update(b"kmux-agent-observation-key-v1\0");
+    for component in [
+        &key.session.agent_kind,
+        &key.session.session_id,
+        &key.producer_kind,
+        &key.producer_instance,
+    ] {
+        let bytes = component.as_bytes();
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(bytes);
+    }
+    format!("v1-{:x}.json", digest.finalize())
 }
 
 #[cfg(test)]
@@ -358,16 +360,50 @@ mod tests {
     }
 
     #[test]
-    fn observation_filename_components_are_collision_safe() -> Result<()> {
+    fn observation_filenames_are_stable_and_fixed_length() {
+        let key = test_observation_key("ses_123", "server", "http://127.0.0.1:4096");
+        let filename = observation_filename(&key);
+
+        assert_eq!(filename.len(), 72);
+        assert!(filename.starts_with("v1-"));
+        assert!(filename.ends_with(".json"));
+        assert_eq!(
+            filename,
+            "v1-f1877b65b83300e8ea777010f7712189be6590120c1822b2fa699c6598f69b33.json"
+        );
+    }
+
+    #[test]
+    fn observation_filename_components_have_unambiguous_boundaries() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
-        let escaped = test_observation_key("a/b", "server", "default");
-        let literal = test_observation_key("a_x2Fb", "server", "default");
+        let first = test_observation_key("a", "bc", "default");
+        let second = test_observation_key("ab", "c", "default");
 
         assert_ne!(
-            store.observation_path(&escaped),
-            store.observation_path(&literal)
+            store.observation_path(&first),
+            store.observation_path(&second)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn long_observation_keys_round_trip_with_bounded_filenames() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let state = test_observation("server", &"instance".repeat(512), AgentStatus::Working, 100);
+        let path = store.observation_path(&state.key);
+
+        assert_eq!(
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(str::len),
+            Some(72)
+        );
+        store.upsert_observation(&state)?;
+        assert_eq!(store.list_observations()?, vec![state.clone()]);
+        store.delete_observation(&state.key)?;
+        assert!(store.list_observations()?.is_empty());
         Ok(())
     }
 
@@ -387,13 +423,13 @@ mod tests {
     }
 
     #[test]
-    fn non_canonical_observation_filenames_are_pruned() -> Result<()> {
+    fn old_reversible_observation_filenames_are_pruned() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
         let state = test_observation("server", "default", AgentStatus::Working, 100);
         let non_canonical_path = store
             .observations_dir()
-            .join("opencode__ses_root__server__default.json");
+            .join("6f70656e636f6465__7365735f726f6f74__736572766572__64656661756c74.json");
         fs::write(&non_canonical_path, serde_json::to_vec_pretty(&state)?)?;
 
         assert!(store.list_observations()?.is_empty());
