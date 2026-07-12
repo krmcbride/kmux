@@ -35,8 +35,8 @@
                 $out/share/kmux/integrations/opencode/README.md
               install -Dm0644 integrations/opencode/kmux-status-server.ts \
                 $out/share/kmux/integrations/opencode/kmux-status-server.ts
-              install -Dm0644 integrations/opencode/kmux-status-tui.ts \
-                $out/share/kmux/integrations/opencode/kmux-status-tui.ts
+              install -Dm0644 integrations/opencode/kmux-server-reporter.ts \
+                $out/share/kmux/integrations/opencode/kmux-server-reporter.ts
               install -Dm0644 integrations/opencode/kmux-command-queue.ts \
                 $out/share/kmux/integrations/opencode/kmux-command-queue.ts
               install -Dm0644 integrations/opencode/kmux-child-process.ts \

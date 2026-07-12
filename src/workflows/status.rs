@@ -78,8 +78,8 @@ fn observation_command_from_args(args: cli::SetAgentStatusArgs) -> Result<Observ
     })))
 }
 
-// The observation key identifies both the logical agent session and the producer
-// that reported it, so TUI and server observations can coexist for one session.
+// The observation key identifies both the logical agent session and one independent
+// reporter, allowing partial observations from multiple integrations to coexist.
 fn observation_key(args: &cli::SetAgentStatusArgs) -> Result<AgentObservationKey> {
     Ok(AgentObservationKey {
         session: AgentSessionKey {

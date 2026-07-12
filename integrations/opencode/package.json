@@ -8,7 +8,7 @@
     "lint": "biome lint .",
     "test": "bun test",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "bundle:check": "mkdir -p /tmp/opencode/kmux-plugin-check && bun build kmux-status-server.ts --target bun --external @opencode-ai/plugin --external @opencode-ai/sdk --outfile /tmp/opencode/kmux-plugin-check/kmux-status-server-check.js && bun build kmux-status-tui.ts --target bun --external @opencode-ai/plugin/tui --outfile /tmp/opencode/kmux-plugin-check/kmux-status-tui-check.js && bun build kmux-select-session.ts --target bun --outfile /tmp/opencode/kmux-plugin-check/kmux-select-session-check.js",
+    "bundle:check": "mkdir -p /tmp/opencode/kmux-plugin-check && bun build kmux-status-server.ts --target bun --external @opencode-ai/plugin --external @opencode-ai/sdk --outfile /tmp/opencode/kmux-plugin-check/kmux-status-server-check.js && bun build kmux-select-session.ts --target bun --outfile /tmp/opencode/kmux-plugin-check/kmux-select-session-check.js",
     "check": "bun run fmt:check && bun run test && bun run typecheck && bun run bundle:check"
   },
   "devDependencies": {

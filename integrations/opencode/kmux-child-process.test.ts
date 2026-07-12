@@ -39,7 +39,7 @@ describe("waitForKmuxChild", () => {
     expect(settled).toBe(false);
 
     childExited.resolve(143);
-    expect(waiting).rejects.toThrow("kmux command timed out");
+    await expect(waiting).rejects.toThrow("kmux command timed out");
   });
 
   test("escalates from SIGTERM to SIGKILL after the kill timeout", async () => {
@@ -63,6 +63,6 @@ describe("waitForKmuxChild", () => {
 
     await forceKillCalled.promise;
     expect(signals).toEqual([15, 9]);
-    expect(waiting).rejects.toThrow("kmux command timed out");
+    await expect(waiting).rejects.toThrow("kmux command timed out");
   });
 });
