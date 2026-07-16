@@ -77,7 +77,7 @@ fn set_agent_status_help_documents_integration_contract() {
         .stdout(predicate::str::contains("--session-id"))
         .stdout(predicate::str::contains("--producer-kind"))
         .stdout(predicate::str::contains("--producer-instance"))
-        .stdout(predicate::str::contains("metadata or target hints"))
+        .stdout(predicate::str::contains("title, context, or target hints"))
         .stdout(predicate::str::contains("working"))
         .stdout(predicate::str::contains("waiting"))
         .stdout(predicate::str::contains("done"))
@@ -86,8 +86,8 @@ fn set_agent_status_help_documents_integration_contract() {
         ))
         .stdout(predicate::str::contains("Delete all producer observations"))
         .stdout(predicate::str::contains("--tmux-instance"))
-        .stdout(predicate::str::contains("--agent-meta"))
-        .stdout(predicate::str::contains("--clear-agent-meta"))
+        .stdout(predicate::str::contains("--agent-meta").not())
+        .stdout(predicate::str::contains("--clear-agent-meta").not())
         .stdout(predicate::str::contains("--git-repo-name"))
         .stdout(predicate::str::contains("--tmux-pane-id").not())
         .stdout(predicate::str::contains("--tmux-window-id").not())
@@ -237,12 +237,14 @@ fn removed_add_base_flag_fails_clearly() {
 
 #[test]
 fn removed_set_agent_status_producer_flags_fail_clearly() {
-    for flag in [
-        "--agent-workspace-id",
-        "--clear-agent-workspace-id",
-        "--git-worktree-path",
-        "--tmux-window-id",
-        "--tmux-pane-id",
+    for (flag, value) in [
+        ("--agent-workspace-id", "wrk_example"),
+        ("--clear-agent-workspace-id", "wrk_example"),
+        ("--git-worktree-path", "/repo/project-alpha"),
+        ("--tmux-window-id", "@1"),
+        ("--tmux-pane-id", "%1"),
+        ("--agent-meta", "workspace_id=wrk_example"),
+        ("--clear-agent-meta", "workspace_id"),
     ] {
         Command::cargo_bin("kmux")
             .expect("kmux binary should be available")
@@ -257,6 +259,7 @@ fn removed_set_agent_status_producer_flags_fail_clearly() {
                 "--producer-instance",
                 "default/%1",
                 flag,
+                value,
             ])
             .assert()
             .failure()

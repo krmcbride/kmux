@@ -104,7 +104,7 @@ pub struct StatusArgs {
 
 #[derive(Debug, Args)]
 pub struct SetAgentStatusArgs {
-    /// New kmux status. Must be one of the listed values; omit when updating only metadata or target hints.
+    /// New kmux status. Must be one of the listed values; omit when updating only title, context, or target hints.
     #[arg(value_enum)]
     pub status: Option<AgentStatus>,
 
@@ -143,14 +143,6 @@ pub struct SetAgentStatusArgs {
     /// Optional tmux instance hint for reports that know which tmux server they observed.
     #[arg(long)]
     pub tmux_instance: Option<String>,
-
-    /// Agent-specific metadata entry in KEY=VALUE form; may be repeated.
-    #[arg(long, value_name = "KEY=VALUE")]
-    pub agent_meta: Vec<String>,
-
-    /// Clear a previously reported agent-specific metadata key; may be repeated.
-    #[arg(long, value_name = "KEY")]
-    pub clear_agent_meta: Vec<String>,
 
     /// Optional Git repository/project display hint; arbitrary text supplied by the integration.
     #[arg(long)]

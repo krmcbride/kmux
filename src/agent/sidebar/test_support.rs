@@ -57,7 +57,6 @@ pub(super) fn report_state(
         observed_at: status_changed_at,
         title: None,
         context: None,
-        metadata: Default::default(),
         target: ResolvedAgentTarget {
             tmux_instance: Some("test".to_owned()),
             tmux_pane_id: Some(pane_id.to_owned()),

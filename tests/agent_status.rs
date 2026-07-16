@@ -419,77 +419,6 @@ fn disabled_set_agent_status_does_not_write_observation() -> Result<()> {
 }
 
 #[test]
-fn set_agent_status_persists_agent_metadata() -> Result<()> {
-    let temp = TempDir::new()?;
-    let config_home = write_config(temp.path(), "")?;
-    let cwd = temp.path().join("workspace");
-    fs::create_dir(&cwd)?;
-
-    Command::cargo_bin("kmux")?
-        .current_dir(&cwd)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .args(set_opencode_status_args(
-            Some("working"),
-            "ses_workspace_scope",
-            "server",
-            "http://127.0.0.1:4096",
-            &[
-                ("--agent-meta", "workspace_id=wrk_01KTEST"),
-                ("--directory", cwd.to_str().unwrap_or_default()),
-            ],
-        ))
-        .assert()
-        .success();
-
-    let report = agent_observation_for_key(
-        &config_home,
-        "opencode",
-        "ses_workspace_scope",
-        "server",
-        "http://127.0.0.1:4096",
-    )?;
-    assert_eq!(
-        report
-            .pointer("/metadata/workspace_id")
-            .and_then(serde_json::Value::as_str),
-        Some("wrk_01KTEST")
-    );
-
-    let mut clear_args = set_opencode_status_args(
-        Some("working"),
-        "ses_workspace_scope",
-        "server",
-        "http://127.0.0.1:4096",
-        &[],
-    );
-    clear_args.push("--clear-agent-meta".to_owned());
-    clear_args.push("workspace_id".to_owned());
-
-    Command::cargo_bin("kmux")?
-        .current_dir(&cwd)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
-        .env_remove("TMUX")
-        .env_remove("TMUX_PANE")
-        .args(clear_args)
-        .assert()
-        .success();
-
-    let cleared = agent_observation_for_key(
-        &config_home,
-        "opencode",
-        "ses_workspace_scope",
-        "server",
-        "http://127.0.0.1:4096",
-    )?;
-    assert!(cleared.pointer("/metadata/workspace_id").is_none());
-    Ok(())
-}
-
-#[test]
 fn set_agent_status_persists_non_opencode_agent_kind() -> Result<()> {
     let temp = TempDir::new()?;
     let config_home = write_config(temp.path(), "")?;
@@ -611,7 +540,7 @@ fn explicit_set_agent_status_does_not_inherit_current_tmux_pane() -> Result<()> 
 }
 
 #[test]
-fn explicit_set_agent_status_preserves_timing_when_metadata_changes() -> Result<()> {
+fn explicit_set_agent_status_preserves_timing_when_title_changes() -> Result<()> {
     let temp = TempDir::new()?;
     let config_home = write_config(temp.path(), "")?;
     let cwd = temp.path().join("workspace");
@@ -628,7 +557,7 @@ fn explicit_set_agent_status_preserves_timing_when_metadata_changes() -> Result<
             "ses_parent",
             "server",
             "http://127.0.0.1:4096",
-            &[("--agent-meta", "workspace_id=wrk_old")],
+            &[("--title", "Initial title")],
         ))
         .assert()
         .success();
@@ -649,11 +578,11 @@ fn explicit_set_agent_status_preserves_timing_when_metadata_changes() -> Result<
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .args(set_opencode_status_args(
-            Some("working"),
+            None,
             "ses_parent",
             "server",
             "http://127.0.0.1:4096",
-            &[("--agent-meta", "workspace_id=wrk_new")],
+            &[("--title", "Updated title")],
         ))
         .assert()
         .success();
@@ -668,12 +597,7 @@ fn explicit_set_agent_status_preserves_timing_when_metadata_changes() -> Result<
     let second_changed = state_timestamp(&second, "status_changed_at")?;
     assert_eq!(second_changed, first_changed);
     assert_eq!(state_u64(&second, "working_elapsed_secs")?, 0);
-    assert_eq!(
-        second
-            .pointer("/metadata/workspace_id")
-            .and_then(serde_json::Value::as_str),
-        Some("wrk_new")
-    );
+    assert_eq!(second["title"].as_str(), Some("Updated title"));
     Ok(())
 }
 

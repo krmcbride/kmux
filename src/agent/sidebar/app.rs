@@ -152,9 +152,7 @@ impl SidebarApp {
             SidebarJumpExecution::Succeeded(outcome) => {
                 let outcome = *outcome;
                 self.reset_after_successful_jump(&outcome.row);
-                if let Some(error) = outcome.hook_error {
-                    self.last_error = Some(format!("hook failed: {error}"));
-                } else if let Some(warning) = outcome.persistence_warning {
+                if let Some(warning) = outcome.persistence_warning {
                     self.last_error = Some(warning);
                 } else {
                     self.last_error = None;
@@ -434,12 +432,7 @@ impl SidebarApp {
             crate::agent::sidebar::test_support::test_icons(),
             crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
         );
-        let actions = SidebarActions::new(
-            tmux,
-            store,
-            crate::config::StatusIcons::default(),
-            Vec::new(),
-        );
+        let actions = SidebarActions::new(tmux, store, crate::config::StatusIcons::default());
         let mut app = Self {
             rows_query,
             actions,
@@ -477,9 +470,7 @@ mod tests {
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, agent_state, report_state, row_from_view, set_workspace,
     };
-    use crate::config::{
-        DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, SidebarSelectionHookConfig, StatusIcons,
-    };
+    use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
     use crate::state::{AgentSessionKey, AgentStatus};
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
     use anyhow::Result;
@@ -709,12 +700,7 @@ mod tests {
             crate::agent::sidebar::test_support::test_icons(),
             DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
         );
-        let actions = SidebarActions::new(
-            fixture.tmux.clone(),
-            store,
-            StatusIcons::default(),
-            Vec::new(),
-        );
+        let actions = SidebarActions::new(fixture.tmux.clone(), store, StatusIcons::default());
         let mut app = SidebarApp::new(
             rows_query,
             actions,
@@ -1208,37 +1194,8 @@ mod tests {
     }
 
     #[test]
-    fn jump_failure_does_not_run_selection_hooks() -> Result<()> {
+    fn no_jump_target_reports_error() -> Result<()> {
         let dir = tempdir()?;
-        let marker = dir.path().join("marker");
-        let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
-            100,
-        )];
-        let mut app = SidebarApp::test(Some("not-a-window"), rows);
-        app.actions
-            .set_selection_hooks_for_test(vec![SidebarSelectionHookConfig {
-                command: format!("touch '{}'", marker.display()),
-                agent_kind: Some("opencode".to_owned()),
-                producer_kind: None,
-                timeout_ms: Some(1000),
-            }]);
-
-        app.jump_to_selected();
-
-        assert!(!marker.exists());
-        assert!(!app.should_quit());
-        assert!(
-            app.last_error()
-                .is_some_and(|error| error.contains("jump failed"))
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn no_jump_target_reports_error_and_skips_selection_hooks() -> Result<()> {
-        let dir = tempdir()?;
-        let marker = dir.path().join("marker");
         let rows = vec![no_jump_row(
             "ses_no_jump",
             "No jump",
@@ -1246,17 +1203,9 @@ mod tests {
         )];
         let mut app = SidebarApp::test(None, rows);
         app.select_index_manual(0);
-        app.actions
-            .set_selection_hooks_for_test(vec![SidebarSelectionHookConfig {
-                command: format!("touch '{}'", marker.display()),
-                agent_kind: Some("opencode".to_owned()),
-                producer_kind: None,
-                timeout_ms: Some(1000),
-            }]);
 
         app.jump_to_selected();
 
-        assert!(!marker.exists());
         assert!(!app.should_quit());
         assert!(
             app.last_error()

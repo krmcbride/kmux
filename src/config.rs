@@ -9,8 +9,6 @@ use unicode_width::UnicodeWidthStr;
 pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
 /// Default age after which completed sidebar rows switch to the idle style.
 pub const DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS: u64 = 30 * 60;
-/// Default maximum time a sidebar selection hook may run before kmux stops it.
-pub const DEFAULT_SIDEBAR_SELECTION_HOOK_TIMEOUT_MS: u64 = 1000;
 
 const DEFAULT_SIDEBAR_MIN_WIDTH: u16 = 36;
 const DEFAULT_SIDEBAR_WIDTH_PERCENT: u16 = 20;
@@ -189,11 +187,10 @@ pub struct PaneConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
 #[serde(default, deny_unknown_fields)]
-/// Bounded sidebar sizing, idle-row behavior, and selection hooks.
+/// Bounded sidebar sizing and idle-row behavior.
 pub struct SidebarConfig {
     pub width: SidebarWidth,
     pub idle_after_seconds: Option<u64>,
-    pub selection_hooks: Vec<SidebarSelectionHookConfig>,
 }
 
 impl SidebarConfig {
@@ -207,9 +204,6 @@ impl SidebarConfig {
         self.width.validate()?;
         if self.idle_after_seconds == Some(0) {
             bail!("sidebar.idle_after_seconds must be greater than zero");
-        }
-        for hook in &self.selection_hooks {
-            hook.validate()?;
         }
         Ok(())
     }
@@ -247,48 +241,6 @@ impl SidebarWidth {
         }
         if self.min > self.max {
             bail!("sidebar.width.min must not exceed sidebar.width.max");
-        }
-        Ok(())
-    }
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-/// Shell command and filters for a sidebar row selection hook.
-pub struct SidebarSelectionHookConfig {
-    pub command: String,
-    pub agent_kind: Option<String>,
-    pub producer_kind: Option<String>,
-    pub timeout_ms: Option<u64>,
-}
-
-impl SidebarSelectionHookConfig {
-    /// Return the configured timeout or the project default.
-    pub fn timeout_ms(&self) -> u64 {
-        self.timeout_ms
-            .unwrap_or(DEFAULT_SIDEBAR_SELECTION_HOOK_TIMEOUT_MS)
-    }
-
-    fn validate(&self) -> Result<()> {
-        if self.command.trim().is_empty() {
-            bail!("sidebar.selection_hooks.command must not be empty");
-        }
-        if self
-            .agent_kind
-            .as_deref()
-            .is_some_and(|agent_kind| agent_kind.trim().is_empty())
-        {
-            bail!("sidebar.selection_hooks.agent_kind must not be empty");
-        }
-        if self
-            .producer_kind
-            .as_deref()
-            .is_some_and(|producer_kind| producer_kind.trim().is_empty())
-        {
-            bail!("sidebar.selection_hooks.producer_kind must not be empty");
-        }
-        if self.timeout_ms == Some(0) {
-            bail!("sidebar.selection_hooks.timeout_ms must be greater than zero");
         }
         Ok(())
     }
@@ -403,7 +355,6 @@ sidebar:
             }
         );
         assert_eq!(config.sidebar.idle_after_seconds(), 900);
-        assert!(config.sidebar.selection_hooks.is_empty());
     }
 
     #[test]
@@ -475,51 +426,11 @@ panes:
     }
 
     #[test]
-    fn parses_sidebar_selection_hooks() {
-        let config = Config::from_yaml_str(
-            r#"
-sidebar:
-  selection_hooks:
-    - command: ~/.config/kmux/hooks/opencode-select-session
-      agent_kind: opencode
-      producer_kind: server
-      timeout_ms: 1500
-    - command: notify-send kmux
-"#,
-        )
-        .expect("sidebar selection hooks should parse");
+    fn rejects_removed_sidebar_selection_hooks() {
+        let error = Config::from_yaml_str("sidebar: {selection_hooks: [{command: notify-send}]}\n")
+            .expect_err("removed selection hooks should fail");
 
-        assert_eq!(config.sidebar.selection_hooks.len(), 2);
-        assert_eq!(
-            config.sidebar.selection_hooks[0].command,
-            "~/.config/kmux/hooks/opencode-select-session"
-        );
-        assert_eq!(
-            config.sidebar.selection_hooks[0].agent_kind.as_deref(),
-            Some("opencode")
-        );
-        assert_eq!(
-            config.sidebar.selection_hooks[0].producer_kind.as_deref(),
-            Some("server")
-        );
-        assert_eq!(config.sidebar.selection_hooks[0].timeout_ms(), 1500);
-        assert_eq!(
-            config.sidebar.selection_hooks[1].timeout_ms(),
-            DEFAULT_SIDEBAR_SELECTION_HOOK_TIMEOUT_MS
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_sidebar_selection_hooks() {
-        for yaml in [
-            "sidebar: {selection_hooks: [{command: ''}]}\n",
-            "sidebar: {selection_hooks: [{command: run, agent_kind: ''}]}\n",
-            "sidebar: {selection_hooks: [{command: run, producer_kind: ''}]}\n",
-            "sidebar: {selection_hooks: [{command: run, timeout_ms: 0}]}\n",
-        ] {
-            let error = Config::from_yaml_str(yaml).expect_err("invalid hook should fail");
-            assert!(error.to_string().contains("sidebar.selection_hooks"));
-        }
+        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Timing derivation for agent observation updates.
 //!
-//! Producers may send partial metadata-only updates or repeated statuses, so this
+//! Producers may send partial statusless updates or repeated statuses, so this
 //! module computes the persisted status-change time and accumulated working
 //! duration from the previous observation plus the incoming status.
 
@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_only_updates_preserve_previous_timing() {
+    fn statusless_updates_preserve_previous_timing() {
         let observation = test_observation("tui", "default/%1", AgentStatus::Working, 300);
 
         let timing = next_observation_timing(Some(&observation), None, 400);
@@ -149,8 +149,6 @@ mod tests {
             observed_at: status_changed_at,
             title: None,
             context: None,
-            metadata: Default::default(),
-            metadata_cleared: Default::default(),
             target: AgentLocationHints {
                 kmux_workspace_slug: Some("feature".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature".to_owned()),

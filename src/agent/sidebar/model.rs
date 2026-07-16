@@ -4,9 +4,7 @@
 //! rows with stable identities, status-derived icons, elapsed-time labels, and
 //! compact primary/secondary text for the renderer.
 
-use std::collections::BTreeMap;
-
-use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentTarget};
+use crate::agent::sessions::AgentTmuxTarget;
 use crate::agent::workspace_activity::WorkspaceActivityRow;
 use crate::config::StatusIcons;
 use crate::state::{AgentSessionKey, AgentStatus};
@@ -58,22 +56,12 @@ impl SidebarRowIdentity {
 /// Non-display selected-session data carried with a row for sidebar actions.
 pub(super) struct SidebarRowSelection {
     pub(super) key: AgentSessionKey,
-    pub(super) status: AgentStatus,
-    pub(super) title: Option<String>,
-    pub(super) context: Option<String>,
-    pub(super) metadata: BTreeMap<String, String>,
-    pub(super) target: ResolvedAgentTarget,
 }
 
 impl SidebarRowSelection {
     fn from_activity(row: &WorkspaceActivityRow) -> Self {
         Self {
             key: row.session.clone(),
-            status: row.status,
-            title: row.title.clone(),
-            context: row.context.clone(),
-            metadata: row.metadata.clone(),
-            target: row.target.clone(),
         }
     }
 }

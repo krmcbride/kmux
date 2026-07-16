@@ -10,10 +10,6 @@ topology, status, title, context usage, directory, and deletion are reported by
 matches the worktree to live tmux state, and displays one primary agent row per
 worktree. No TUI plugin or producer-supplied pane identity is required.
 
-`kmux-select-session.ts` remains a separate experimental selection-hook reference.
-The status plugin does not emit OpenCode workspace metadata for it and does not
-require it to be installed.
-
 ## Installation
 
 The server entrypoint imports three adjacent runtime modules, so installations must

@@ -1,10 +1,6 @@
-use std::collections::{BTreeMap, BTreeSet};
+use anyhow::{Result, anyhow};
 
-use anyhow::{Result, anyhow, bail};
-
-use crate::agent::observations::{
-    LocationUpdate, MetadataUpdate, ObservationCommand, ObservationUpdate,
-};
+use crate::agent::observations::{LocationUpdate, ObservationCommand, ObservationUpdate};
 use crate::agent::sessions::session_views;
 use crate::agent::workspace_activity::workspace_activity_rows;
 use crate::agent::{self, status};
@@ -60,14 +56,11 @@ fn observation_command_from_args(args: cli::SetAgentStatusArgs) -> Result<Observ
     if args.delete {
         return Ok(ObservationCommand::DeleteObservation(key));
     }
-    let metadata = metadata_update_from_args(&args)?;
-
     Ok(ObservationCommand::Upsert(Box::new(ObservationUpdate {
         key,
         status: args.status.map(stored_status),
         title: clean_optional(args.title),
         context: clean_optional(args.context),
-        metadata,
         target: LocationUpdate {
             tmux_instance: clean_optional(args.tmux_instance),
             git_repo_name: clean_optional(args.git_repo_name),
@@ -99,42 +92,6 @@ fn stored_status(status: cli::AgentStatus) -> StoredAgentStatus {
     }
 }
 
-fn metadata_update_from_args(args: &cli::SetAgentStatusArgs) -> Result<MetadataUpdate> {
-    let mut set = BTreeMap::new();
-    let mut clear = BTreeSet::new();
-
-    for raw in &args.agent_meta {
-        let (key, value) = parse_agent_meta(raw)?;
-        if set.insert(key.clone(), value).is_some() {
-            bail!("--agent-meta key '{key}' cannot be repeated");
-        }
-    }
-
-    for raw in &args.clear_agent_meta {
-        let key = clean_required(raw, "--clear-agent-meta key")?;
-        if !clear.insert(key.clone()) {
-            bail!("--clear-agent-meta key '{key}' cannot be repeated");
-        }
-    }
-
-    for key in set.keys() {
-        if clear.contains(key) {
-            bail!("agent metadata key '{key}' cannot be set and cleared in the same update");
-        }
-    }
-
-    Ok(MetadataUpdate { set, clear })
-}
-
-fn parse_agent_meta(raw: &str) -> Result<(String, String)> {
-    let Some((key, value)) = raw.split_once('=') else {
-        bail!("--agent-meta must use KEY=VALUE syntax");
-    };
-    let key = clean_required(key, "--agent-meta key")?;
-    let value = clean_required(value, "--agent-meta value")?;
-    Ok((key, value))
-}
-
 fn clean_required(value: &str, label: &str) -> Result<String> {
     clean_str(value)
         .map(str::to_owned)
@@ -163,7 +120,6 @@ mod tests {
         args.producer_instance = " default ".to_owned();
         args.title = Some(" Implement status ".to_owned());
         args.context = Some(" 12K ".to_owned());
-        args.agent_meta = vec![" workspace_id = wrk_01KTEST ".to_owned()];
         args.git_branch = Some(" feature/auth ".to_owned());
         args.directory = Some(" /repo/project ".to_owned());
 
@@ -179,11 +135,6 @@ mod tests {
         assert_eq!(update.status, Some(StoredAgentStatus::Working));
         assert_eq!(update.title.as_deref(), Some("Implement status"));
         assert_eq!(update.context.as_deref(), Some("12K"));
-        assert_eq!(
-            update.metadata.set.get("workspace_id").map(String::as_str),
-            Some("wrk_01KTEST")
-        );
-        assert!(update.metadata.clear.is_empty());
         assert_eq!(update.target.git_branch.as_deref(), Some("feature/auth"));
         assert_eq!(update.target.directory.as_deref(), Some("/repo/project"));
         Ok(())
@@ -217,70 +168,6 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn maps_clear_agent_meta_flag() -> Result<()> {
-        let mut args = set_status_args();
-        args.clear_agent_meta = vec![" workspace_id ".to_owned()];
-
-        let command = observation_command_from_args(args)?;
-
-        let ObservationCommand::Upsert(update) = command else {
-            return Err(anyhow!("expected upsert command"));
-        };
-        assert!(update.metadata.set.is_empty());
-        assert!(update.metadata.clear.contains("workspace_id"));
-        Ok(())
-    }
-
-    #[test]
-    fn rejects_malformed_agent_meta() {
-        let mut args = set_status_args();
-        args.agent_meta = vec!["workspace_id".to_owned()];
-
-        let error = observation_command_from_args(args)
-            .err()
-            .map(|error| error.to_string());
-
-        assert_eq!(
-            error.as_deref(),
-            Some("--agent-meta must use KEY=VALUE syntax")
-        );
-    }
-
-    #[test]
-    fn rejects_duplicate_agent_meta_keys() {
-        let mut args = set_status_args();
-        args.agent_meta = vec![
-            "workspace_id=wrk_one".to_owned(),
-            "workspace_id=wrk_two".to_owned(),
-        ];
-
-        let error = observation_command_from_args(args)
-            .err()
-            .map(|error| error.to_string());
-
-        assert_eq!(
-            error.as_deref(),
-            Some("--agent-meta key 'workspace_id' cannot be repeated")
-        );
-    }
-
-    #[test]
-    fn rejects_agent_meta_set_and_clear_conflict() {
-        let mut args = set_status_args();
-        args.agent_meta = vec!["workspace_id=wrk_01KTEST".to_owned()];
-        args.clear_agent_meta = vec!["workspace_id".to_owned()];
-
-        let error = observation_command_from_args(args)
-            .err()
-            .map(|error| error.to_string());
-
-        assert_eq!(
-            error.as_deref(),
-            Some("agent metadata key 'workspace_id' cannot be set and cleared in the same update")
-        );
-    }
-
     fn set_status_args() -> cli::SetAgentStatusArgs {
         cli::SetAgentStatusArgs {
             status: Some(cli::AgentStatus::Working),
@@ -293,8 +180,6 @@ mod tests {
             title: None,
             context: None,
             tmux_instance: None,
-            agent_meta: Vec::new(),
-            clear_agent_meta: Vec::new(),
             git_repo_name: None,
             git_repo_path: None,
             git_branch: None,

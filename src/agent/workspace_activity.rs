@@ -4,7 +4,6 @@
 //! module owns the UI-neutral labels, timing, and selected-session data that the
 //! sidebar TUI and `kmux status` render differently.
 
-use std::collections::BTreeMap;
 use std::path::Path;
 
 use crate::agent::sessions::{AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget};
@@ -26,7 +25,6 @@ pub struct WorkspaceActivityRow {
     pub display_context: String,
     pub title: Option<String>,
     pub context: Option<String>,
-    pub metadata: BTreeMap<String, String>,
     pub workspace_slug: Option<String>,
     pub git_worktree_path: Option<String>,
     pub directory: Option<String>,
@@ -72,7 +70,6 @@ impl WorkspaceActivityRow {
             display_context,
             title: view.title.clone(),
             context: view.context.clone(),
-            metadata: view.metadata().clone(),
             workspace_slug: view
                 .kmux_workspace_slug()
                 .map(str::to_owned)
@@ -268,7 +265,6 @@ mod tests {
             observed_at: 120,
             title: Some("Implement shared rows".to_owned()),
             context: Some("55.2K".to_owned()),
-            metadata: BTreeMap::new(),
             target: ResolvedAgentTarget {
                 git_repo_name: Some("kmux".to_owned()),
                 git_repo_path: Some("/repo/kmux".to_owned()),

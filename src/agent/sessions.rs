@@ -42,7 +42,6 @@ pub struct ResolvedAgentSession {
     pub observed_at: u64,
     pub title: Option<String>,
     pub context: Option<String>,
-    pub metadata: BTreeMap<String, String>,
     pub target: ResolvedAgentTarget,
 }
 
@@ -142,11 +141,6 @@ impl ResolvedAgentSession {
             .as_ref()
             .map(ResolvedAgentWorkspace::path)
             .or(self.target.git_worktree_path.as_deref())
-    }
-
-    /// Return merged agent-specific metadata for this resolved session.
-    pub fn metadata(&self) -> &BTreeMap<String, String> {
-        &self.metadata
     }
 
     /// Return the best known Git repo name for display.
@@ -394,7 +388,7 @@ fn reconcile_agent_sessions(
 }
 
 // Choose one status observation and one location observation for a session, then
-// merge newer metadata fields around that resolved target.
+// merge newer display and location fields around that resolved target.
 fn session_view_from_observations(
     key: AgentSessionKey,
     observations: &[EnrichedObservation],
@@ -414,7 +408,6 @@ fn session_view_from_observations(
     let mut target = resolved_target.target;
     merge_target_metadata(&mut target, observations);
     enrich_missing_repo_metadata(&mut target);
-    let metadata = newest_agent_metadata(observations);
 
     let status_changed_at = status_observation.state.status_changed_at?;
     let status_observed_at = observation_status_observed_at(&status_observation.state);
@@ -446,7 +439,6 @@ fn session_view_from_observations(
         context: newest_value(observations, |observation| {
             observation.state.context.as_deref()
         }),
-        metadata,
         target: target.into(),
     })
 }
@@ -548,53 +540,6 @@ fn newest_value(
         })
         .max_by_key(|(observed_at, _)| *observed_at)
         .map(|(_, value)| value)
-}
-
-fn newest_agent_metadata(observations: &[EnrichedObservation]) -> BTreeMap<String, String> {
-    let mut events = BTreeMap::<String, Vec<MetadataEvent>>::new();
-    for observation in observations {
-        for (key, value) in &observation.state.metadata {
-            events.entry(key.clone()).or_default().push(MetadataEvent {
-                observed_at: observation.state.observed_at,
-                value: Some(value.clone()),
-            });
-        }
-        for key in &observation.state.metadata_cleared {
-            events.entry(key.clone()).or_default().push(MetadataEvent {
-                observed_at: observation.state.observed_at,
-                value: None,
-            });
-        }
-    }
-
-    let mut metadata = BTreeMap::new();
-    for (key, key_events) in events {
-        if let Some(value) = resolved_metadata_value(&key_events) {
-            metadata.insert(key, value);
-        }
-    }
-    metadata
-}
-
-#[derive(Debug)]
-struct MetadataEvent {
-    observed_at: u64,
-    value: Option<String>,
-}
-
-fn resolved_metadata_value(events: &[MetadataEvent]) -> Option<String> {
-    let newest_at = events.iter().map(|event| event.observed_at).max()?;
-    let mut newest_values = events
-        .iter()
-        .filter(|event| event.observed_at == newest_at)
-        .map(|event| event.value.as_deref())
-        .collect::<BTreeSet<_>>();
-
-    if newest_values.len() == 1 {
-        newest_values.pop_first().flatten().map(str::to_owned)
-    } else {
-        None
-    }
 }
 
 fn status_priority(status: Option<AgentStatus>) -> u8 {
@@ -1039,9 +984,6 @@ mod tests {
             &directory,
         );
         server.context = Some("55.2K".to_owned());
-        server
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_01KTEST".to_owned());
         server.target.tmux_pane_id = None;
         server.target.tmux_window_id = None;
 
@@ -1055,10 +997,6 @@ mod tests {
         assert_eq!(views[0].status, AgentStatus::Waiting);
         assert_eq!(views[0].title.as_deref(), Some("Server title"));
         assert_eq!(views[0].context.as_deref(), Some("55.2K"));
-        assert_eq!(
-            views[0].metadata().get("workspace_id").map(String::as_str),
-            Some("wrk_01KTEST")
-        );
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
@@ -1132,7 +1070,7 @@ mod tests {
     }
 
     #[test]
-    fn live_pane_precision_keeps_newer_metadata_from_directory_observation() {
+    fn live_pane_precision_keeps_newer_directory_observation_fields() {
         let (_directory_temp, directory) = git_repo_path();
         let tui = observation(
             "tui",
@@ -1572,7 +1510,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_only_observations_can_update_title_without_status() {
+    fn statusless_observations_can_update_title() {
         let (_directory_temp, directory) = git_repo_path();
         let status = observation(
             "tui",
@@ -1582,11 +1520,11 @@ mod tests {
             Some("Old"),
             &directory,
         );
-        let mut metadata = observation("server", "server", None, 200, Some("Renamed"), &directory);
-        metadata.target.tmux_pane_id = None;
-        metadata.target.tmux_window_id = None;
+        let mut update = observation("server", "server", None, 200, Some("Renamed"), &directory);
+        update.target.tmux_pane_id = None;
+        update.target.tmux_window_id = None;
 
-        let views = reconcile_session_views(vec![status, metadata], &[], "default");
+        let views = reconcile_session_views(vec![status, update], &[], "default");
 
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, AgentStatus::Working);
@@ -1594,7 +1532,7 @@ mod tests {
     }
 
     #[test]
-    fn metadata_only_update_does_not_refresh_status_precedence() {
+    fn statusless_update_does_not_refresh_status_precedence() {
         let (_directory_temp, directory) = git_repo_path();
         let mut stale_working = observation(
             "tui",
@@ -1619,217 +1557,6 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, AgentStatus::Waiting);
         assert_eq!(views[0].title.as_deref(), Some("Renamed"));
-    }
-
-    #[test]
-    fn newer_agent_metadata_value_replaces_stale_value() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut old_metadata = observation(
-            "tui",
-            "default/%1",
-            Some(AgentStatus::Working),
-            100,
-            Some("Old workspace"),
-            &directory,
-        );
-        old_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_old".to_owned());
-        let mut new_metadata = observation(
-            "server",
-            "server",
-            None,
-            200,
-            Some("New metadata"),
-            &directory,
-        );
-        new_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_new".to_owned());
-        new_metadata.target.tmux_pane_id = None;
-        new_metadata.target.tmux_window_id = None;
-
-        let views = reconcile_session_views(vec![old_metadata, new_metadata], &[], "default");
-
-        assert_eq!(views.len(), 1);
-        assert_eq!(
-            views[0].metadata().get("workspace_id").map(String::as_str),
-            Some("wrk_new")
-        );
-    }
-
-    #[test]
-    fn older_agent_metadata_survives_when_newer_observation_omits_key() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut old_metadata = observation(
-            "tui",
-            "default/%1",
-            Some(AgentStatus::Working),
-            100,
-            Some("Old workspace"),
-            &directory,
-        );
-        old_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_old".to_owned());
-        let mut newer_without_metadata = observation(
-            "server",
-            "server",
-            None,
-            200,
-            Some("No metadata"),
-            &directory,
-        );
-        newer_without_metadata.target.tmux_pane_id = None;
-        newer_without_metadata.target.tmux_window_id = None;
-
-        let views =
-            reconcile_session_views(vec![old_metadata, newer_without_metadata], &[], "default");
-
-        assert_eq!(views.len(), 1);
-        assert_eq!(
-            views[0].metadata().get("workspace_id").map(String::as_str),
-            Some("wrk_old")
-        );
-    }
-
-    #[test]
-    fn newer_agent_metadata_clear_suppresses_stale_value() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut old_metadata = observation(
-            "tui",
-            "default/%1",
-            Some(AgentStatus::Working),
-            100,
-            Some("Old workspace"),
-            &directory,
-        );
-        old_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_old".to_owned());
-        let mut clearing_metadata = observation(
-            "server",
-            "server",
-            None,
-            200,
-            Some("No metadata"),
-            &directory,
-        );
-        clearing_metadata
-            .metadata_cleared
-            .insert("workspace_id".to_owned());
-        clearing_metadata.target.tmux_pane_id = None;
-        clearing_metadata.target.tmux_window_id = None;
-
-        let views = reconcile_session_views(vec![old_metadata, clearing_metadata], &[], "default");
-
-        assert_eq!(views.len(), 1);
-        assert!(!views[0].metadata().contains_key("workspace_id"));
-    }
-
-    #[test]
-    fn equal_timestamp_agent_metadata_conflict_is_suppressed() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut server_metadata = observation(
-            "server",
-            "server",
-            Some(AgentStatus::Working),
-            100,
-            Some("Server metadata"),
-            &directory,
-        );
-        server_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_server".to_owned());
-        server_metadata.target.tmux_pane_id = None;
-        server_metadata.target.tmux_window_id = None;
-        let mut tui_metadata = observation(
-            "tui",
-            "default/%1",
-            None,
-            100,
-            Some("TUI metadata"),
-            &directory,
-        );
-        tui_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_tui".to_owned());
-
-        let views = reconcile_session_views(vec![server_metadata, tui_metadata], &[], "default");
-
-        assert_eq!(views.len(), 1);
-        assert!(!views[0].metadata().contains_key("workspace_id"));
-    }
-
-    #[test]
-    fn equal_timestamp_identical_agent_metadata_survives() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut server_metadata = observation(
-            "server",
-            "server",
-            Some(AgentStatus::Working),
-            100,
-            Some("Server metadata"),
-            &directory,
-        );
-        server_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_shared".to_owned());
-        server_metadata.target.tmux_pane_id = None;
-        server_metadata.target.tmux_window_id = None;
-        let mut tui_metadata = observation(
-            "tui",
-            "default/%1",
-            None,
-            100,
-            Some("TUI metadata"),
-            &directory,
-        );
-        tui_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_shared".to_owned());
-
-        let views = reconcile_session_views(vec![server_metadata, tui_metadata], &[], "default");
-
-        assert_eq!(views.len(), 1);
-        assert_eq!(
-            views[0].metadata().get("workspace_id").map(String::as_str),
-            Some("wrk_shared")
-        );
-    }
-
-    #[test]
-    fn equal_timestamp_agent_metadata_clear_suppresses_value() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut server_metadata = observation(
-            "server",
-            "server",
-            Some(AgentStatus::Working),
-            100,
-            Some("Server metadata"),
-            &directory,
-        );
-        server_metadata
-            .metadata_cleared
-            .insert("workspace_id".to_owned());
-        server_metadata.target.tmux_pane_id = None;
-        server_metadata.target.tmux_window_id = None;
-        let mut tui_metadata = observation(
-            "tui",
-            "default/%1",
-            None,
-            100,
-            Some("TUI metadata"),
-            &directory,
-        );
-        tui_metadata
-            .metadata
-            .insert("workspace_id".to_owned(), "wrk_tui".to_owned());
-
-        let views = reconcile_session_views(vec![server_metadata, tui_metadata], &[], "default");
-
-        assert_eq!(views.len(), 1);
-        assert!(!views[0].metadata().contains_key("workspace_id"));
     }
 
     fn observation(
@@ -1858,8 +1585,6 @@ mod tests {
             observed_at,
             title: title.map(str::to_owned),
             context: None,
-            metadata: BTreeMap::new(),
-            metadata_cleared: BTreeSet::new(),
             target: AgentLocationHints {
                 tmux_instance: Some("default".to_owned()),
                 tmux_pane_id: Some("%1".to_owned()),

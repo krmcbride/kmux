@@ -134,12 +134,7 @@ pub(super) fn run_tui() -> Result<()> {
         icons,
         config.sidebar.idle_after_seconds(),
     );
-    let actions = SidebarActions::new(
-        tmux,
-        store,
-        config.status_icons.clone(),
-        config.sidebar.selection_hooks,
-    );
+    let actions = SidebarActions::new(tmux, store, config.status_icons);
     let context = actions.current_context();
     let sidebar_session_name = context.as_ref().map(|context| context.session_name.clone());
     let sidebar_window_id = context.as_ref().map(|context| context.window_id.clone());

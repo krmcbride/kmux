@@ -329,10 +329,6 @@ mod tests {
             observed_at: 43,
             title: Some("OpenCode session".to_owned()),
             context: Some("163.2K (41%)".to_owned()),
-            metadata: [("workspace_id".to_owned(), "wrk_01KTEST".to_owned())]
-                .into_iter()
-                .collect(),
-            metadata_cleared: Default::default(),
             target: AgentLocationHints {
                 tmux_instance: Some("test".to_owned()),
                 tmux_pane_id: Some("%1".to_owned()),
@@ -356,6 +352,40 @@ mod tests {
         assert_eq!(store.list_observations()?, vec![state]);
         store.delete_observation(&key)?;
         assert!(store.list_observations()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn removed_metadata_fields_are_ignored_and_dropped_on_rewrite() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let state = test_observation("server", "default", AgentStatus::Working, 100);
+        let mut persisted = serde_json::to_value(&state)?;
+        let object = persisted
+            .as_object_mut()
+            .ok_or_else(|| anyhow::anyhow!("observation should serialize as an object"))?;
+        object.insert(
+            "metadata".to_owned(),
+            serde_json::json!({"workspace_id": "wrk_example"}),
+        );
+        object.insert(
+            "metadata_cleared".to_owned(),
+            serde_json::json!(["old_key"]),
+        );
+        fs::write(
+            store.observation_path(&state.key),
+            serde_json::to_vec_pretty(&persisted)?,
+        )?;
+
+        let loaded = store
+            .get_observation(&state.key)?
+            .ok_or_else(|| anyhow::anyhow!("pre-release observation should load"))?;
+        assert_eq!(loaded, state);
+        store.upsert_observation(&loaded)?;
+        let rewritten: serde_json::Value =
+            serde_json::from_slice(&fs::read(store.observation_path(&state.key))?)?;
+        assert!(rewritten.get("metadata").is_none());
+        assert!(rewritten.get("metadata_cleared").is_none());
         Ok(())
     }
 
@@ -580,8 +610,6 @@ mod tests {
             observed_at: status_changed_at,
             title: None,
             context: None,
-            metadata: Default::default(),
-            metadata_cleared: Default::default(),
             target: AgentLocationHints {
                 kmux_workspace_slug: Some("feature".to_owned()),
                 git_worktree_path: Some("/repo__worktrees/feature".to_owned()),

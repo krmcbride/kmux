@@ -156,7 +156,6 @@ mod tests {
             observed_at: 100,
             title: None,
             context: None,
-            metadata: Default::default(),
             target: target.into(),
         }
     }

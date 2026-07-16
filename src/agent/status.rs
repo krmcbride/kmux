@@ -426,7 +426,6 @@ mod tests {
             observed_at: 100,
             title: Some(title.to_owned()),
             context: None,
-            metadata: Default::default(),
             target: ResolvedAgentTarget {
                 kmux_workspace_slug: Some(git_branch.replace('/', "-")),
                 git_worktree_path: Some(workspace_path),
