@@ -53,15 +53,17 @@ impl SidebarRowIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Non-display selected-session data carried with a row for sidebar actions.
+/// Non-display workspace data carried with a row for sidebar actions.
 pub(super) struct SidebarRowSelection {
-    pub(super) key: AgentSessionKey,
+    pub(super) workspace_key: String,
+    pub(super) member_session_keys: Vec<AgentSessionKey>,
 }
 
 impl SidebarRowSelection {
     fn from_activity(row: &WorkspaceActivityRow) -> Self {
         Self {
-            key: row.session.clone(),
+            workspace_key: row.workspace_key.clone(),
+            member_session_keys: row.member_session_keys.clone(),
         }
     }
 }
@@ -257,7 +259,7 @@ mod tests {
     use super::*;
     use crate::agent::sessions::ResolvedAgentSession;
     use crate::agent::sidebar::test_support::{
-        TEST_SLEEPING_ICON, report_state, set_workspace, test_icons,
+        TEST_SLEEPING_ICON, report_state, set_session_key, set_workspace, test_icons,
     };
     use crate::agent::workspace_activity::workspace_activity_rows;
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
@@ -389,18 +391,24 @@ mod tests {
     #[test]
     fn row_model_uses_workspace_identity_across_primary_session_changes() {
         let mut first = report_state(AgentStatus::Working, 120, "@1", "%1");
-        first.key = crate::state::AgentSessionKey {
-            agent_kind: "opencode".to_owned(),
-            session_id: "ses_first".to_owned(),
-        };
+        set_session_key(
+            &mut first,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_first".to_owned(),
+            },
+        );
         first.target.tmux_pane_id = None;
         first.title = Some("Implement sidebar rows".to_owned());
 
         let mut second = report_state(AgentStatus::Waiting, 120, "@1", "%2");
-        second.key = crate::state::AgentSessionKey {
-            agent_kind: "opencode".to_owned(),
-            session_id: "ses_second".to_owned(),
-        };
+        set_session_key(
+            &mut second,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_second".to_owned(),
+            },
+        );
         second.target.tmux_pane_id = None;
         second.title = None;
         second.target.tmux_pane_title = None;
@@ -419,27 +427,77 @@ mod tests {
     }
 
     #[test]
+    fn row_selection_carries_workspace_identity_and_all_member_sessions() {
+        let mut report = report_state(AgentStatus::Waiting, 120, "@1", "%1");
+        report.member_session_keys = vec![
+            AgentSessionKey {
+                agent_kind: "codex".to_owned(),
+                session_id: "ses_secondary".to_owned(),
+            },
+            report.key.clone(),
+        ];
+        report.member_session_keys.sort();
+
+        let rows = build_rows(&[report], 300, 1_800);
+
+        assert_eq!(
+            rows[0].selection.workspace_key,
+            "/repo__worktrees/feature-sidebar/@1"
+        );
+        assert_eq!(rows[0].selection.member_session_keys.len(), 2);
+        assert_eq!(rows[0].selection.member_session_keys[0].agent_kind, "codex");
+        assert_eq!(
+            rows[0].selection.member_session_keys[1].agent_kind,
+            "opencode"
+        );
+    }
+
+    #[test]
     fn row_model_sorts_by_primary_secondary_and_creation_time() {
         let mut kmux_old = report_state(AgentStatus::Working, 100, "@1", "%1");
-        kmux_old.key.session_id = "ses_kmux_old".to_owned();
+        set_session_key(
+            &mut kmux_old,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_kmux_old".to_owned(),
+            },
+        );
         kmux_old.target.git_repo_name = Some("kmux".to_owned());
         kmux_old.target.git_branch = Some("master".to_owned());
         kmux_old.title = Some("kmux old".to_owned());
 
         let mut alpha_tools = report_state(AgentStatus::Working, 200, "@2", "%2");
-        alpha_tools.key.session_id = "ses_alpha_tools".to_owned();
+        set_session_key(
+            &mut alpha_tools,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_alpha_tools".to_owned(),
+            },
+        );
         alpha_tools.target.git_repo_name = Some("alpha-tools".to_owned());
         alpha_tools.target.git_branch = Some("master".to_owned());
         alpha_tools.title = Some("alpha tools".to_owned());
 
         let mut kmux_feature = report_state(AgentStatus::Working, 50, "@3", "%3");
-        kmux_feature.key.session_id = "ses_kmux_feature".to_owned();
+        set_session_key(
+            &mut kmux_feature,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_kmux_feature".to_owned(),
+            },
+        );
         kmux_feature.target.git_repo_name = Some("kmux".to_owned());
         kmux_feature.target.git_branch = Some("feature/sidebar".to_owned());
         kmux_feature.title = Some("kmux feature".to_owned());
 
         let mut kmux_new = report_state(AgentStatus::Working, 300, "@4", "%4");
-        kmux_new.key.session_id = "ses_kmux_new".to_owned();
+        set_session_key(
+            &mut kmux_new,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_kmux_new".to_owned(),
+            },
+        );
         kmux_new.target.git_repo_name = Some("kmux".to_owned());
         kmux_new.target.git_branch = Some("master".to_owned());
         kmux_new.title = Some("kmux new".to_owned());

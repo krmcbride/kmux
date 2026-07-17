@@ -1,8 +1,8 @@
 //! Shared workspace activity rows used by sidebar and status views.
 //!
 //! Agent observations resolve to one primary session per Git workspace. This
-//! module owns the UI-neutral labels, timing, and selected-session data that the
-//! sidebar TUI and `kmux status` render differently.
+//! module owns the UI-neutral labels, timing, primary-session display data, and
+//! member-session action data that the sidebar TUI and `kmux status` consume.
 
 use std::path::Path;
 
@@ -14,6 +14,7 @@ use crate::state::{AgentSessionKey, AgentStatus};
 pub struct WorkspaceActivityRow {
     pub workspace_key: String,
     pub session: AgentSessionKey,
+    pub member_session_keys: Vec<AgentSessionKey>,
     pub tmux_target: AgentTmuxTarget,
     pub created_at: u64,
     pub status: AgentStatus,
@@ -59,6 +60,7 @@ impl WorkspaceActivityRow {
         Some(Self {
             workspace_key,
             session: view.key.clone(),
+            member_session_keys: view.member_session_keys.clone(),
             tmux_target: view.tmux_target,
             created_at: view.created_at,
             status: view.status,
@@ -244,11 +246,13 @@ mod tests {
     }
 
     fn session_view() -> ResolvedAgentSession {
+        let key = AgentSessionKey {
+            agent_kind: "opencode".to_owned(),
+            session_id: "ses_feature_sidebar".to_owned(),
+        };
         ResolvedAgentSession {
-            key: AgentSessionKey {
-                agent_kind: "opencode".to_owned(),
-                session_id: "ses_feature_sidebar".to_owned(),
-            },
+            member_session_keys: vec![key.clone()],
+            key,
             workspace: Some(
                 ResolvedAgentWorkspace::from_canonical_root(
                     "/repo/project-alpha".into(),

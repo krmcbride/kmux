@@ -40,11 +40,13 @@ pub(super) fn report_state(
     window_id: &str,
     pane_id: &str,
 ) -> ResolvedAgentSession {
+    let key = AgentSessionKey {
+        agent_kind: "opencode".to_owned(),
+        session_id: format!("ses_{pane_id}"),
+    };
     ResolvedAgentSession {
-        key: AgentSessionKey {
-            agent_kind: "opencode".to_owned(),
-            session_id: format!("ses_{pane_id}"),
-        },
+        member_session_keys: vec![key.clone()],
+        key,
         workspace: Some(resolved_workspace(format!(
             "/repo__worktrees/feature-sidebar/{window_id}"
         ))),
@@ -74,6 +76,12 @@ pub(super) fn report_state(
             directory: None,
         },
     }
+}
+
+/// Replace the primary and sole member session key on a test session view.
+pub(super) fn set_session_key(view: &mut ResolvedAgentSession, key: AgentSessionKey) {
+    view.member_session_keys = vec![key.clone()];
+    view.key = key;
 }
 
 /// Replace the resolved workspace identity on a test session view.

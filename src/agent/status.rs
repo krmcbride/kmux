@@ -405,11 +405,13 @@ mod tests {
         title: &str,
     ) -> ResolvedAgentSession {
         let workspace_path = format!("/repo/{session_id}");
+        let key = AgentSessionKey {
+            agent_kind: agent_kind.to_owned(),
+            session_id: session_id.to_owned(),
+        };
         ResolvedAgentSession {
-            key: AgentSessionKey {
-                agent_kind: agent_kind.to_owned(),
-                session_id: session_id.to_owned(),
-            },
+            member_session_keys: vec![key.clone()],
+            key,
             workspace: Some(
                 ResolvedAgentWorkspace::from_canonical_root(
                     workspace_path.clone().into(),

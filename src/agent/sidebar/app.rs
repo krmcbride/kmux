@@ -7,8 +7,8 @@
 use ratatui::widgets::ListState;
 
 use super::actions::{
-    SidebarActions, SidebarDeleteOutcome, SidebarDeleteSessionIntent, SidebarDisableIntent,
-    SidebarJumpExecution, SidebarJumpIntent,
+    SidebarActions, SidebarDeleteWorkspaceRowIntent, SidebarDeleteWorkspaceRowOutcome,
+    SidebarDisableIntent, SidebarJumpExecution, SidebarJumpIntent,
 };
 use super::rows::{SidebarRefreshRowsIntent, SidebarRowsQuery, SidebarRowsSnapshot};
 use crate::agent::sidebar::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity};
@@ -169,14 +169,14 @@ impl SidebarApp {
         }
     }
 
-    /// Delete all observations for the selected agent session and update the model.
-    pub(super) fn delete_selected_session(&mut self) {
-        let Some(intent) = self.selected_delete_session_intent() else {
+    /// Delete all observations represented by the selected workspace row.
+    pub(super) fn delete_selected_workspace_row(&mut self) {
+        let Some(intent) = self.selected_delete_workspace_row_intent() else {
             return;
         };
 
-        match self.actions.execute_delete_session(intent) {
-            Ok(outcome) => self.apply_delete_outcome(outcome),
+        match self.actions.execute_delete_workspace_row(intent) {
+            Ok(outcome) => self.apply_delete_workspace_row_outcome(outcome),
             Err(error) => self.last_error = Some(format!("delete failed: {error}")),
         }
     }
@@ -271,13 +271,13 @@ impl SidebarApp {
         self.selected_row().cloned().map(SidebarJumpIntent::new)
     }
 
-    fn selected_delete_session_intent(&self) -> Option<SidebarDeleteSessionIntent> {
+    fn selected_delete_workspace_row_intent(&self) -> Option<SidebarDeleteWorkspaceRowIntent> {
         let index = self.list_state.selected()?;
         let row = self.rows.get(index).cloned()?;
-        Some(SidebarDeleteSessionIntent::new(index, row))
+        Some(SidebarDeleteWorkspaceRowIntent::new(index, row))
     }
 
-    fn apply_delete_outcome(&mut self, outcome: SidebarDeleteOutcome) {
+    fn apply_delete_workspace_row_outcome(&mut self, outcome: SidebarDeleteWorkspaceRowOutcome) {
         self.rows
             .retain(|candidate| candidate.identity != outcome.row.identity);
         self.last_error = None;
@@ -426,6 +426,16 @@ impl SidebarApp {
         rows: Vec<SidebarRow>,
     ) -> Self {
         let store = crate::agent::sidebar::test_support::empty_state_store();
+        Self::test_with_store(tmux, store, sidebar_session_name, sidebar_window_id, rows)
+    }
+
+    fn test_with_store(
+        tmux: Tmux,
+        store: crate::state::StateStore,
+        sidebar_session_name: Option<&str>,
+        sidebar_window_id: Option<&str>,
+        rows: Vec<SidebarRow>,
+    ) -> Self {
         let rows_query = SidebarRowsQuery::new(
             store.clone(),
             tmux.clone(),
@@ -640,12 +650,16 @@ mod tests {
 
         let jump = app.selected_jump_intent().expect("selected jump intent");
         let delete = app
-            .selected_delete_session_intent()
+            .selected_delete_workspace_row_intent()
             .expect("selected delete intent");
 
         assert_eq!(jump.row.title, "Second");
         assert_eq!(delete.index, 1);
-        assert_eq!(delete.row.selection.key.session_id, "ses_b");
+        assert_eq!(delete.row.selection.workspace_key, "/repo/@1/ses_b");
+        assert_eq!(
+            delete.row.selection.member_session_keys,
+            vec![session_key("opencode", "ses_b")]
+        );
         assert_eq!(app.rows().len(), 2);
     }
 
@@ -1215,12 +1229,12 @@ mod tests {
     }
 
     #[test]
-    fn delete_selected_session_removes_row_without_quitting_sidebar() {
+    fn delete_selected_workspace_row_removes_it_without_quitting_sidebar() {
         let rows = vec![server_row("ses_a", "First"), server_row("ses_b", "Second")];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
 
-        app.delete_selected_session();
+        app.delete_selected_workspace_row();
 
         assert!(!app.should_quit());
         assert_eq!(app.rows().len(), 1);
@@ -1229,13 +1243,40 @@ mod tests {
         assert_eq!(app.last_error(), None);
     }
 
+    #[test]
+    fn delete_failure_keeps_workspace_row_and_reports_error() -> Result<()> {
+        let temp = tempdir()?;
+        let state_path = temp.path().join("state");
+        let store = crate::state::test_support::store_with_path(&state_path)?;
+        let observations_path = state_path.join("agent-observations");
+        fs::remove_dir(&observations_path)?;
+        fs::write(&observations_path, "not a directory")?;
+        let rows = vec![server_row("ses_a", "First")];
+        let mut app = SidebarApp::test_with_store(Tmux::new(), store, None, Some("@1"), rows);
+
+        app.delete_selected_workspace_row();
+
+        assert!(!app.should_quit());
+        assert_eq!(app.rows().len(), 1);
+        assert_eq!(app.rows()[0].title, "First");
+        assert_eq!(selected_index(&app), Some(0));
+        assert!(
+            app.last_error()
+                .is_some_and(|error| error.starts_with("delete failed:"))
+        );
+        Ok(())
+    }
+
     fn server_row(session_id: &str, title: &str) -> SidebarRow {
         server_row_in_window(session_id, title, "@1")
     }
 
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
-        report.key = session_key("opencode", session_id);
+        crate::agent::sidebar::test_support::set_session_key(
+            &mut report,
+            session_key("opencode", session_id),
+        );
         set_workspace(&mut report, format!("/repo/{window_id}/{session_id}"));
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
@@ -1244,7 +1285,10 @@ mod tests {
 
     fn no_jump_row(session_id: &str, title: &str, directory: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, "", "");
-        report.key = session_key("opencode", session_id);
+        crate::agent::sidebar::test_support::set_session_key(
+            &mut report,
+            session_key("opencode", session_id),
+        );
         set_workspace(&mut report, directory);
         report.tmux_target = AgentTmuxTarget::None;
         report.title = Some(title.to_owned());
@@ -1262,7 +1306,10 @@ mod tests {
 
     fn session_target_row(session_id: &str, title: &str, session_name: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, "", "");
-        report.key = session_key("opencode", session_id);
+        crate::agent::sidebar::test_support::set_session_key(
+            &mut report,
+            session_key("opencode", session_id),
+        );
         set_workspace(&mut report, format!("/repo/{session_id}"));
         report.tmux_target = AgentTmuxTarget::Session;
         report.title = Some(title.to_owned());

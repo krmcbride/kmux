@@ -29,9 +29,11 @@ pub struct ResolvedAgentWorkspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Reconciled application model for one logical agent session.
+/// Reconciled primary agent session plus workspace-collapse membership.
 pub struct ResolvedAgentSession {
     pub key: AgentSessionKey,
+    /// Sorted, deduplicated workspace members; non-empty and containing `key`.
+    pub member_session_keys: Vec<AgentSessionKey>,
     pub workspace: Option<ResolvedAgentWorkspace>,
     pub tmux_target: AgentTmuxTarget,
     pub created_at: u64,
@@ -416,6 +418,7 @@ fn session_view_from_observations(
         .as_ref()
         .and_then(ResolvedAgentWorkspace::from_attachment)?;
     Some(ResolvedAgentSession {
+        member_session_keys: vec![key.clone()],
         key,
         workspace: Some(workspace),
         tmux_target: resolved_target.tmux_target,
@@ -488,7 +491,7 @@ fn observation_location_precision(observation: &EnrichedObservation) -> u8 {
 
 fn collapse_workspace_views(views: Vec<ResolvedAgentSession>) -> Vec<ResolvedAgentSession> {
     let mut by_workspace = BTreeMap::<String, ResolvedAgentSession>::new();
-    for view in views {
+    for mut view in views {
         // Sidebar/status surfaces expose one primary agent session per Git root.
         // Tmux targets remain navigation facts, not grouping keys.
         let Some(key) = view.workspace_key().map(str::to_owned) else {
@@ -496,15 +499,30 @@ fn collapse_workspace_views(views: Vec<ResolvedAgentSession>) -> Vec<ResolvedAge
         };
         match by_workspace.get_mut(&key) {
             Some(current) if primary_view_is_better(&view, current) => {
+                merge_member_session_keys(
+                    &mut view.member_session_keys,
+                    &current.member_session_keys,
+                );
                 *current = view;
             }
-            Some(_) => {}
+            Some(current) => {
+                merge_member_session_keys(
+                    &mut current.member_session_keys,
+                    &view.member_session_keys,
+                );
+            }
             None => {
                 by_workspace.insert(key, view);
             }
         }
     }
     by_workspace.into_values().collect()
+}
+
+fn merge_member_session_keys(target: &mut Vec<AgentSessionKey>, additional: &[AgentSessionKey]) {
+    target.extend_from_slice(additional);
+    target.sort();
+    target.dedup();
 }
 
 fn primary_view_is_better(
@@ -1026,12 +1044,32 @@ mod tests {
         );
 
         assert_eq!(views.len(), 2);
-        assert!(views.iter().any(|view| {
-            view.key.session_id == "ses_a" && view.target.tmux_window_id.as_deref() == Some("@1")
-        }));
-        assert!(views.iter().any(|view| {
-            view.key.session_id == "ses_c" && view.target.tmux_window_id.as_deref() == Some("@2")
-        }));
+        let root_view = views
+            .iter()
+            .find(|view| view.target.tmux_window_id.as_deref() == Some("@1"))
+            .expect("root workspace view");
+        assert_eq!(root_view.key.session_id, "ses_a");
+        assert_eq!(
+            root_view
+                .member_session_keys
+                .iter()
+                .map(|key| key.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ses_a", "ses_b"]
+        );
+        let feature_view = views
+            .iter()
+            .find(|view| view.target.tmux_window_id.as_deref() == Some("@2"))
+            .expect("feature workspace view");
+        assert_eq!(feature_view.key.session_id, "ses_c");
+        assert_eq!(
+            feature_view
+                .member_session_keys
+                .iter()
+                .map(|key| key.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ses_c", "ses_d"]
+        );
         assert_eq!(
             views
                 .iter()
@@ -1067,6 +1105,57 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].key.session_id, "ses_waiting");
         assert_eq!(views[0].status, AgentStatus::Waiting);
+        assert_eq!(
+            views[0]
+                .member_session_keys
+                .iter()
+                .map(|key| key.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ses_done", "ses_waiting"]
+        );
+    }
+
+    #[test]
+    fn accumulated_member_keys_survive_late_primary_replacement() {
+        let (_directory_temp, directory) = git_repo_path();
+        let mut first =
+            observation_for_session("ses_a_first", "server", "first", &directory, "First");
+        first.status = Some(AgentStatus::Working);
+        first.status_observed_at = Some(200);
+        first.status_changed_at = Some(200);
+        let mut accumulated = observation_for_session(
+            "ses_b_accumulated",
+            "server",
+            "accumulated",
+            &directory,
+            "Accumulated",
+        );
+        accumulated.status = Some(AgentStatus::Done);
+        accumulated.status_observed_at = Some(300);
+        accumulated.status_changed_at = Some(300);
+        let mut replacement = observation_for_session(
+            "ses_c_replacement",
+            "server",
+            "replacement",
+            &directory,
+            "Replacement",
+        );
+        replacement.status = Some(AgentStatus::Waiting);
+        replacement.status_observed_at = Some(100);
+        replacement.status_changed_at = Some(100);
+
+        let views = reconcile_session_views(vec![first, accumulated, replacement], &[], "default");
+
+        assert_eq!(views.len(), 1);
+        assert_eq!(views[0].key.session_id, "ses_c_replacement");
+        assert_eq!(
+            views[0]
+                .member_session_keys
+                .iter()
+                .map(|key| key.session_id.as_str())
+                .collect::<Vec<_>>(),
+            ["ses_a_first", "ses_b_accumulated", "ses_c_replacement"]
+        );
     }
 
     #[test]

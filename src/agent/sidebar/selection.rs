@@ -151,7 +151,7 @@ pub(super) fn decode_selected_target(value: &str) -> Option<SidebarRowIdentity> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::test_support::{report_state, row_from_view};
+    use crate::agent::sidebar::test_support::{report_state, row_from_view, set_session_key};
     use crate::state::{AgentSessionKey, AgentStatus};
 
     fn session(agent_kind: &str, session_id: &str) -> AgentSessionKey {
@@ -163,7 +163,7 @@ mod tests {
 
     fn row(session_id: &str, window_id: &str, pane_id: &str) -> SidebarRow {
         let mut view = report_state(AgentStatus::Waiting, 100, window_id, pane_id);
-        view.key = session("opencode", session_id);
+        set_session_key(&mut view, session("opencode", session_id));
         row_from_view(&view, 100)
     }
 

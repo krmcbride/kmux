@@ -177,7 +177,7 @@ fn process_tui_event(event: Event, app: &mut SidebarApp) -> EventOutcome {
                 return EventOutcome::RedrawRequested;
             }
             KeyCode::Char('x') => {
-                app.delete_selected_session();
+                app.delete_selected_workspace_row();
                 return EventOutcome::RedrawRequested;
             }
             KeyCode::F(5) => {
@@ -312,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn x_event_deletes_selected_row_and_reports_redraw_request() {
+    fn x_event_deletes_selected_workspace_row_and_reports_redraw_request() {
         let rows = vec![row_from_view(
             &report_state(AgentStatus::Done, 100, "@1", "%1"),
             100,

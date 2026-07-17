@@ -141,11 +141,13 @@ mod tests {
     }
 
     fn view_with_target(target: AgentLocationHints) -> ResolvedAgentSession {
+        let key = AgentSessionKey {
+            agent_kind: "opencode".to_owned(),
+            session_id: "ses".to_owned(),
+        };
         ResolvedAgentSession {
-            key: AgentSessionKey {
-                agent_kind: "opencode".to_owned(),
-                session_id: "ses".to_owned(),
-            },
+            member_session_keys: vec![key.clone()],
+            key,
             workspace: None,
             tmux_target: crate::agent::sessions::AgentTmuxTarget::None,
             created_at: 100,

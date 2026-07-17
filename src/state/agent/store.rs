@@ -5,6 +5,7 @@
 //! pruning of stale files, and transactional atomic writes from short-lived
 //! producers.
 
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -159,9 +160,20 @@ impl StateStore {
 
     /// Delete every producer observation associated with one agent session.
     pub fn delete_session(&self, session: &AgentSessionKey) -> Result<()> {
+        self.delete_sessions(std::slice::from_ref(session))
+    }
+
+    /// Delete every producer observation for the selected logical sessions.
+    ///
+    /// Requested keys are normalized before the stable observation lock is
+    /// acquired. Listing, stale-file pruning, and all matching deletes then run
+    /// under that one lock so cooperating producers observe one serialized
+    /// store mutation.
+    pub fn delete_sessions(&self, sessions: &[AgentSessionKey]) -> Result<()> {
+        let sessions = sessions.iter().collect::<BTreeSet<_>>();
         let _lock = self.lock_observation_mutations()?;
         for observation in self.list_observations_unlocked()? {
-            if &observation.key.session == session {
+            if sessions.contains(&observation.key.session) {
                 self.delete_observation_unlocked(&observation.key)?;
             }
         }
@@ -531,6 +543,48 @@ mod tests {
     }
 
     #[test]
+    fn delete_sessions_removes_selected_sessions_and_prunes_stale_files() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let first_session = test_session_key("opencode", "ses_project_alpha");
+        let second_session = test_session_key("codex", "ses_project_beta");
+        let unrelated_session = test_session_key("opencode", "ses_project_gamma");
+
+        let mut first_tui = test_observation("tui", "default/%1", AgentStatus::Working, 100);
+        first_tui.key.session.clone_from(&first_session);
+        let mut first_server =
+            test_observation("server", "http://127.0.0.1:4096", AgentStatus::Waiting, 101);
+        first_server.key.session.clone_from(&first_session);
+        let mut second_server =
+            test_observation("server", "http://127.0.0.1:4097", AgentStatus::Done, 102);
+        second_server.key.session.clone_from(&second_session);
+        let mut unrelated = test_observation("server", "default", AgentStatus::Working, 103);
+        unrelated.key.session.clone_from(&unrelated_session);
+
+        for observation in [&first_tui, &first_server, &second_server, &unrelated] {
+            store.upsert_observation(observation)?;
+        }
+        let corrupt_path = store.observations_dir().join("corrupt.json");
+        fs::write(&corrupt_path, "not json")?;
+        let noncanonical_path = store.observations_dir().join("old-format.json");
+        fs::write(
+            &noncanonical_path,
+            serde_json::to_vec_pretty(&first_server)?,
+        )?;
+        store.delete_sessions(&[
+            second_session,
+            first_session.clone(),
+            test_session_key("opencode", "ses_missing"),
+            first_session,
+        ])?;
+
+        assert!(!corrupt_path.exists());
+        assert!(!noncanonical_path.exists());
+        assert_eq!(store.list_observations()?, vec![unrelated]);
+        Ok(())
+    }
+
+    #[test]
     fn concurrent_mutations_see_the_latest_committed_observation() -> Result<()> {
         let temp = TempDir::new()?;
         let store = Arc::new(StateStore::with_path(temp.path().join("state"))?);
@@ -625,12 +679,16 @@ mod tests {
         producer_instance: &str,
     ) -> AgentObservationKey {
         AgentObservationKey {
-            session: AgentSessionKey {
-                agent_kind: "opencode".to_owned(),
-                session_id: session_id.to_owned(),
-            },
+            session: test_session_key("opencode", session_id),
             producer_kind: producer_kind.to_owned(),
             producer_instance: producer_instance.to_owned(),
+        }
+    }
+
+    fn test_session_key(agent_kind: &str, session_id: &str) -> AgentSessionKey {
+        AgentSessionKey {
+            agent_kind: agent_kind.to_owned(),
+            session_id: session_id.to_owned(),
         }
     }
 }

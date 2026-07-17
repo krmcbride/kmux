@@ -27,9 +27,9 @@ pub(super) struct SidebarJumpIntent {
     pub(super) row: SidebarRow,
 }
 
-/// Intent to delete persisted observations for a selected sidebar row.
+/// Intent to delete persisted observations represented by one workspace row.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct SidebarDeleteSessionIntent {
+pub(super) struct SidebarDeleteWorkspaceRowIntent {
     pub(super) index: usize,
     pub(super) row: SidebarRow,
 }
@@ -63,7 +63,7 @@ pub(super) enum SidebarJumpExecution {
 
 /// Result of a successful deletion side-effect execution.
 #[derive(Debug)]
-pub(super) struct SidebarDeleteOutcome {
+pub(super) struct SidebarDeleteWorkspaceRowOutcome {
     pub(super) index: usize,
     pub(super) row: SidebarRow,
 }
@@ -83,8 +83,8 @@ impl SidebarJumpIntent {
     }
 }
 
-impl SidebarDeleteSessionIntent {
-    /// Build a delete intent from the selected index and row.
+impl SidebarDeleteWorkspaceRowIntent {
+    /// Build a workspace-row delete intent from the selected index and row.
     pub(super) fn new(index: usize, row: SidebarRow) -> Self {
         Self { index, row }
     }
@@ -181,14 +181,15 @@ impl SidebarActions {
         }))
     }
 
-    /// Delete observations for a selected session and notify dependent sidebar/status surfaces.
-    pub(super) fn execute_delete_session(
+    /// Delete observations represented by a workspace row and notify dependent surfaces.
+    pub(super) fn execute_delete_workspace_row(
         &self,
-        intent: SidebarDeleteSessionIntent,
-    ) -> Result<SidebarDeleteOutcome> {
-        self.store.delete_session(&intent.row.selection.key)?;
+        intent: SidebarDeleteWorkspaceRowIntent,
+    ) -> Result<SidebarDeleteWorkspaceRowOutcome> {
+        self.store
+            .delete_sessions(&intent.row.selection.member_session_keys)?;
         crate::agent::refresh_observation_surfaces(&self.store, &self.tmux, &self.status_icons);
-        Ok(SidebarDeleteOutcome {
+        Ok(SidebarDeleteWorkspaceRowOutcome {
             index: intent.index,
             row: intent.row,
         })
@@ -286,7 +287,9 @@ impl SidebarActions {
 mod tests {
     use super::*;
     use crate::agent::sessions::session_views;
-    use crate::agent::sidebar::test_support::{report_state, row_from_view, set_workspace};
+    use crate::agent::sidebar::test_support::{
+        report_state, row_from_view, set_session_key, set_workspace,
+    };
     use crate::state::{
         AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
         AgentStatus,
@@ -431,44 +434,158 @@ mod tests {
     }
 
     #[test]
-    fn deleting_primary_session_leaves_another_session_for_the_same_workspace() -> Result<()> {
+    fn deleting_workspace_row_removes_all_members_and_allows_recreation() -> Result<()> {
         let temp = tempdir()?;
-        let repo = temp.path().join("project-alpha");
-        fs::create_dir(&repo)?;
-        let git_output = Command::new("git")
-            .args(["init", "--initial-branch", "main"])
-            .current_dir(&repo)
-            .output()?;
-        assert!(
-            git_output.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&git_output.stderr)
-        );
+        let selected_repo = temp.path().join("project-alpha");
+        let unrelated_repo = temp.path().join("project-beta");
+        initialize_git_repo(&selected_repo)?;
+        initialize_git_repo(&unrelated_repo)?;
         let store = crate::state::test_support::store_with_path(temp.path().join("state"))?;
-        for observation in [
-            observation_for_session("ses_primary", AgentStatus::Waiting, 200, &repo, "Primary"),
-            observation_for_session("ses_secondary", AgentStatus::Done, 100, &repo, "Secondary"),
-        ] {
-            store.upsert_observation(&observation)?;
+        let mut primary_tui = observation_for_session(
+            "opencode",
+            "ses_primary",
+            AgentStatus::Working,
+            150,
+            &selected_repo,
+            "Primary TUI",
+        );
+        primary_tui.key.producer_kind = "tui".to_owned();
+        primary_tui.key.producer_instance = "default/%1".to_owned();
+        let observations = [
+            observation_for_session(
+                "opencode",
+                "ses_primary",
+                AgentStatus::Waiting,
+                200,
+                &selected_repo,
+                "Primary",
+            ),
+            primary_tui,
+            observation_for_session(
+                "opencode",
+                "ses_secondary",
+                AgentStatus::Done,
+                100,
+                &selected_repo,
+                "Secondary",
+            ),
+            observation_for_session(
+                "codex",
+                "ses_companion",
+                AgentStatus::Working,
+                175,
+                &selected_repo,
+                "Companion",
+            ),
+            observation_for_session(
+                "opencode",
+                "ses_unrelated",
+                AgentStatus::Working,
+                125,
+                &unrelated_repo,
+                "Unrelated",
+            ),
+        ];
+        for observation in &observations {
+            store.upsert_observation(observation)?;
         }
         let tmux = Tmux::new();
         let before = session_views(&store, &tmux)?;
-        assert_eq!(before.len(), 1);
-        assert_eq!(before[0].key.session_id, "ses_primary");
-        let primary = row_from_view(&before[0], 200);
+        assert_eq!(before.len(), 2);
+        let selected = before
+            .iter()
+            .find(|view| view.workspace_key() == Some(selected_repo.to_string_lossy().as_ref()))
+            .ok_or_else(|| anyhow::anyhow!("expected selected workspace"))?;
+        assert_eq!(selected.key.session_id, "ses_primary");
+        assert_eq!(
+            selected.member_session_keys,
+            [
+                session_key("codex", "ses_companion"),
+                session_key("opencode", "ses_primary"),
+                session_key("opencode", "ses_secondary"),
+            ]
+        );
+        let selected_row = row_from_view(selected, 200);
         let actions = SidebarActions::new(tmux.clone(), store.clone(), StatusIcons::default());
 
-        actions.execute_delete_session(SidebarDeleteSessionIntent::new(0, primary))?;
+        actions
+            .execute_delete_workspace_row(SidebarDeleteWorkspaceRowIntent::new(0, selected_row))?;
 
+        let remaining = store.list_observations()?;
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].key.session.session_id, "ses_unrelated");
         let after = session_views(&store, &tmux)?;
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].key.session_id, "ses_secondary");
+        assert_eq!(after[0].key.session_id, "ses_unrelated");
+
+        store.upsert_observation(&observations[0])?;
+        let recreated = session_views(&store, &tmux)?;
+        assert_eq!(recreated.len(), 2);
+        assert!(recreated.iter().any(|view| {
+            view.workspace_key() == Some(selected_repo.to_string_lossy().as_ref())
+                && view.member_session_keys == [session_key("opencode", "ses_primary")]
+        }));
+        Ok(())
+    }
+
+    #[test]
+    fn deleting_workspace_row_uses_captured_member_snapshot() -> Result<()> {
+        let temp = tempdir()?;
+        let repo = temp.path().join("project-alpha");
+        initialize_git_repo(&repo)?;
+        let store = crate::state::test_support::store_with_path(temp.path().join("state"))?;
+        let captured = observation_for_session(
+            "opencode",
+            "ses_captured",
+            AgentStatus::Waiting,
+            200,
+            &repo,
+            "Captured",
+        );
+        store.upsert_observation(&captured)?;
+        let tmux = Tmux::new();
+        let before = session_views(&store, &tmux)?;
+        assert_eq!(before.len(), 1);
+        let captured_row = row_from_view(&before[0], 200);
+
+        let arrived_after_snapshot = observation_for_session(
+            "codex",
+            "ses_arrived_later",
+            AgentStatus::Working,
+            250,
+            &repo,
+            "Arrived later",
+        );
+        store.upsert_observation(&arrived_after_snapshot)?;
+        let actions = SidebarActions::new(tmux.clone(), store.clone(), StatusIcons::default());
+
+        actions
+            .execute_delete_workspace_row(SidebarDeleteWorkspaceRowIntent::new(0, captured_row))?;
+
+        assert_eq!(store.list_observations()?, vec![arrived_after_snapshot]);
+        let after = session_views(&store, &tmux)?;
+        assert_eq!(after.len(), 1);
+        assert_eq!(after[0].key.session_id, "ses_arrived_later");
+        Ok(())
+    }
+
+    fn initialize_git_repo(path: &std::path::Path) -> Result<()> {
+        fs::create_dir(path)?;
+        let output = Command::new("git")
+            .args(["init", "--initial-branch", "main"])
+            .current_dir(path)
+            .output()?;
+        anyhow::ensure!(
+            output.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
         Ok(())
     }
 
     fn server_row_in_window(session_id: &str, title: &str, window_id: &str) -> SidebarRow {
         let mut report = report_state(AgentStatus::Working, 100, window_id, "%server");
-        report.key = session_key("opencode", session_id);
+        set_session_key(&mut report, session_key("opencode", session_id));
         set_workspace(&mut report, format!("/repo/{window_id}/{session_id}"));
         report.title = Some(title.to_owned());
         report.target.tmux_pane_id = None;
@@ -483,6 +600,7 @@ mod tests {
     }
 
     fn observation_for_session(
+        agent_kind: &str,
         session_id: &str,
         status: AgentStatus,
         observed_at: u64,
@@ -491,7 +609,7 @@ mod tests {
     ) -> AgentObservationState {
         AgentObservationState {
             key: AgentObservationKey {
-                session: session_key("opencode", session_id),
+                session: session_key(agent_kind, session_id),
                 producer_kind: "server".to_owned(),
                 producer_instance: "reporter".to_owned(),
             },
