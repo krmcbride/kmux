@@ -61,7 +61,7 @@ impl WorkspaceActivityRow {
             workspace_key,
             session: view.key.clone(),
             member_session_keys: view.member_session_keys.clone(),
-            tmux_target: view.tmux_target,
+            tmux_target: view.tmux_target.clone(),
             created_at: view.created_at,
             status: view.status,
             status_age_secs: now.saturating_sub(view.status_changed_at),
@@ -260,7 +260,13 @@ mod tests {
                 )
                 .expect("test workspace should be valid"),
             ),
-            tmux_target: AgentTmuxTarget::Window,
+            tmux_target: AgentTmuxTarget::Windows {
+                session_name: "project-alpha".to_owned(),
+                candidates: vec![crate::agent::sessions::AgentTmuxWindowCandidate {
+                    window_id: "@1".to_owned(),
+                    pane_ids: vec!["%1".to_owned()],
+                }],
+            },
             created_at: 120,
             status: AgentStatus::Working,
             status_observed_at: 120,

@@ -112,21 +112,7 @@ pub(super) struct SidebarRow {
     pub(super) session_name: String,
     pub(super) window_id: String,
     pub(super) pane_id: Option<String>,
-    pub(super) jump_target: SidebarJumpTarget,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-/// Honest tmux navigation target for a sidebar row.
-pub(super) enum SidebarJumpTarget {
-    Window {
-        session_name: String,
-        window_id: String,
-        pane_id: Option<String>,
-    },
-    Session {
-        session_name: String,
-    },
-    None,
+    pub(super) jump_target: AgentTmuxTarget,
 }
 
 impl SidebarRow {
@@ -164,7 +150,7 @@ impl SidebarRow {
         let session_name = row.tmux_session_name().unwrap_or_default().to_owned();
         let window_id = row.tmux_window_id().unwrap_or_default().to_owned();
         let pane_id = row.tmux_pane_id().map(str::to_owned);
-        let jump_target = jump_target_for_activity(row);
+        let jump_target = row.tmux_target.clone();
 
         Self {
             identity,
@@ -227,30 +213,6 @@ fn compact_elapsed(seconds: u64) -> String {
         format!("{}h", seconds / (60 * 60))
     } else {
         format!("{}d", seconds / (60 * 60 * 24))
-    }
-}
-
-fn jump_target_for_activity(row: &WorkspaceActivityRow) -> SidebarJumpTarget {
-    match row.tmux_target {
-        AgentTmuxTarget::Window => {
-            let Some(session_name) = row.tmux_session_name().map(str::to_owned) else {
-                return SidebarJumpTarget::None;
-            };
-            let Some(window_id) = row.tmux_window_id().map(str::to_owned) else {
-                return SidebarJumpTarget::None;
-            };
-            SidebarJumpTarget::Window {
-                session_name,
-                window_id,
-                pane_id: row.tmux_pane_id().map(str::to_owned),
-            }
-        }
-        AgentTmuxTarget::Session => row
-            .tmux_session_name()
-            .map(str::to_owned)
-            .map(|session_name| SidebarJumpTarget::Session { session_name })
-            .unwrap_or(SidebarJumpTarget::None),
-        AgentTmuxTarget::None => SidebarJumpTarget::None,
     }
 }
 

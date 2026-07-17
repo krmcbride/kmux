@@ -8,10 +8,11 @@ use ratatui::widgets::ListState;
 
 use super::actions::{
     SidebarActions, SidebarDeleteWorkspaceRowIntent, SidebarDeleteWorkspaceRowOutcome,
-    SidebarDisableIntent, SidebarJumpExecution, SidebarJumpIntent,
+    SidebarDisableIntent, SidebarJumpExecution, SidebarJumpIntent, SidebarJumpOutcome,
 };
 use super::rows::{SidebarRefreshRowsIntent, SidebarRowsQuery, SidebarRowsSnapshot};
-use crate::agent::sidebar::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity};
+use crate::agent::sessions::AgentTmuxTarget;
+use crate::agent::sidebar::model::{SidebarRow, SidebarRowIdentity};
 use crate::agent::sidebar::selection::{self, SelectionMode};
 
 #[cfg(test)]
@@ -150,13 +151,7 @@ impl SidebarApp {
         };
         match self.actions.execute_jump(intent) {
             SidebarJumpExecution::Succeeded(outcome) => {
-                let outcome = *outcome;
-                self.reset_after_successful_jump(&outcome.row);
-                if let Some(warning) = outcome.persistence_warning {
-                    self.last_error = Some(warning);
-                } else {
-                    self.last_error = None;
-                }
+                self.apply_successful_jump_outcome(*outcome);
             }
             SidebarJumpExecution::Failed(failure) => {
                 let rollback_error = failure
@@ -167,6 +162,18 @@ impl SidebarApp {
                 self.last_error = Some(format!("jump failed: {}{rollback_error}", failure.error));
             }
         }
+    }
+
+    fn apply_successful_jump_outcome(&mut self, outcome: SidebarJumpOutcome) {
+        if let Some(row) = self
+            .rows
+            .iter_mut()
+            .find(|row| row.identity == outcome.row.identity)
+        {
+            row.clone_from(&outcome.row);
+        }
+        self.reset_after_successful_jump(&outcome.row);
+        self.last_error = outcome.persistence_warning;
     }
 
     /// Delete all observations represented by the selected workspace row.
@@ -364,7 +371,7 @@ impl SidebarApp {
     fn reset_after_successful_jump(&mut self, row: &SidebarRow) {
         self.selection_mode = SelectionMode::FollowSidebarContext;
         self.sidebar_has_focus = false;
-        if matches!(row.jump_target, SidebarJumpTarget::Window { .. })
+        if matches!(row.jump_target, AgentTmuxTarget::Windows { .. })
             && self
                 .sidebar_window_id
                 .as_deref()
@@ -825,11 +832,11 @@ mod tests {
     }
 
     #[test]
-    fn selection_follows_session_target_when_window_is_ambiguous() -> Result<()> {
+    fn selection_follows_matching_candidate_window() -> Result<()> {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        let row = session_target_row("ses_project_alpha", "Project alpha", "project");
+        let row = server_row_in_window("ses_project_alpha", "Project alpha", &fixture.window_id);
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
@@ -980,6 +987,36 @@ mod tests {
         assert_eq!(app.selection_mode, SelectionMode::FollowSidebarContext);
         assert_eq!(app.active_index(), Some(0));
         assert_eq!(app.cursor_index(), None);
+    }
+
+    #[test]
+    fn successful_fallback_updates_stored_row_to_actual_destination() {
+        let mut original = server_row_in_window("ses_project_alpha", "Project alpha", "@1");
+        let AgentTmuxTarget::Windows { candidates, .. } = &mut original.jump_target else {
+            assert!(matches!(
+                &original.jump_target,
+                AgentTmuxTarget::Windows { .. }
+            ));
+            return;
+        };
+        candidates.push(crate::agent::sessions::AgentTmuxWindowCandidate {
+            window_id: "@2".to_owned(),
+            pane_ids: vec!["%2".to_owned()],
+        });
+        let mut resolved = original.clone();
+        resolved.window_id = "@2".to_owned();
+        resolved.pane_id = Some("%2".to_owned());
+        let mut app = SidebarApp::test(Some("@2"), vec![original]);
+
+        app.apply_successful_jump_outcome(SidebarJumpOutcome {
+            row: resolved,
+            persistence_warning: None,
+        });
+
+        assert_eq!(app.rows()[0].window_id, "@2");
+        assert_eq!(app.rows()[0].pane_id.as_deref(), Some("%2"));
+        assert_eq!(selected_index(&app), Some(0));
+        assert_eq!(app.active_index(), Some(0));
     }
 
     #[test]
@@ -1223,7 +1260,7 @@ mod tests {
         assert!(!app.should_quit());
         assert!(
             app.last_error()
-                .is_some_and(|error| error.contains("no unambiguous tmux target"))
+                .is_some_and(|error| error.contains("no live tmux window"))
         );
         Ok(())
     }
@@ -1290,7 +1327,9 @@ mod tests {
             session_key("opencode", session_id),
         );
         set_workspace(&mut report, directory);
-        report.tmux_target = AgentTmuxTarget::None;
+        report.tmux_target = AgentTmuxTarget::Unavailable(
+            crate::agent::sessions::AgentTmuxUnavailableReason::Missing,
+        );
         report.title = Some(title.to_owned());
         report.target.tmux_instance = None;
         report.target.tmux_pane_id = None;
@@ -1304,28 +1343,14 @@ mod tests {
         row_from_view(&report, 100)
     }
 
-    fn session_target_row(session_id: &str, title: &str, session_name: &str) -> SidebarRow {
-        let mut report = report_state(AgentStatus::Working, 100, "", "");
-        crate::agent::sidebar::test_support::set_session_key(
-            &mut report,
-            session_key("opencode", session_id),
-        );
-        set_workspace(&mut report, format!("/repo/{session_id}"));
-        report.tmux_target = AgentTmuxTarget::Session;
-        report.title = Some(title.to_owned());
-        report.target.tmux_session_name = Some(session_name.to_owned());
-        report.target.tmux_window_id = None;
-        report.target.tmux_window_name = None;
-        report.target.tmux_pane_id = None;
-        row_from_view(&report, 100)
-    }
-
     fn row_with_missing_jump_session(mut row: SidebarRow) -> SidebarRow {
         row.session_name = "missing-session".to_owned();
-        row.jump_target = SidebarJumpTarget::Window {
+        row.jump_target = AgentTmuxTarget::Windows {
             session_name: "missing-session".to_owned(),
-            window_id: row.window_id.clone(),
-            pane_id: row.pane_id.clone(),
+            candidates: vec![crate::agent::sessions::AgentTmuxWindowCandidate {
+                window_id: row.window_id.clone(),
+                pane_ids: row.pane_id.iter().cloned().collect(),
+            }],
         };
         row
     }

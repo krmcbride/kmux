@@ -373,7 +373,9 @@ mod tests {
             current_command: current_command.map(str::to_owned),
             current_path: None,
             pane_active: false,
+            pane_last: false,
             window_active: false,
+            window_last: false,
             session_attached: false,
             kmux_role: kmux_role.map(str::to_owned),
         }

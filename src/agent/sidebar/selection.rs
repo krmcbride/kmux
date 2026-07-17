@@ -58,18 +58,13 @@ pub(super) fn sidebar_window_index(
     sidebar_window_id.and_then(|window_id| row_index_by_window(rows, window_id))
 }
 
-/// Return the first row associated with the sidebar window or, for session-level
-/// targets, the sidebar session.
+/// Return the first row associated with the sidebar window.
 pub(super) fn sidebar_context_index(
     rows: &[SidebarRow],
     sidebar_window_id: Option<&str>,
-    sidebar_session_name: Option<&str>,
+    _sidebar_session_name: Option<&str>,
 ) -> Option<usize> {
-    sidebar_window_index(rows, sidebar_window_id).or_else(|| {
-        let sidebar_session_name = sidebar_session_name?;
-        rows.iter()
-            .position(|row| row.window_id.is_empty() && row.session_name == sidebar_session_name)
-    })
+    sidebar_window_index(rows, sidebar_window_id)
 }
 
 /// Return the remembered workspace row index when it still belongs to the sidebar context.
@@ -103,13 +98,9 @@ pub(super) fn persisted_sidebar_context_identity_index(
 fn row_matches_sidebar_context(
     row: &SidebarRow,
     sidebar_window_id: Option<&str>,
-    sidebar_session_name: Option<&str>,
+    _sidebar_session_name: Option<&str>,
 ) -> bool {
-    if !row.window_id.is_empty() {
-        return sidebar_window_id.is_some_and(|window_id| row.window_id == window_id);
-    }
-
-    sidebar_session_name.is_some_and(|session_name| row.session_name == session_name)
+    sidebar_window_id.is_some_and(|window_id| row.window_id == window_id)
 }
 
 /// Return the best workspace row index for manual selection after row refreshes.
@@ -212,38 +203,6 @@ mod tests {
                 &rows[1].identity
             ),
             Some(1)
-        );
-    }
-
-    #[test]
-    fn sidebar_context_matches_session_target_rows_without_window_ids() {
-        let mut session_row = row("ses_session", "", "%1");
-        session_row.window_id.clear();
-        session_row.pane_id = None;
-        session_row.session_name = "project".to_owned();
-        let rows = vec![row("ses_a", "@1", "%2"), session_row];
-
-        assert_eq!(
-            sidebar_context_index(&rows, Some("@missing"), Some("project")),
-            Some(1)
-        );
-        assert_eq!(
-            remembered_sidebar_context_identity_index(
-                &rows,
-                Some("@missing"),
-                Some("project"),
-                Some(&rows[1].identity)
-            ),
-            Some(1)
-        );
-        assert_eq!(
-            remembered_sidebar_context_identity_index(
-                &rows,
-                Some("@missing"),
-                Some("other"),
-                Some(&rows[1].identity)
-            ),
-            None
         );
     }
 

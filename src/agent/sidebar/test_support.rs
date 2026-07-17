@@ -1,5 +1,6 @@
 use crate::agent::sessions::{
-    AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget, ResolvedAgentWorkspace,
+    AgentTmuxTarget, AgentTmuxWindowCandidate, ResolvedAgentSession, ResolvedAgentTarget,
+    ResolvedAgentWorkspace,
 };
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
 use crate::agent::workspace_activity::workspace_activity_rows;
@@ -50,7 +51,13 @@ pub(super) fn report_state(
         workspace: Some(resolved_workspace(format!(
             "/repo__worktrees/feature-sidebar/{window_id}"
         ))),
-        tmux_target: AgentTmuxTarget::Window,
+        tmux_target: AgentTmuxTarget::Windows {
+            session_name: "project".to_owned(),
+            candidates: vec![AgentTmuxWindowCandidate {
+                window_id: window_id.to_owned(),
+                pane_ids: vec![pane_id.to_owned()],
+            }],
+        },
         created_at: status_changed_at,
         status,
         status_observed_at: status_changed_at,

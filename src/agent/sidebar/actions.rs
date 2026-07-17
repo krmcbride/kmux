@@ -8,10 +8,13 @@
 use anyhow::Result;
 
 use super::lifecycle;
-use super::model::{SidebarJumpTarget, SidebarRow, SidebarRowIdentity};
+use super::model::{SidebarRow, SidebarRowIdentity};
 use super::selection::{
     PersistedSelectionRollback, PreviousSelectionOption, SELECTED_TARGET_OPTION,
     decode_selected_target, encode_selected_target,
+};
+use crate::agent::sessions::{
+    AgentTmuxTarget, AgentTmuxUnavailableReason, AgentTmuxWindowCandidate,
 };
 use crate::config::StatusIcons;
 use crate::state::StateStore;
@@ -52,6 +55,13 @@ pub(super) struct SidebarJumpOutcome {
 pub(super) struct SidebarJumpFailure {
     pub(super) error: anyhow::Error,
     pub(super) rollback_error: Option<anyhow::Error>,
+}
+
+#[derive(Debug)]
+struct SidebarJumpDestination {
+    session_name: String,
+    window_id: String,
+    pane_ids: Vec<String>,
 }
 
 /// Jump execution result separated from app state updates.
@@ -152,7 +162,19 @@ impl SidebarActions {
 
     /// Execute tmux navigation, selection persistence, and wake effects for a jump.
     pub(super) fn execute_jump(&self, intent: SidebarJumpIntent) -> SidebarJumpExecution {
-        let row = intent.row;
+        let mut row = intent.row;
+        let destination = match self.resolve_jump_destination(&row) {
+            Ok(destination) => destination,
+            Err(error) => {
+                return SidebarJumpExecution::Failed(SidebarJumpFailure {
+                    error,
+                    rollback_error: None,
+                });
+            }
+        };
+        row.session_name.clone_from(&destination.session_name);
+        row.window_id.clone_from(&destination.window_id);
+        row.pane_id = None;
         let mut persistence_warning = None;
         let rollback = match self.persist_selection_before_jump(&row) {
             Ok(rollback) => rollback,
@@ -162,14 +184,17 @@ impl SidebarActions {
             }
         };
 
-        if let Err(error) = self.select_row_target(&row) {
-            let rollback_error =
-                rollback.and_then(|rollback| self.restore_persisted_selection(rollback).err());
-            return SidebarJumpExecution::Failed(SidebarJumpFailure {
-                error,
-                rollback_error,
-            });
-        }
+        row.pane_id = match self.select_row_target(&destination) {
+            Ok(pane_id) => pane_id,
+            Err(error) => {
+                let rollback_error =
+                    rollback.and_then(|rollback| self.restore_persisted_selection(rollback).err());
+                return SidebarJumpExecution::Failed(SidebarJumpFailure {
+                    error,
+                    rollback_error,
+                });
+            }
+        };
 
         self.clear_other_persisted_selections(&row.window_id);
         if let Some(intent) = SidebarWakeIntent::for_row(&row) {
@@ -254,32 +279,100 @@ impl SidebarActions {
         }
     }
 
-    fn select_row_target(&self, row: &SidebarRow) -> Result<()> {
-        match &row.jump_target {
-            SidebarJumpTarget::Window {
+    fn resolve_jump_destination(&self, row: &SidebarRow) -> Result<SidebarJumpDestination> {
+        // Reconciliation has already applied workspace, session, and preference policy. Enter
+        // takes the first still-live candidate in that order instead of recalculating policy from
+        // the user's current tmux context, which might belong to an unrelated scratch window.
+        let (session_name, candidates) = match &row.jump_target {
+            AgentTmuxTarget::Windows {
                 session_name,
-                window_id,
-                pane_id,
-            } => {
-                self.tmux.select_window_id(window_id)?;
-                self.tmux.switch_client_to_session(session_name)?;
-                if let Some(pane_id) = pane_id {
-                    self.tmux.select_pane(pane_id)?;
-                }
+                candidates,
+            } => (session_name, candidates),
+            AgentTmuxTarget::Unavailable(reason) => match reason {
+                AgentTmuxUnavailableReason::Missing => return Err(missing_target_error(row, None)),
+                AgentTmuxUnavailableReason::CrossSession { session_names } => anyhow::bail!(
+                    "cannot jump to {}: matching windows span tmux sessions: {}",
+                    row.primary,
+                    session_names.join(", ")
+                ),
+            },
+        };
+        let live_windows = self
+            .tmux
+            .list_windows(Some(session_name))
+            .map_err(|error| {
+                missing_target_error(row, Some(format!("tmux lookup failed: {error}")))
+            })?;
+        let live_window_ids = live_windows
+            .into_iter()
+            .map(|window| window.window_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        let candidate = candidates
+            .iter()
+            .find(|candidate| live_window_ids.contains(&candidate.window_id))
+            .ok_or_else(|| missing_target_error(row, None))?;
+        Ok(SidebarJumpDestination::from_candidate(
+            session_name,
+            candidate,
+        ))
+    }
+
+    fn select_row_target(&self, destination: &SidebarJumpDestination) -> Result<Option<String>> {
+        self.tmux
+            .select_window_id_in_session(&destination.session_name, &destination.window_id)?;
+        self.tmux
+            .switch_client_to_session(&destination.session_name)?;
+        Ok(self.focus_first_available_pane(&destination.window_id, &destination.pane_ids))
+    }
+
+    /// Pane focus is optional after the exact destination window is selected.
+    fn focus_first_available_pane(
+        &self,
+        destination_window_id: &str,
+        pane_ids: &[String],
+    ) -> Option<String> {
+        let live_pane_ids = self
+            .tmux
+            .list_panes()
+            .ok()?
+            .into_iter()
+            .filter(|pane| {
+                pane.window_id == destination_window_id
+                    && pane.kmux_role.as_deref() != Some("sidebar")
+            })
+            .map(|pane| pane.pane_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        for pane_id in pane_ids {
+            if live_pane_ids.contains(pane_id) && self.tmux.select_pane(pane_id).is_ok() {
+                return Some(pane_id.clone());
             }
-            SidebarJumpTarget::Session { session_name } => {
-                self.tmux.switch_client_to_session(session_name)?;
-            }
-            SidebarJumpTarget::None => anyhow::bail!(
-                "cannot jump to {}: no unambiguous tmux target; check for this workspace open in multiple sessions or stale pane cwd",
-                row.primary
-            ),
         }
-        Ok(())
+        None
     }
 
     fn execute_wake_sidebar(&self, intent: SidebarWakeIntent) {
         let _ = lifecycle::wake_window(&self.tmux, &intent.window_id);
+    }
+}
+
+fn missing_target_error(row: &SidebarRow, detail: Option<String>) -> anyhow::Error {
+    let detail = detail
+        .map(|detail| format!(" ({detail})"))
+        .unwrap_or_default();
+    anyhow::anyhow!(
+        "cannot jump to {}: no live tmux window matches workspace {}; run `kmux restore` if this is a managed workspace{detail}",
+        row.primary,
+        row.selection.workspace_key
+    )
+}
+
+impl SidebarJumpDestination {
+    fn from_candidate(session_name: &str, candidate: &AgentTmuxWindowCandidate) -> Self {
+        Self {
+            session_name: session_name.to_owned(),
+            window_id: candidate.window_id.clone(),
+            pane_ids: candidate.pane_ids.clone(),
+        }
     }
 }
 
@@ -429,6 +522,184 @@ mod tests {
                 .tmux
                 .show_window_option(&other_window_id, SELECTED_TARGET_OPTION)?,
             None
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn jump_resolution_skips_a_candidate_window_that_disappeared() -> Result<()> {
+        let Some(fixture) = SidebarActionFixture::new()? else {
+            return Ok(());
+        };
+        let mut row = server_row_in_window("ses_selected", "Selected", &fixture.window_id);
+        let AgentTmuxTarget::Windows { candidates, .. } = &mut row.jump_target else {
+            anyhow::bail!("expected matching window candidates");
+        };
+        candidates.insert(
+            0,
+            AgentTmuxWindowCandidate {
+                window_id: "@999999".to_owned(),
+                pane_ids: vec!["%999999".to_owned()],
+            },
+        );
+
+        let destination = fixture.actions().resolve_jump_destination(&row)?;
+
+        assert_eq!(destination.session_name, "project");
+        assert_eq!(destination.window_id, fixture.window_id);
+        Ok(())
+    }
+
+    #[test]
+    fn stale_candidate_error_includes_restore_guidance() -> Result<()> {
+        let Some(fixture) = SidebarActionFixture::new()? else {
+            return Ok(());
+        };
+        let mut row = server_row_in_window("ses_stale", "Stale", "@999999");
+        row.jump_target = AgentTmuxTarget::Windows {
+            session_name: "project".to_owned(),
+            candidates: vec![AgentTmuxWindowCandidate {
+                window_id: "@999999".to_owned(),
+                pane_ids: vec!["%999999".to_owned()],
+            }],
+        };
+
+        let error = fixture
+            .actions()
+            .resolve_jump_destination(&row)
+            .expect_err("stale candidates should fail");
+
+        assert!(error.to_string().contains("kmux restore"));
+        Ok(())
+    }
+
+    #[test]
+    fn unavailable_jump_preserves_existing_selection_option() -> Result<()> {
+        let Some(fixture) = SidebarActionFixture::new()? else {
+            return Ok(());
+        };
+        let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
+        fixture.set_selected_row(&previous)?;
+        let mut unavailable = server_row_in_window("ses_missing", "Missing", &fixture.window_id);
+        unavailable.jump_target = AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing);
+
+        let result = fixture
+            .actions()
+            .execute_jump(SidebarJumpIntent::new(unavailable));
+
+        let failure = match result {
+            SidebarJumpExecution::Failed(failure) => failure,
+            SidebarJumpExecution::Succeeded(_) => anyhow::bail!("missing target should fail"),
+        };
+        assert!(failure.error.to_string().contains("kmux restore"));
+        assert_eq!(fixture.selected_target()?, Some(previous.identity));
+        Ok(())
+    }
+
+    #[test]
+    fn cross_session_jump_error_names_conflicting_sessions() -> Result<()> {
+        let Some(fixture) = SidebarActionFixture::new()? else {
+            return Ok(());
+        };
+        let mut row = server_row_in_window("ses_ambiguous", "Ambiguous", &fixture.window_id);
+        row.jump_target = AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::CrossSession {
+            session_names: vec!["project-alpha".to_owned(), "project-beta".to_owned()],
+        });
+
+        let error = fixture
+            .actions()
+            .resolve_jump_destination(&row)
+            .expect_err("ambiguous target should fail");
+
+        assert!(error.to_string().contains("project-alpha, project-beta"));
+        Ok(())
+    }
+
+    #[test]
+    fn stale_matching_pane_allows_sidebar_only_window_to_remain_selected() -> Result<()> {
+        let Some(fixture) = SidebarActionFixture::new()? else {
+            return Ok(());
+        };
+        let target_pane = fixture
+            .fixture
+            .tmux
+            .list_pane_snapshots()?
+            .into_iter()
+            .find(|pane| pane.window_id == fixture.window_id)
+            .ok_or_else(|| anyhow::anyhow!("expected target window pane"))?;
+        fixture
+            .fixture
+            .tmux
+            .set_pane_option(&target_pane.pane_id, "@kmux_role", "sidebar")?;
+        fixture
+            .fixture
+            .tmux
+            .select_window_id_in_session("project", &fixture.window_id)?;
+
+        let selected_pane = fixture
+            .actions()
+            .focus_first_available_pane(&fixture.window_id, &[target_pane.pane_id]);
+
+        let active_window = fixture
+            .fixture
+            .tmux
+            .list_windows(Some("project"))?
+            .into_iter()
+            .find(|window| window.active)
+            .map(|window| window.window_id);
+        assert_eq!(active_window.as_deref(), Some(fixture.window_id.as_str()));
+        assert_eq!(selected_pane, None);
+        assert_eq!(
+            fixture
+                .fixture
+                .tmux
+                .list_panes()?
+                .into_iter()
+                .find(|pane| pane.window_id == fixture.window_id)
+                .and_then(|pane| pane.kmux_role)
+                .as_deref(),
+            Some("sidebar")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pane_focus_skips_stale_candidate_and_selects_next_live_pane() -> Result<()> {
+        let Some(fixture) = SidebarActionFixture::new()? else {
+            return Ok(());
+        };
+        let content_pane_id = fixture
+            .fixture
+            .tmux
+            .list_pane_snapshots()?
+            .into_iter()
+            .find(|pane| pane.window_id == fixture.window_id)
+            .map(|pane| pane.pane_id)
+            .ok_or_else(|| anyhow::anyhow!("expected content pane"))?;
+        let sidebar_pane_id =
+            fixture
+                .fixture
+                .tmux
+                .split_window_left(&fixture.window_id, 20, "sleep 60")?;
+        fixture
+            .fixture
+            .tmux
+            .set_pane_option(&sidebar_pane_id, "@kmux_role", "sidebar")?;
+        fixture.fixture.tmux.select_pane(&sidebar_pane_id)?;
+
+        let selected_pane = fixture.actions().focus_first_available_pane(
+            &fixture.window_id,
+            &["%999999".to_owned(), content_pane_id.clone()],
+        );
+
+        assert_eq!(selected_pane.as_deref(), Some(content_pane_id.as_str()));
+        assert!(
+            fixture
+                .fixture
+                .tmux
+                .list_pane_snapshots()?
+                .into_iter()
+                .any(|pane| pane.pane_id == content_pane_id && pane.pane_active)
         );
         Ok(())
     }

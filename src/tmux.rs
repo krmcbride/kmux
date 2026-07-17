@@ -92,7 +92,9 @@ pub struct TmuxPaneSnapshot {
     pub current_command: Option<String>,
     pub current_path: Option<String>,
     pub pane_active: bool,
+    pub pane_last: bool,
     pub window_active: bool,
+    pub window_last: bool,
     pub session_attached: bool,
     pub kmux_role: Option<String>,
 }
@@ -433,9 +435,10 @@ impl Tmux {
         Ok(())
     }
 
-    /// Select a window by tmux window id.
-    pub fn select_window_id(&self, window_id: &str) -> Result<()> {
-        self.stdout(["select-window", "-t", window_id])?;
+    /// Select a physical window by id within one exact tmux session.
+    pub fn select_window_id_in_session(&self, session_name: &str, window_id: &str) -> Result<()> {
+        let target = format!("={session_name}:{window_id}");
+        self.stdout(["select-window", "-t", &target])?;
         Ok(())
     }
 
@@ -465,7 +468,8 @@ impl Tmux {
 
     /// Switch the attached tmux client to a session.
     pub fn switch_client_to_session(&self, session_name: &str) -> Result<()> {
-        self.stdout(["switch-client", "-t", session_name])?;
+        let target = format!("={session_name}");
+        self.stdout(["switch-client", "-t", &target])?;
         Ok(())
     }
 
@@ -484,7 +488,7 @@ impl Tmux {
     pub fn list_windows(&self, session_name: Option<&str>) -> Result<Vec<TmuxWindow>> {
         let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
         let output = if let Some(session_name) = session_name {
-            let target = format!("{session_name}:");
+            let target = format!("={session_name}:");
             self.stdout(["list-windows", "-t", &target, "-F", format])?
         } else {
             self.stdout(["list-windows", "-a", "-F", format])?
@@ -503,7 +507,7 @@ impl Tmux {
     pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
         let separator = TMUX_FIELD_SEPARATOR;
         let format = format!(
-            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{window_layout}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{window_active}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
+            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{window_layout}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{pane_last}}{separator}#{{window_active}}{separator}#{{window_last_flag}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
         );
         let output = self.stdout(["list-panes", "-a", "-F", &format])?;
         parse_pane_snapshots(&output)
@@ -758,7 +762,7 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
 // titles and paths can contain tabs.
 fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
-    if fields.len() != 17 {
+    if fields.len() != 19 {
         bail!("unexpected tmux pane snapshot format: {line:?}");
     }
 
@@ -777,9 +781,11 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         current_command: non_empty_string(fields[11]),
         current_path: non_empty_string(fields[12]),
         pane_active: tmux_bool(fields[13]),
-        window_active: tmux_bool(fields[14]),
-        session_attached: tmux_attached(fields[15]),
-        kmux_role: non_empty_string(fields[16]),
+        pane_last: tmux_bool(fields[14]),
+        window_active: tmux_bool(fields[15]),
+        window_last: tmux_bool(fields[16]),
+        session_attached: tmux_attached(fields[17]),
+        kmux_role: non_empty_string(fields[18]),
     })
 }
 
@@ -960,7 +966,7 @@ mod tests {
     fn parses_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,3{separator}{separator}{separator}{separator}0{separator}0{separator}0{separator}"
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}0{separator}1{separator}0{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,3{separator}{separator}{separator}{separator}0{separator}1{separator}0{separator}1{separator}0{separator}"
         );
 
         let panes = parse_pane_snapshots(&output)?;
@@ -980,13 +986,17 @@ mod tests {
         assert_eq!(panes[0].current_command.as_deref(), Some("nvim"));
         assert_eq!(panes[0].current_path.as_deref(), Some("/repo/feature"));
         assert!(panes[0].pane_active);
+        assert!(!panes[0].pane_last);
         assert!(panes[0].window_active);
+        assert!(!panes[0].window_last);
         assert!(panes[0].session_attached);
         assert_eq!(panes[0].kmux_role.as_deref(), Some("sidebar"));
         assert_eq!(panes[1].title, None);
         assert_eq!(panes[1].current_command, None);
         assert!(!panes[1].pane_active);
+        assert!(panes[1].pane_last);
         assert!(!panes[1].window_active);
+        assert!(panes[1].window_last);
         assert!(!panes[1].session_attached);
         assert_eq!(panes[1].kmux_role, None);
         Ok(())
@@ -996,7 +1006,7 @@ mod tests {
     fn malformed_pane_snapshot_geometry_reports_field_context() {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}1{separator}2{separator}sidebar"
+            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}0{separator}1{separator}0{separator}2{separator}sidebar"
         );
 
         let error = parse_pane_snapshots(&output)
@@ -1091,6 +1101,7 @@ mod tests {
         let tmux = &fixture.tmux;
 
         create_test_session(tmux, "project", temp.path())?;
+        create_test_session(tmux, "project-copy", temp.path())?;
         assert!(
             tmux.output(["has-session", "-t", "project"])?
                 .status
@@ -1105,6 +1116,11 @@ mod tests {
         assert_eq!(context.window_name, "feature-auth");
         assert_eq!(context.pane_id, pane_id);
         assert!(tmux.window_exists_by_name("project", "feature-auth")?);
+        assert!(
+            tmux.list_windows(Some("project"))?
+                .iter()
+                .all(|window| window.session_name == "project")
+        );
         let snapshot = tmux
             .list_pane_snapshots()?
             .into_iter()
@@ -1114,7 +1130,7 @@ mod tests {
         assert_eq!(snapshot.window_id, context.window_id);
         assert_eq!(snapshot.window_name, "feature-auth");
 
-        tmux.select_window_id(&context.window_id)?;
+        tmux.select_window_id_in_session(&context.session_name, &context.window_id)?;
         tmux.select_pane(&pane_id)?;
         tmux.set_pane_title(&pane_id, "kmux")?;
         let updated_snapshot = tmux

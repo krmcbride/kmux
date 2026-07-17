@@ -66,12 +66,28 @@ pub struct ResolvedAgentTarget {
     pub directory: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-/// Precision of the live tmux target associated with an agent row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Live tmux navigation candidates or a focused unavailability reason.
 pub enum AgentTmuxTarget {
-    Window,
-    Session,
-    None,
+    Windows {
+        session_name: String,
+        candidates: Vec<AgentTmuxWindowCandidate>,
+    },
+    Unavailable(AgentTmuxUnavailableReason),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One matching physical window and its preferred matching pane order.
+pub struct AgentTmuxWindowCandidate {
+    pub window_id: String,
+    pub pane_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Reason a workspace activity row cannot currently be routed through tmux.
+pub enum AgentTmuxUnavailableReason {
+    Missing,
+    CrossSession { session_names: Vec<String> },
 }
 
 impl ResolvedAgentWorkspace {
@@ -201,7 +217,7 @@ impl ResolvedAgentSession {
 
     /// Return whether the session has an exact tmux window navigation target.
     pub fn is_window_tmux_target(&self) -> bool {
-        self.tmux_target == AgentTmuxTarget::Window
+        matches!(self.tmux_target, AgentTmuxTarget::Windows { .. })
     }
 }
 
@@ -481,11 +497,10 @@ fn observation_location_precision(observation: &EnrichedObservation) -> u8 {
     let Some(resolved) = &observation.resolved_target else {
         return 0;
     };
-    match resolved.tmux_target {
-        AgentTmuxTarget::Window if resolved.target.tmux_pane_id.is_some() => 4,
-        AgentTmuxTarget::Window => 3,
-        AgentTmuxTarget::Session => 2,
-        AgentTmuxTarget::None => 1,
+    match &resolved.tmux_target {
+        AgentTmuxTarget::Windows { .. } if resolved.target.tmux_pane_id.is_some() => 4,
+        AgentTmuxTarget::Windows { .. } => 3,
+        AgentTmuxTarget::Unavailable(_) => 1,
     }
 }
 
@@ -596,6 +611,16 @@ fn resolve_observation_target(
     })
 }
 
+/// Derive the complete jump policy from canonical workspace matches and one tmux snapshot.
+///
+/// Physical windows are deduplicated before routing because linked windows appear once per
+/// owning session. A jump is available only when exactly one session owns every matching
+/// physical window. Within that session, windows are ordered by current match, previous match,
+/// then parsed index and stable ID. Matching non-sidebar panes use the same active, previous,
+/// index, and stable-ID preference. Sidebar actions preserve this order and only revalidate
+/// which candidates remain live; they do not repeat Git resolution or choose a broader target.
+/// Missing matches and cross-session ownership remain explicit unavailable results so callers
+/// cannot accidentally fall back to an unrelated active window.
 fn enrich_target_from_live_tmux(
     target: &mut AgentLocationHints,
     attachment: &AgentWorkspaceAttachment,
@@ -604,39 +629,90 @@ fn enrich_target_from_live_tmux(
     workspace_resolver: &mut impl AgentWorkspaceLookup,
 ) -> AgentTmuxTarget {
     let matches = window_workspace_matches(attachment, panes, workspace_resolver);
-    if let [window] = matches.as_slice() {
-        enrich_target_from_window_match(target, window, tmux_instance);
-        return AgentTmuxTarget::Window;
+    if matches.is_empty() {
+        return AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing);
     }
 
-    let sessions = matches
+    let mut common_sessions = matches[0].sessions.keys().cloned().collect::<BTreeSet<_>>();
+    for window in &matches[1..] {
+        common_sessions.retain(|session_name| window.sessions.contains_key(session_name));
+    }
+    if common_sessions.len() != 1 {
+        return cross_session_target(&matches);
+    }
+    let Some(session_name) = common_sessions.pop_first() else {
+        return cross_session_target(&matches);
+    };
+    let mut ordered_windows = matches
         .iter()
-        .map(|window| window.session_name.as_str())
-        .collect::<BTreeSet<_>>();
-    if let Some(session_name) = single_session_name(&sessions) {
-        target.tmux_instance = Some(tmux_instance.to_owned());
-        target.tmux_session_name = Some(session_name.to_owned());
-        return AgentTmuxTarget::Session;
+        .filter_map(|window| {
+            window
+                .sessions
+                .get(&session_name)
+                .map(|session| (window, session))
+        })
+        .collect::<Vec<_>>();
+    if ordered_windows.len() != matches.len() {
+        return cross_session_target(&matches);
+    }
+    ordered_windows.sort_by_key(|(window, session)| window_sort_key(window, session));
+
+    let mut candidates = Vec::with_capacity(ordered_windows.len());
+    for (index, (window, session)) in ordered_windows.into_iter().enumerate() {
+        let mut panes = window.matching_panes.iter().collect::<Vec<_>>();
+        panes.sort_by_key(|pane| pane_sort_key(pane));
+        if index == 0 {
+            enrich_target_from_window_match(
+                target,
+                window,
+                session,
+                &session_name,
+                panes[0],
+                tmux_instance,
+            );
+        }
+        candidates.push(AgentTmuxWindowCandidate {
+            window_id: window.window_id.clone(),
+            pane_ids: panes.into_iter().map(|pane| pane.pane_id.clone()).collect(),
+        });
     }
 
-    AgentTmuxTarget::None
+    AgentTmuxTarget::Windows {
+        session_name,
+        candidates,
+    }
+}
+
+fn cross_session_target(matches: &[WindowWorkspaceMatch]) -> AgentTmuxTarget {
+    let session_names = matches
+        .iter()
+        .flat_map(|window| window.sessions.keys().cloned())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::CrossSession { session_names })
 }
 
 #[derive(Debug, Clone)]
 struct WindowWorkspaceMatch {
-    session_name: String,
     window_id: String,
-    window_name: String,
-    matching_pane: Option<TmuxPaneSnapshot>,
+    sessions: BTreeMap<String, WindowSessionMatch>,
+    matching_panes: Vec<TmuxPaneSnapshot>,
 }
 
 #[derive(Debug, Clone)]
 struct WindowWorkspaceAccumulator {
-    session_name: String,
     window_id: String,
+    sessions: BTreeMap<String, WindowSessionMatch>,
+    matching_panes: BTreeMap<String, TmuxPaneSnapshot>,
+}
+
+#[derive(Debug, Clone)]
+struct WindowSessionMatch {
+    window_index: String,
     window_name: String,
-    matching_panes: Vec<TmuxPaneSnapshot>,
-    matches_attachment: bool,
+    active: bool,
+    last: bool,
 }
 
 fn window_workspace_matches(
@@ -660,52 +736,69 @@ fn window_workspace_matches(
             windows
                 .entry(pane.window_id.clone())
                 .or_insert_with(|| WindowWorkspaceAccumulator {
-                    session_name: pane.session_name.clone(),
                     window_id: pane.window_id.clone(),
-                    window_name: pane.window_name.clone(),
-                    matching_panes: Vec::new(),
-                    matches_attachment: false,
+                    sessions: BTreeMap::new(),
+                    matching_panes: BTreeMap::new(),
                 });
         if workspace.key() == attachment.key() {
-            entry.matches_attachment = true;
-            entry.matching_panes.push(pane.clone());
+            entry
+                .sessions
+                .entry(pane.session_name.clone())
+                .or_insert_with(|| WindowSessionMatch {
+                    window_index: pane.window_index.clone(),
+                    window_name: pane.window_name.clone(),
+                    active: pane.window_active,
+                    last: pane.window_last,
+                });
+            entry
+                .matching_panes
+                .entry(pane.pane_id.clone())
+                .or_insert_with(|| pane.clone());
         }
     }
 
     windows
         .into_values()
-        .filter(|window| window.matches_attachment)
+        .filter(|window| !window.matching_panes.is_empty())
         .map(|window| WindowWorkspaceMatch {
-            session_name: window.session_name,
             window_id: window.window_id,
-            window_name: window.window_name,
-            matching_pane: best_matching_pane(window.matching_panes),
+            sessions: window.sessions,
+            matching_panes: window.matching_panes.into_values().collect(),
         })
         .collect()
 }
 
-fn best_matching_pane(mut panes: Vec<TmuxPaneSnapshot>) -> Option<TmuxPaneSnapshot> {
-    let active_indexes = panes
-        .iter()
-        .enumerate()
-        .filter_map(|(index, pane)| pane.pane_active.then_some(index))
-        .collect::<Vec<_>>();
-    if let [active_index] = active_indexes.as_slice() {
-        return Some(panes.swap_remove(*active_index));
-    }
-
-    panes.sort_by_key(|pane| (pane_index_sort_key(pane), pane.pane_id.clone()));
-    panes.into_iter().next()
+fn window_sort_key<'a>(
+    window: &'a WindowWorkspaceMatch,
+    session: &WindowSessionMatch,
+) -> (u8, u64, &'a str) {
+    let preference = if session.active {
+        0
+    } else if session.last {
+        1
+    } else {
+        2
+    };
+    (
+        preference,
+        session.window_index.parse().unwrap_or(u64::MAX),
+        &window.window_id,
+    )
 }
 
-fn pane_index_sort_key(pane: &TmuxPaneSnapshot) -> u16 {
-    pane.pane_index.parse().unwrap_or(u16::MAX)
-}
-
-fn single_session_name<'a>(sessions: &BTreeSet<&'a str>) -> Option<&'a str> {
-    let mut sessions = sessions.iter().copied();
-    let session = sessions.next()?;
-    sessions.next().is_none().then_some(session)
+fn pane_sort_key(pane: &TmuxPaneSnapshot) -> (u8, u64, &str) {
+    let preference = if pane.pane_active {
+        0
+    } else if pane.pane_last {
+        1
+    } else {
+        2
+    };
+    (
+        preference,
+        pane.pane_index.parse().unwrap_or(u64::MAX),
+        &pane.pane_id,
+    )
 }
 
 fn apply_workspace_attachment(
@@ -718,34 +811,22 @@ fn apply_workspace_attachment(
     target.git_worktree_path = Some(attachment.path().to_owned());
 }
 
-fn enrich_target_from_pane(
+fn enrich_target_from_window_match(
     target: &mut AgentLocationHints,
+    window: &WindowWorkspaceMatch,
+    session: &WindowSessionMatch,
+    session_name: &str,
     pane: &TmuxPaneSnapshot,
     tmux_instance: &str,
 ) {
     target.tmux_instance = Some(tmux_instance.to_owned());
-    target.tmux_session_name = Some(pane.session_name.clone());
-    target.tmux_window_id = Some(pane.window_id.clone());
-    target.tmux_window_name = Some(pane.window_name.clone());
+    target.tmux_session_name = Some(session_name.to_owned());
+    target.tmux_window_id = Some(window.window_id.clone());
+    target.tmux_window_name = Some(session.window_name.clone());
     target.tmux_pane_id = Some(pane.pane_id.clone());
     target.tmux_pane_title = pane.title.clone();
     target.tmux_pane_current_command = pane.current_command.clone();
     target.tmux_pane_current_path = pane.current_path.clone();
-}
-
-fn enrich_target_from_window_match(
-    target: &mut AgentLocationHints,
-    window: &WindowWorkspaceMatch,
-    tmux_instance: &str,
-) {
-    if let Some(pane) = &window.matching_pane {
-        enrich_target_from_pane(target, pane, tmux_instance);
-    } else {
-        target.tmux_instance = Some(tmux_instance.to_owned());
-        target.tmux_session_name = Some(window.session_name.clone());
-        target.tmux_window_id = Some(window.window_id.clone());
-        target.tmux_window_name = Some(window.window_name.clone());
-    }
 }
 
 // Merge newest display/routing metadata first. Live tmux target fields come only
@@ -898,7 +979,10 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].workspace_key(), Some("/repo/project"));
         assert_eq!(views[0].workspace_path(), Some("/repo/project"));
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert!(matches!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Windows { .. }
+        ));
         assert_eq!(views[0].tmux_window_id(), Some("@1"));
     }
 
@@ -917,12 +1001,15 @@ mod tests {
         let views = reconcile_agent_sessions(vec![observation], &[], "default", &mut resolver);
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
+        assert_eq!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing)
+        );
         assert_eq!(views[0].tmux_window_id(), None);
     }
 
     #[test]
-    fn pure_reconciliation_degrades_duplicate_windows_to_session_target() {
+    fn pure_reconciliation_orders_duplicate_windows_deterministically() {
         let mut observation = observation(
             "server",
             "server",
@@ -945,12 +1032,8 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Session);
-        assert_eq!(
-            views[0].target.tmux_session_name.as_deref(),
-            Some("project")
-        );
-        assert_eq!(views[0].tmux_window_id(), None);
+        assert_window_candidates(&views[0], "project", &["@1", "@2"]);
+        assert_eq!(views[0].tmux_window_id(), Some("@1"));
     }
 
     #[test]
@@ -977,7 +1060,12 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
+        assert_eq!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::CrossSession {
+                session_names: vec!["other".to_owned(), "project".to_owned()]
+            })
+        );
         assert_eq!(views[0].target.tmux_session_name, None);
         assert_eq!(views[0].tmux_window_id(), None);
     }
@@ -1187,7 +1275,10 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert!(matches!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Windows { .. }
+        ));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
         assert_eq!(views[0].title.as_deref(), Some("Server"));
@@ -1217,7 +1308,10 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert!(matches!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Windows { .. }
+        ));
     }
 
     #[test]
@@ -1301,7 +1395,7 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_windows_for_workspace_degrade_to_session_target() {
+    fn duplicate_windows_for_workspace_choose_a_matching_window() {
         let (_directory_temp, directory) = git_repo_path();
         let mut server = observation(
             "server",
@@ -1327,16 +1421,99 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Session);
-        assert_eq!(
-            views[0].target.tmux_session_name.as_deref(),
-            Some("project")
-        );
-        assert_eq!(views[0].target.tmux_window_id, None);
+        assert_window_candidates(&views[0], "project", &["@1", "@2"]);
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
-    fn mixed_single_and_multi_root_windows_degrade_to_session_target() {
+    fn current_matching_window_precedes_previous_and_index_order() {
+        let (_directory_temp, directory) = git_repo_path();
+        let mut server = directory_only_observation(&directory);
+        server.target.git_worktree_path = None;
+        let mut previous = pane_snapshot("%1", "@1", &directory, None);
+        previous.window_active = false;
+        previous.window_last = true;
+        previous.window_index = "1".to_owned();
+        let mut current = pane_snapshot("%2", "@2", &directory, None);
+        current.window_index = "9".to_owned();
+
+        let views = reconcile_session_views(vec![server], &[previous, current], "default");
+
+        assert_window_candidates(&views[0], "project", &["@2", "@1"]);
+        assert_eq!(views[0].tmux_window_id(), Some("@2"));
+    }
+
+    #[test]
+    fn scratch_window_sidebar_does_not_override_previous_matching_window() {
+        let (_directory_temp, directory) = git_repo_path();
+        let (_scratch_temp, scratch) = git_repo_path();
+        let mut server = directory_only_observation(&directory);
+        server.target.git_worktree_path = None;
+        let mut current_scratch = pane_snapshot("%scratch", "@9", &scratch, None);
+        current_scratch.window_index = "9".to_owned();
+        let mut lowest = pane_snapshot("%1", "@1", &directory, None);
+        lowest.window_active = false;
+        lowest.window_index = "1".to_owned();
+        let mut previous = pane_snapshot("%2", "@2", &directory, None);
+        previous.window_active = false;
+        previous.window_last = true;
+        previous.window_index = "8".to_owned();
+
+        let views = reconcile_session_views(
+            vec![server],
+            &[current_scratch, lowest, previous],
+            "default",
+        );
+
+        assert_window_candidates(&views[0], "project", &["@2", "@1"]);
+        assert_eq!(views[0].tmux_window_id(), Some("@2"));
+    }
+
+    #[test]
+    fn matching_windows_fall_back_by_parsed_index_then_window_id() {
+        let (_directory_temp, directory) = git_repo_path();
+        let mut server = directory_only_observation(&directory);
+        server.target.git_worktree_path = None;
+        let mut high = pane_snapshot("%2", "@2", &directory, None);
+        high.window_active = false;
+        high.window_index = "70000".to_owned();
+        let mut tied_later = pane_snapshot("%9", "@9", &directory, None);
+        tied_later.window_active = false;
+        tied_later.window_index = "65536".to_owned();
+        let mut tied_first = pane_snapshot("%1", "@1", &directory, None);
+        tied_first.window_active = false;
+        tied_first.window_index = "65536".to_owned();
+
+        let views =
+            reconcile_session_views(vec![server], &[high, tied_later, tied_first], "default");
+
+        assert_window_candidates(&views[0], "project", &["@1", "@9", "@2"]);
+        assert_eq!(views[0].tmux_window_id(), Some("@1"));
+    }
+
+    #[test]
+    fn linked_windows_are_deduplicated_before_common_session_selection() {
+        let (_directory_temp, directory) = git_repo_path();
+        let mut server = directory_only_observation(&directory);
+        server.target.git_worktree_path = None;
+        let mut project_link = pane_snapshot_in_session("project", "%1", "@1", &directory, None);
+        project_link.window_active = false;
+        let mut linked_copy = pane_snapshot_in_session("linked", "%1", "@1", &directory, None);
+        linked_copy.window_active = false;
+        let mut project_only = pane_snapshot_in_session("project", "%2", "@2", &directory, None);
+        project_only.window_active = false;
+
+        let views = reconcile_session_views(
+            vec![server],
+            &[project_link, linked_copy, project_only],
+            "default",
+        );
+
+        assert_window_candidates(&views[0], "project", &["@1", "@2"]);
+    }
+
+    #[test]
+    fn mixed_single_and_multi_root_windows_choose_a_matching_window() {
         let (_directory_temp, directory) = git_repo_path();
         let (_other_temp, other) = git_repo_path();
         let mut server = observation(
@@ -1364,12 +1541,8 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Session);
-        assert_eq!(
-            views[0].target.tmux_session_name.as_deref(),
-            Some("project")
-        );
-        assert_eq!(views[0].target.tmux_window_id, None);
+        assert_window_candidates(&views[0], "project", &["@1", "@2"]);
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
     }
 
     #[test]
@@ -1401,7 +1574,12 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
+        assert_eq!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::CrossSession {
+                session_names: vec!["other".to_owned(), "project".to_owned()]
+            })
+        );
         assert_eq!(views[0].target.tmux_session_name, None);
         assert_eq!(views[0].target.tmux_window_id, None);
     }
@@ -1433,9 +1611,9 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Session);
-        assert_eq!(views[0].target.tmux_window_id, None);
-        assert_eq!(views[0].target.tmux_pane_id, None);
+        assert_window_candidates(&views[0], "project", &["@1", "@2"]);
+        assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
     }
 
     #[test]
@@ -1464,7 +1642,10 @@ mod tests {
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@2"));
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%2"));
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert!(matches!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Windows { .. }
+        ));
     }
 
     #[test]
@@ -1492,7 +1673,10 @@ mod tests {
         );
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert!(matches!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Windows { .. }
+        ));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
     }
@@ -1523,9 +1707,55 @@ mod tests {
         let views = reconcile_session_views(vec![server], &[sidebar, first, second], "default");
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::Window);
+        assert!(matches!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Windows { .. }
+        ));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%2"));
+    }
+
+    #[test]
+    fn active_sidebar_yields_to_previous_matching_content_pane() {
+        let (_directory_temp, directory) = git_repo_path();
+        let mut server = directory_only_observation(&directory);
+        server.target.git_worktree_path = None;
+        let mut first = pane_snapshot("%1", "@1", &directory, None);
+        first.pane_active = false;
+        first.pane_index = "1".to_owned();
+        let mut previous = pane_snapshot("%2", "@1", &directory, None);
+        previous.pane_active = false;
+        previous.pane_last = true;
+        previous.pane_index = "8".to_owned();
+        let mut sidebar = pane_snapshot("%sidebar", "@1", &directory, Some("sidebar"));
+        sidebar.pane_index = "0".to_owned();
+
+        let views = reconcile_session_views(vec![server], &[sidebar, first, previous], "default");
+
+        assert_candidate_panes(&views[0], "@1", &["%2", "%1"]);
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%2"));
+    }
+
+    #[test]
+    fn matching_panes_fall_back_by_parsed_index_then_pane_id() {
+        let (_directory_temp, directory) = git_repo_path();
+        let mut server = directory_only_observation(&directory);
+        server.target.git_worktree_path = None;
+        let mut high = pane_snapshot("%2", "@1", &directory, None);
+        high.pane_active = false;
+        high.pane_index = "70000".to_owned();
+        let mut tied_later = pane_snapshot("%9", "@1", &directory, None);
+        tied_later.pane_active = false;
+        tied_later.pane_index = "65536".to_owned();
+        let mut tied_first = pane_snapshot("%1", "@1", &directory, None);
+        tied_first.pane_active = false;
+        tied_first.pane_index = "65536".to_owned();
+
+        let views =
+            reconcile_session_views(vec![server], &[high, tied_later, tied_first], "default");
+
+        assert_candidate_panes(&views[0], "@1", &["%1", "%9", "%2"]);
+        assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
     }
 
     #[test]
@@ -1548,7 +1778,10 @@ mod tests {
         let views = reconcile_session_views(vec![server], &[], "default");
 
         assert_eq!(views.len(), 1);
-        assert_eq!(views[0].tmux_target, AgentTmuxTarget::None);
+        assert_eq!(
+            views[0].tmux_target,
+            AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing)
+        );
         assert_eq!(views[0].target.tmux_window_id, None);
     }
 
@@ -1750,6 +1983,71 @@ mod tests {
         pane_snapshot_in_session("project", pane_id, window_id, current_path, kmux_role)
     }
 
+    fn assert_window_candidates(
+        view: &ResolvedAgentSession,
+        expected_session: &str,
+        expected_window_ids: &[&str],
+    ) {
+        let AgentTmuxTarget::Windows {
+            session_name,
+            candidates,
+        } = &view.tmux_target
+        else {
+            assert!(matches!(&view.tmux_target, AgentTmuxTarget::Windows { .. }));
+            return;
+        };
+        assert_eq!(session_name, expected_session);
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.window_id.as_str())
+                .collect::<Vec<_>>(),
+            expected_window_ids
+        );
+    }
+
+    fn assert_candidate_panes(
+        view: &ResolvedAgentSession,
+        window_id: &str,
+        expected_pane_ids: &[&str],
+    ) {
+        let AgentTmuxTarget::Windows { candidates, .. } = &view.tmux_target else {
+            assert!(matches!(&view.tmux_target, AgentTmuxTarget::Windows { .. }));
+            return;
+        };
+        let candidate = candidates
+            .iter()
+            .find(|candidate| candidate.window_id == window_id);
+        assert!(candidate.is_some(), "expected matching window candidate");
+        let Some(candidate) = candidate else {
+            return;
+        };
+        assert_eq!(
+            candidate
+                .pane_ids
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            expected_pane_ids
+        );
+    }
+
+    fn directory_only_observation(directory: &str) -> AgentObservationState {
+        let mut state = observation(
+            "server",
+            "server",
+            Some(AgentStatus::Working),
+            100,
+            Some("Workspace activity"),
+            directory,
+        );
+        state.target.tmux_pane_id = None;
+        state.target.tmux_window_id = None;
+        state.target.tmux_session_name = None;
+        state.target.tmux_window_name = None;
+        state
+    }
+
     fn pane_snapshot_in_session(
         session_name: &str,
         pane_id: &str,
@@ -1772,7 +2070,9 @@ mod tests {
             current_command: Some("opencode".to_owned()),
             current_path: Some(current_path.to_owned()),
             pane_active: true,
+            pane_last: false,
             window_active: true,
+            window_last: false,
             session_attached: true,
             kmux_role: kmux_role.map(str::to_owned),
         }

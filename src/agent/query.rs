@@ -149,7 +149,9 @@ mod tests {
             member_session_keys: vec![key.clone()],
             key,
             workspace: None,
-            tmux_target: crate::agent::sessions::AgentTmuxTarget::None,
+            tmux_target: crate::agent::sessions::AgentTmuxTarget::Unavailable(
+                crate::agent::sessions::AgentTmuxUnavailableReason::Missing,
+            ),
             created_at: 100,
             status: AgentStatus::Working,
             status_observed_at: 100,

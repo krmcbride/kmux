@@ -419,7 +419,13 @@ mod tests {
                 )
                 .expect("test workspace should be valid"),
             ),
-            tmux_target: AgentTmuxTarget::Window,
+            tmux_target: AgentTmuxTarget::Windows {
+                session_name: "project".to_owned(),
+                candidates: vec![crate::agent::sessions::AgentTmuxWindowCandidate {
+                    window_id: "@1".to_owned(),
+                    pane_ids: Vec::new(),
+                }],
+            },
             created_at: 100,
             status: AgentStatus::Working,
             status_observed_at: 100,

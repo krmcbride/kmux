@@ -777,7 +777,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
 }
 
 #[test]
-fn ambiguous_agent_target_does_not_set_window_status_option() -> Result<()> {
+fn same_session_duplicate_workspace_windows_mark_the_current_match() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -808,15 +808,19 @@ status_icons:
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
             Some("working"),
-            "ses_ambiguous_root",
+            "ses_duplicate_root",
             "server",
             "http://127.0.0.1:4096",
-            &[("--title", "Ambiguous root"), ("--directory", &repo_path)],
+            &[("--title", "Duplicate root"), ("--directory", &repo_path)],
         ))
         .assert()
         .success();
 
-    assert_eq!(tmux.window_option(&main_window_id, "@kmux_status")?, None);
+    assert_eq!(
+        tmux.window_option(&main_window_id, "@kmux_status")?
+            .as_deref(),
+        Some("W")
+    );
     assert_eq!(
         tmux.window_option(&duplicate_window_id, "@kmux_status")?,
         None
@@ -827,7 +831,7 @@ status_icons:
         .success();
     let stdout = String::from_utf8_lossy(&status.get_output().stdout);
     assert!(stdout.contains("working"));
-    assert!(stdout.contains("Ambiguous root"));
+    assert!(stdout.contains("Duplicate root"));
     Ok(())
 }
 
