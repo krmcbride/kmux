@@ -41,32 +41,15 @@ pub struct AgentObservationKey {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-/// Optional location metadata used to attach agent sessions to tmux and Git.
+#[serde(deny_unknown_fields)]
+/// Current producer-supplied metadata used to attach agent sessions to tmux and Git.
 pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_instance: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_pane_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_window_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_session_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_window_name: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_pane_title: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_pane_current_command: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub tmux_pane_current_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_repo_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_repo_path: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub kmux_workspace_slug: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub git_worktree_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -74,6 +57,7 @@ pub struct AgentLocationHints {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 /// Latest observed state from one producer for one logical agent session.
 pub struct AgentObservationState {
     pub key: AgentObservationKey,

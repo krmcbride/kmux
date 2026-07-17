@@ -873,6 +873,14 @@ pub mod test_support {
 
     use tempfile::TempDir;
 
+    /// Create an adapter pinned to a unique socket with no running tmux server.
+    pub fn disconnected_adapter() -> Tmux {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos());
+        Tmux::with_socket_name(format!("kmux-missing-test-{}-{nanos}", std::process::id()))
+    }
+
     /// Isolated tmux server fixture for adapter and sidebar tests.
     pub struct TmuxFixture {
         pub tmux: Tmux,

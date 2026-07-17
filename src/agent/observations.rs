@@ -93,7 +93,6 @@ fn upsert_observation(store: &StateStore, update: ObservationUpdate, now: u64) -
             state.context = Some(context);
         }
         update.target.apply_to(&mut state.target);
-        clear_obsolete_producer_hints(&mut state.target);
         apply_inferred_repo_metadata(&mut state.target, inferred_repo);
 
         Ok(Some(state))
@@ -111,14 +110,6 @@ impl LocationUpdate {
         // replace the previous directory rather than preserving stale routing data.
         target.directory = self.directory;
     }
-}
-
-// These fields used to be producer inputs. New reports should not preserve old
-// local values that could affect resolved tmux focus or derived Git roots.
-fn clear_obsolete_producer_hints(target: &mut AgentLocationHints) {
-    target.tmux_pane_id = None;
-    target.tmux_window_id = None;
-    target.git_worktree_path = None;
 }
 
 // Partial updates should not erase existing fields with omitted or blank strings.
@@ -231,56 +222,6 @@ mod tests {
         assert_eq!(observation.title.as_deref(), Some("Renamed"));
         assert_eq!(observation.context.as_deref(), Some("context"));
         assert_eq!(observation.target.directory, None);
-        Ok(())
-    }
-
-    #[test]
-    fn upsert_clears_obsolete_producer_target_hints() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = store_with_path(temp.path().join("state"))?;
-        let key = observation_key("ses_root", "server", "default");
-        let mut previous = AgentObservationState {
-            key: key.clone(),
-            created_at: 100,
-            status: Some(AgentStatus::Working),
-            status_observed_at: Some(100),
-            status_changed_at: Some(100),
-            working_elapsed_secs: 0,
-            observed_at: 100,
-            title: None,
-            context: None,
-            target: AgentLocationHints {
-                tmux_pane_id: Some("%old".to_owned()),
-                tmux_window_id: Some("@old".to_owned()),
-                git_worktree_path: Some("/repo/old".to_owned()),
-                directory: Some("/repo/old".to_owned()),
-                ..AgentLocationHints::default()
-            },
-        };
-        store.upsert_observation(&previous)?;
-
-        apply_observation_command_at(
-            &store,
-            ObservationCommand::Upsert(Box::new(ObservationUpdate {
-                key: key.clone(),
-                status: Some(AgentStatus::Working),
-                title: None,
-                context: None,
-                target: LocationUpdate {
-                    directory: Some("/repo/new".to_owned()),
-                    ..LocationUpdate::default()
-                },
-            })),
-            120,
-        )?;
-
-        previous = store
-            .get_observation(&key)?
-            .ok_or_else(|| anyhow::anyhow!("expected observation to be stored"))?;
-        assert_eq!(previous.target.tmux_pane_id, None);
-        assert_eq!(previous.target.tmux_window_id, None);
-        assert_eq!(previous.target.git_worktree_path, None);
-        assert_eq!(previous.target.directory.as_deref(), Some("/repo/new"));
         Ok(())
     }
 

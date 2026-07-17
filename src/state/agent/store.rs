@@ -343,17 +343,8 @@ mod tests {
             context: Some("163.2K (41%)".to_owned()),
             target: AgentLocationHints {
                 tmux_instance: Some("test".to_owned()),
-                tmux_pane_id: Some("%1".to_owned()),
-                tmux_window_id: Some("@1".to_owned()),
-                tmux_session_name: Some("project".to_owned()),
-                tmux_window_name: Some("kmux-feature-auth".to_owned()),
-                tmux_pane_title: Some("Agent title".to_owned()),
-                tmux_pane_current_command: Some("opencode".to_owned()),
-                tmux_pane_current_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 git_repo_name: Some("repo".to_owned()),
                 git_repo_path: Some("/repo".to_owned()),
-                kmux_workspace_slug: Some("feature-auth".to_owned()),
-                git_worktree_path: Some("/repo__worktrees/feature-auth".to_owned()),
                 git_branch: Some("feature/auth".to_owned()),
                 directory: Some("/repo__worktrees/feature-auth".to_owned()),
             },
@@ -368,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn removed_metadata_fields_are_ignored_and_dropped_on_rewrite() -> Result<()> {
+    fn unsupported_pre_release_observation_fields_are_pruned() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
         let state = test_observation("server", "default", AgentStatus::Working, 100);
@@ -380,24 +371,23 @@ mod tests {
             "metadata".to_owned(),
             serde_json::json!({"workspace_id": "wrk_example"}),
         );
-        object.insert(
-            "metadata_cleared".to_owned(),
-            serde_json::json!(["old_key"]),
-        );
-        fs::write(
-            store.observation_path(&state.key),
-            serde_json::to_vec_pretty(&persisted)?,
-        )?;
+        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
+        Ok(())
+    }
 
-        let loaded = store
-            .get_observation(&state.key)?
-            .ok_or_else(|| anyhow::anyhow!("pre-release observation should load"))?;
-        assert_eq!(loaded, state);
-        store.upsert_observation(&loaded)?;
-        let rewritten: serde_json::Value =
-            serde_json::from_slice(&fs::read(store.observation_path(&state.key))?)?;
-        assert!(rewritten.get("metadata").is_none());
-        assert!(rewritten.get("metadata_cleared").is_none());
+    #[test]
+    fn obsolete_pre_release_location_fields_are_pruned() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let state = test_observation("server", "default", AgentStatus::Working, 100);
+        let mut persisted = serde_json::to_value(&state)?;
+        persisted
+            .get_mut("target")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| anyhow::anyhow!("target should serialize as an object"))?
+            .insert("tmux_pane_id".to_owned(), serde_json::json!("%old"));
+
+        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
         Ok(())
     }
 
@@ -665,12 +655,23 @@ mod tests {
             title: None,
             context: None,
             target: AgentLocationHints {
-                kmux_workspace_slug: Some("feature".to_owned()),
-                git_worktree_path: Some("/repo__worktrees/feature".to_owned()),
                 git_branch: Some("feature".to_owned()),
                 ..AgentLocationHints::default()
             },
         }
+    }
+
+    fn assert_persisted_observation_is_pruned(
+        store: &StateStore,
+        state: &AgentObservationState,
+        persisted: &serde_json::Value,
+    ) -> Result<()> {
+        let path = store.observation_path(&state.key);
+        fs::write(&path, serde_json::to_vec_pretty(persisted)?)?;
+
+        assert!(store.list_observations()?.is_empty());
+        assert!(!path.exists());
+        Ok(())
     }
 
     fn test_observation_key(

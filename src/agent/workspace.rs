@@ -286,17 +286,4 @@ mod tests {
         );
         Ok(())
     }
-
-    #[test]
-    fn git_worktree_path_without_directory_does_not_attach() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let mut resolver = AgentWorkspaceResolver::default();
-        let target = AgentLocationHints {
-            git_worktree_path: Some(repo.display().to_string()),
-            ..AgentLocationHints::default()
-        };
-
-        assert!(resolver.attachment_for_hints(&target).is_none());
-        Ok(())
-    }
 }

@@ -1,8 +1,7 @@
 use anyhow::{Result, anyhow};
 
 use crate::agent::observations::{LocationUpdate, ObservationCommand, ObservationUpdate};
-use crate::agent::sessions::session_views;
-use crate::agent::workspace_activity::workspace_activity_rows;
+use crate::agent::workspace_activity::workspace_activities;
 use crate::agent::{self, status};
 use crate::cli;
 use crate::config::Config;
@@ -12,16 +11,16 @@ use crate::state::{
 };
 use crate::tmux::Tmux;
 
-/// Print active agent sessions from the global workspace activity model.
+/// Print global workspace activity using the shared application read model.
 pub(super) fn run_status(args: cli::StatusArgs) -> Result<()> {
     let cli::StatusArgs { filters, json, git } = args;
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
     let config = Config::load()?;
-    let views = session_views(&store, &tmux)?;
-    let activities = workspace_activity_rows(&views, now_unix_seconds());
+    let activities = workspace_activities(&store, &tmux)?;
+    let now = now_unix_seconds();
     let query = status::StatusQuery::new(filters, git);
-    let entries = status::status_entries(&activities, &query, &config.status_icons);
+    let entries = status::status_entries(&activities, now, &query, &config.status_icons);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);

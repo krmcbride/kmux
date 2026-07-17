@@ -89,11 +89,11 @@ impl SidebarApp {
             || {
                 self.apply_refresh_visibility(visibility);
                 let snapshot = self.rows_query.load(intent, visibility)?;
-                let view_count = snapshot.view_count;
+                let activity_count = snapshot.activity_count;
                 self.apply_rows_snapshot(snapshot);
-                Ok::<usize, anyhow::Error>(view_count)
+                Ok::<usize, anyhow::Error>(activity_count)
             },
-            ok |view_count| { views = *view_count, },
+            ok |activity_count| { activities = *activity_count, },
         );
 
         if let Err(error) = result {
@@ -565,7 +565,7 @@ mod tests {
         SidebarRowsSnapshot {
             visibility,
             rows,
-            view_count: 0,
+            activity_count: 0,
         }
     }
 
@@ -1331,14 +1331,12 @@ mod tests {
             crate::agent::sessions::AgentTmuxUnavailableReason::Missing,
         );
         report.title = Some(title.to_owned());
-        report.target.tmux_instance = None;
         report.target.tmux_pane_id = None;
         report.target.tmux_window_id = None;
         report.target.tmux_session_name = None;
         report.target.tmux_window_name = None;
         report.target.tmux_pane_title = None;
         report.target.tmux_pane_current_command = None;
-        report.target.git_worktree_path = None;
         report.target.directory = Some(directory.to_owned());
         row_from_view(&report, 100)
     }

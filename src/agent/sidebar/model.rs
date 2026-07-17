@@ -1,11 +1,11 @@
 //! View model construction for sidebar rows.
 //!
-//! This module turns shared workspace activity rows into display-ready sidebar
+//! This module turns shared workspace activity aggregates into display-ready sidebar
 //! rows with stable identities, status-derived icons, elapsed-time labels, and
 //! compact primary/secondary text for the renderer.
 
 use crate::agent::sessions::AgentTmuxTarget;
-use crate::agent::workspace_activity::WorkspaceActivityRow;
+use crate::agent::workspace_activity::WorkspaceActivity;
 use crate::config::StatusIcons;
 use crate::state::{AgentSessionKey, AgentStatus};
 use serde::{Deserialize, Serialize};
@@ -45,9 +45,9 @@ impl SidebarRowIdentity {
             .is_some_and(|key| !key.trim().is_empty())
     }
 
-    fn from_activity(row: &WorkspaceActivityRow) -> Self {
+    fn from_activity(row: &WorkspaceActivity) -> Self {
         Self {
-            key: format!("workspace:{}", row.workspace_key),
+            key: format!("workspace:{}", row.workspace_key()),
         }
     }
 }
@@ -60,10 +60,10 @@ pub(super) struct SidebarRowSelection {
 }
 
 impl SidebarRowSelection {
-    fn from_activity(row: &WorkspaceActivityRow) -> Self {
+    fn from_activity(row: &WorkspaceActivity) -> Self {
         Self {
-            workspace_key: row.workspace_key.clone(),
-            member_session_keys: row.member_session_keys.clone(),
+            workspace_key: row.workspace_key().to_owned(),
+            member_session_keys: row.member_session_keys().to_vec(),
         }
     }
 }
@@ -101,7 +101,6 @@ impl SidebarRowState {
 pub(super) struct SidebarRow {
     pub(super) identity: SidebarRowIdentity,
     pub(super) selection: SidebarRowSelection,
-    created_at: u64,
     pub(super) state: SidebarRowState,
     pub(super) icon: String,
     pub(super) primary: String,
@@ -129,18 +128,20 @@ impl SidebarRow {
 
 impl SidebarRow {
     fn from_activity_with_working_icon(
-        row: &WorkspaceActivityRow,
+        row: &WorkspaceActivity,
+        now: u64,
         icons: &SidebarIcons,
         working_icon: Option<&str>,
         idle_after_seconds: u64,
     ) -> Self {
         let identity = SidebarRowIdentity::from_activity(row);
+        let status = row.status();
         let state =
-            SidebarRowState::from_status(row.status, row.status_age_secs, idle_after_seconds);
+            SidebarRowState::from_status(status, row.status_age_secs(now), idle_after_seconds);
         let icon = if state.is_idle() {
             icons.sleeping.clone()
         } else {
-            match row.status {
+            match status {
                 AgentStatus::Working => working_icon.unwrap_or(&icons.working).to_owned(),
                 AgentStatus::Waiting => icons.waiting.clone(),
                 AgentStatus::Done => icons.done.clone(),
@@ -150,19 +151,18 @@ impl SidebarRow {
         let session_name = row.tmux_session_name().unwrap_or_default().to_owned();
         let window_id = row.tmux_window_id().unwrap_or_default().to_owned();
         let pane_id = row.tmux_pane_id().map(str::to_owned);
-        let jump_target = row.tmux_target.clone();
+        let jump_target = row.tmux_target().clone();
 
         Self {
             identity,
             selection: SidebarRowSelection::from_activity(row),
-            created_at: row.created_at,
             state,
             icon,
             primary: row.primary.clone(),
             secondary: row.secondary.clone(),
             secondary_right: row.display_context.clone(),
             title: row.display_title.clone(),
-            elapsed: compact_elapsed(row.elapsed_secs),
+            elapsed: compact_elapsed(row.elapsed_secs(now)),
             session_name,
             window_id,
             pane_id,
@@ -171,9 +171,10 @@ impl SidebarRow {
     }
 }
 
-/// Build sidebar rows from sorted workspace activity rows.
+/// Build sidebar rows from sorted workspace activity aggregates.
 pub(super) fn build_rows_with_working_icon(
-    activities: &[WorkspaceActivityRow],
+    activities: &[WorkspaceActivity],
+    now: u64,
     icons: &SidebarIcons,
     working_icon: Option<&str>,
     idle_after_seconds: u64,
@@ -183,6 +184,7 @@ pub(super) fn build_rows_with_working_icon(
         .map(|activity| {
             SidebarRow::from_activity_with_working_icon(
                 activity,
+                now,
                 icons,
                 working_icon,
                 idle_after_seconds,
@@ -223,7 +225,8 @@ mod tests {
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, report_state, set_session_key, set_workspace, test_icons,
     };
-    use crate::agent::workspace_activity::workspace_activity_rows;
+    use crate::agent::status::{self, StatusQuery};
+    use crate::agent::workspace_activity::workspace_activities_from_sessions;
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
     fn build_rows(
@@ -232,8 +235,8 @@ mod tests {
         idle_after_seconds: u64,
     ) -> Vec<SidebarRow> {
         let icons = test_icons();
-        let activities = workspace_activity_rows(views, now);
-        build_rows_with_working_icon(&activities, &icons, None, idle_after_seconds)
+        let activities = workspace_activities_from_sessions(views.to_vec());
+        build_rows_with_working_icon(&activities, now, &icons, None, idle_after_seconds)
     }
 
     #[test]
@@ -323,13 +326,11 @@ mod tests {
     #[test]
     fn row_model_uses_working_frame_only_for_working_rows() {
         let rows = build_rows_with_working_icon(
-            &workspace_activity_rows(
-                &[
-                    report_state(AgentStatus::Working, 120, "@1", "%1"),
-                    report_state(AgentStatus::Waiting, 120, "@2", "%2"),
-                ],
-                300,
-            ),
+            &workspace_activities_from_sessions(vec![
+                report_state(AgentStatus::Working, 120, "@1", "%1"),
+                report_state(AgentStatus::Waiting, 120, "@2", "%2"),
+            ]),
+            300,
             &test_icons(),
             Some("a"),
             1_800,
@@ -376,31 +377,31 @@ mod tests {
         second.target.tmux_pane_title = None;
         second.target.tmux_pane_current_command = None;
 
-        let rows = build_rows(&[first, second], 300, 1_800);
+        let first_rows = build_rows(&[first], 300, 1_800);
+        let second_rows = build_rows(&[second], 300, 1_800);
 
-        assert_eq!(rows.len(), 2);
-        assert_eq!(rows[0].primary, "kmux");
-        assert_eq!(rows[1].primary, "kmux");
-        assert_eq!(rows[0].secondary, "feature/sidebar");
-        assert_eq!(rows[1].secondary, "feature/sidebar");
-        assert_eq!(rows[0].title, "Implement sidebar rows");
-        assert_eq!(rows[1].title, "session ses_second");
-        assert_eq!(rows[0].identity, rows[1].identity);
+        assert_eq!(first_rows[0].primary, "kmux");
+        assert_eq!(second_rows[0].primary, "kmux");
+        assert_eq!(first_rows[0].secondary, "feature/sidebar");
+        assert_eq!(second_rows[0].secondary, "feature/sidebar");
+        assert_eq!(first_rows[0].title, "Implement sidebar rows");
+        assert_eq!(second_rows[0].title, "session ses_second");
+        assert_eq!(first_rows[0].identity, second_rows[0].identity);
     }
 
     #[test]
     fn row_selection_carries_workspace_identity_and_all_member_sessions() {
-        let mut report = report_state(AgentStatus::Waiting, 120, "@1", "%1");
-        report.member_session_keys = vec![
+        let report = report_state(AgentStatus::Waiting, 120, "@1", "%1");
+        let mut companion = report_state(AgentStatus::Done, 120, "@1", "%2");
+        set_session_key(
+            &mut companion,
             AgentSessionKey {
                 agent_kind: "codex".to_owned(),
                 session_id: "ses_secondary".to_owned(),
             },
-            report.key.clone(),
-        ];
-        report.member_session_keys.sort();
+        );
 
-        let rows = build_rows(&[report], 300, 1_800);
+        let rows = build_rows(&[report, companion], 300, 1_800);
 
         assert_eq!(
             rows[0].selection.workspace_key,
@@ -411,6 +412,56 @@ mod tests {
         assert_eq!(
             rows[0].selection.member_session_keys[1].agent_kind,
             "opencode"
+        );
+    }
+
+    #[test]
+    fn sidebar_and_status_consume_the_same_primary_session() {
+        let mut working = report_state(AgentStatus::Working, 300, "@1", "%1");
+        set_session_key(
+            &mut working,
+            AgentSessionKey {
+                agent_kind: "opencode".to_owned(),
+                session_id: "ses_a_working".to_owned(),
+            },
+        );
+        let mut waiting = report_state(AgentStatus::Waiting, 100, "@1", "%2");
+        set_session_key(
+            &mut waiting,
+            AgentSessionKey {
+                agent_kind: "codex".to_owned(),
+                session_id: "ses_z_waiting".to_owned(),
+            },
+        );
+        let activities = workspace_activities_from_sessions(vec![working, waiting]);
+
+        let sidebar_rows =
+            build_rows_with_working_icon(&activities, 300, &test_icons(), None, 1_800);
+        let status_entries = status::status_entries(
+            &activities,
+            300,
+            &StatusQuery::new(Vec::new(), false),
+            &StatusIcons::default(),
+        );
+        let status_json = serde_json::to_value(status_entries)
+            .expect("status entries should serialize for consistency test");
+
+        assert_eq!(sidebar_rows[0].state, SidebarRowState::Waiting);
+        assert_eq!(
+            status_json
+                .pointer("/0/agent_kind")
+                .and_then(|v| v.as_str()),
+            Some("codex")
+        );
+        assert_eq!(
+            status_json
+                .pointer("/0/session_id")
+                .and_then(|v| v.as_str()),
+            Some("ses_z_waiting")
+        );
+        assert_eq!(
+            status_json.pointer("/0/status").and_then(|v| v.as_str()),
+            Some("waiting")
         );
     }
 

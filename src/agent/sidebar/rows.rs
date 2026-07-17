@@ -6,9 +6,8 @@
 
 use anyhow::Result;
 
-use crate::agent::sessions::session_views;
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
-use crate::agent::workspace_activity::workspace_activity_rows;
+use crate::agent::workspace_activity::workspace_activities;
 use crate::state::{StateStore, now_unix_seconds};
 use crate::tmux::{Tmux, TmuxPaneVisibility};
 
@@ -23,11 +22,11 @@ pub(super) struct SidebarRefreshRowsIntent<'a> {
 pub(super) struct SidebarRowsSnapshot {
     pub(super) visibility: TmuxPaneVisibility,
     pub(super) rows: Vec<SidebarRow>,
-    pub(super) view_count: usize,
+    pub(super) activity_count: usize,
 }
 
 #[derive(Debug, Clone)]
-/// Query service that loads resolved sessions and builds sidebar row models.
+/// Query service that loads workspace activity and builds sidebar row models.
 pub(super) struct SidebarRowsQuery {
     store: StateStore,
     tmux: Tmux,
@@ -62,11 +61,12 @@ impl SidebarRowsQuery {
         intent: SidebarRefreshRowsIntent<'_>,
         visibility: TmuxPaneVisibility,
     ) -> Result<SidebarRowsSnapshot> {
-        let views = session_views(&self.store, &self.tmux)?;
-        let activities = workspace_activity_rows(&views, now_unix_seconds());
-        let view_count = activities.len();
+        let activities = workspace_activities(&self.store, &self.tmux)?;
+        let activity_count = activities.len();
+        let now = now_unix_seconds();
         let rows = build_rows_with_working_icon(
             &activities,
+            now,
             &self.icons,
             intent.working_icon,
             self.idle_after_seconds,
@@ -75,7 +75,7 @@ impl SidebarRowsQuery {
         Ok(SidebarRowsSnapshot {
             visibility,
             rows,
-            view_count,
+            activity_count,
         })
     }
 

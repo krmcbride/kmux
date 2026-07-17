@@ -1,11 +1,10 @@
-use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Result;
 
-use crate::agent::query::{WorkspaceTarget, view_matches_workspace};
-use crate::agent::sessions::{ResolvedAgentSession, session_views};
+use crate::agent::query::{WorkspaceTarget, activity_matches_workspace};
+use crate::agent::workspace_activity::{WorkspaceActivity, workspace_activities};
 use crate::cli;
 use crate::config::StatusIcons;
 use crate::state::{AgentStatus, StateStore};
@@ -27,9 +26,9 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
     }
 
     let tmux = Tmux::from_env();
-    let agents = StateStore::new()
+    let activities = StateStore::new()
         .ok()
-        .and_then(|store| session_views(&store, &tmux).ok())
+        .and_then(|store| workspace_activities(&store, &tmux).ok())
         .unwrap_or_default();
     let tmux_session = tmux
         .current_context()
@@ -48,7 +47,7 @@ pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
             branch: format_branch(&items, index),
             parent: item.git_parent_branch().unwrap_or("-").to_owned(),
             age: format_age(item, now),
-            agent: format_agent(item, &agents, &repo.config.status_icons),
+            agent: format_agent(item, &activities, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
             unmerged: format_unmerged(item, &repo.git),
             path: format_path(Path::new(item.git_worktree_path()), &current_dir),
@@ -126,36 +125,18 @@ fn compact_age(seconds: u64) -> String {
     }
 }
 
-// Summarize all agent sessions that match this workspace identity.
+// Show the effective status from the one activity aggregate matching this workspace.
 fn format_agent(
     item: &WorkspaceInventoryItem,
-    agents: &[ResolvedAgentSession],
+    activities: &[WorkspaceActivity],
     icons: &StatusIcons,
 ) -> String {
     let target = workspace_target(item);
-    let matching = agents
+    activities
         .iter()
-        .filter(|agent| view_matches_workspace(agent, &target))
-        .collect::<Vec<_>>();
-    if matching.is_empty() {
-        return "-".to_owned();
-    }
-    if matching.len() == 1 {
-        return status_icon(matching[0].status, icons).to_owned();
-    }
-
-    let mut counts = BTreeMap::new();
-    for agent in matching {
-        *counts
-            .entry(status_icon(agent.status, icons).to_owned())
-            .or_insert(0usize) += 1;
-    }
-
-    counts
-        .into_iter()
-        .map(|(icon, count)| format!("{count}{icon}"))
-        .collect::<Vec<_>>()
-        .join(" ")
+        .find(|activity| activity_matches_workspace(activity, &target))
+        .map(|activity| status_icon(activity.status(), icons).to_owned())
+        .unwrap_or_else(|| "-".to_owned())
 }
 
 // Match agent observations against the full workspace identity that list rows know.

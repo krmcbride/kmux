@@ -3,7 +3,7 @@ use crate::agent::sessions::{
     ResolvedAgentWorkspace,
 };
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
-use crate::agent::workspace_activity::workspace_activity_rows;
+use crate::agent::workspace_activity::{WorkspaceActivity, workspace_activities_from_sessions};
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
 use crate::state::{AgentSessionKey, AgentStatus, StateStore};
 
@@ -23,10 +23,16 @@ pub(super) fn test_icons() -> SidebarIcons {
 
 /// Build the first sidebar row generated from a single agent session view.
 pub(super) fn row_from_view(view: &ResolvedAgentSession, now: u64) -> SidebarRow {
+    let activity = workspace_activities_from_sessions(vec![view.clone()]).remove(0);
+    row_from_activity(&activity, now)
+}
+
+/// Build the sidebar row generated from one workspace activity aggregate.
+pub(super) fn row_from_activity(activity: &WorkspaceActivity, now: u64) -> SidebarRow {
     let icons = test_icons();
-    let activities = workspace_activity_rows(std::slice::from_ref(view), now);
     build_rows_with_working_icon(
-        &activities,
+        std::slice::from_ref(activity),
+        now,
         &icons,
         None,
         DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS,
@@ -46,11 +52,8 @@ pub(super) fn report_state(
         session_id: format!("ses_{pane_id}"),
     };
     ResolvedAgentSession {
-        member_session_keys: vec![key.clone()],
         key,
-        workspace: Some(resolved_workspace(format!(
-            "/repo__worktrees/feature-sidebar/{window_id}"
-        ))),
+        workspace: resolved_workspace(format!("/repo__worktrees/feature-sidebar/{window_id}")),
         tmux_target: AgentTmuxTarget::Windows {
             session_name: "project".to_owned(),
             candidates: vec![AgentTmuxWindowCandidate {
@@ -67,33 +70,28 @@ pub(super) fn report_state(
         title: None,
         context: None,
         target: ResolvedAgentTarget {
-            tmux_instance: Some("test".to_owned()),
             tmux_pane_id: Some(pane_id.to_owned()),
             tmux_window_id: Some(window_id.to_owned()),
             tmux_session_name: Some("project".to_owned()),
             tmux_window_name: Some("kmux-feature-sidebar".to_owned()),
             tmux_pane_title: Some("Implement sidebar".to_owned()),
             tmux_pane_current_command: Some("nvim".to_owned()),
-            tmux_pane_current_path: None,
             git_repo_name: Some("kmux".to_owned()),
             git_repo_path: Some("/repo".to_owned()),
-            kmux_workspace_slug: Some("feature-sidebar".to_owned()),
-            git_worktree_path: Some("/repo__worktrees/feature-sidebar".to_owned()),
             git_branch: Some("feature/sidebar".to_owned()),
             directory: None,
         },
     }
 }
 
-/// Replace the primary and sole member session key on a test session view.
+/// Replace the logical session key on a test session fixture.
 pub(super) fn set_session_key(view: &mut ResolvedAgentSession, key: AgentSessionKey) {
-    view.member_session_keys = vec![key.clone()];
     view.key = key;
 }
 
 /// Replace the resolved workspace identity on a test session view.
 pub(super) fn set_workspace(view: &mut ResolvedAgentSession, path: impl ToString) {
-    view.workspace = Some(resolved_workspace(path));
+    view.workspace = resolved_workspace(path);
 }
 
 fn resolved_workspace(path: impl ToString) -> ResolvedAgentWorkspace {

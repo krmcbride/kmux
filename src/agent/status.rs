@@ -7,12 +7,12 @@ use std::path::Path;
 
 use serde::Serialize;
 
-use crate::agent::workspace_activity::WorkspaceActivityRow;
+use crate::agent::workspace_activity::WorkspaceActivity;
 use crate::config::StatusIcons;
 use crate::git::Git;
 use crate::state::AgentStatus as StoredAgentStatus;
 
-/// Input for querying the status surface from resolved sessions.
+/// Input for filtering and decorating the shared workspace activity surface.
 pub struct StatusQuery {
     filters: Vec<String>,
     show_git: bool,
@@ -74,7 +74,8 @@ struct DisplayRow {
 
 /// Build status entries from the shared global workspace activity model.
 pub fn status_entries(
-    activities: &[WorkspaceActivityRow],
+    activities: &[WorkspaceActivity],
+    now: u64,
     query: &StatusQuery,
     icons: &StatusIcons,
 ) -> Vec<StatusEntry> {
@@ -87,45 +88,45 @@ pub fn status_entries(
                     .iter()
                     .any(|filter| activity.matches_filter(filter))
         })
-        .map(|activity| entry_for_activity(activity, query.show_git, icons))
+        .map(|activity| entry_for_activity(activity, now, query.show_git, icons))
         .collect()
 }
 
-// Build a status presentation row from the shared workspace activity row.
+// Build a status presentation row from the shared workspace activity aggregate.
 fn entry_for_activity(
-    activity: &WorkspaceActivityRow,
+    activity: &WorkspaceActivity,
+    now: u64,
     show_git: bool,
     icons: &StatusIcons,
 ) -> StatusEntry {
-    let git_worktree_path = activity.git_worktree_path().map(str::to_owned);
+    let git_worktree_path = Some(activity.git_worktree_path().to_owned());
     let directory = activity.directory().map(str::to_owned);
     let branch = activity.git_branch().unwrap_or("-").to_owned();
     let git = if show_git {
-        git_worktree_path
-            .as_deref()
-            .or(activity.directory())
-            .map(Path::new)
-            .map(|path| compute_git_info(path, &branch))
+        Some(compute_git_info(
+            Path::new(activity.git_worktree_path()),
+            &branch,
+        ))
     } else {
         None
     };
     let title = activity
-        .title
-        .clone()
-        .or_else(|| activity.target.tmux_pane_title.clone());
-    let context = activity.context.clone();
+        .title()
+        .map(str::to_owned)
+        .or_else(|| activity.tmux_pane_title().map(str::to_owned));
+    let context = activity.context().map(str::to_owned);
     let display_title = non_empty_string(&activity.display_title);
     let display_context = non_empty_string(&activity.display_context);
 
     StatusEntry {
-        agent_kind: activity.session.agent_kind.clone(),
-        session_id: activity.session.session_id.clone(),
-        workspace_key: activity.workspace_key.clone(),
+        agent_kind: activity.primary_session_key().agent_kind.clone(),
+        session_id: activity.primary_session_key().session_id.clone(),
+        workspace_key: activity.workspace_key().to_owned(),
         workspace: activity.primary.clone(),
         git_branch: branch,
-        status: activity.status.as_str().to_owned(),
-        icon: status_icon(activity.status, icons).to_owned(),
-        elapsed_secs: activity.elapsed_secs,
+        status: activity.status().as_str().to_owned(),
+        icon: status_icon(activity.status(), icons).to_owned(),
+        elapsed_secs: activity.elapsed_secs(now),
         title,
         context,
         display_title,
@@ -287,7 +288,7 @@ mod tests {
     use crate::agent::sessions::{
         AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget, ResolvedAgentWorkspace,
     };
-    use crate::agent::workspace_activity::workspace_activity_rows;
+    use crate::agent::workspace_activity::workspace_activities_from_sessions;
     use crate::state::{AgentSessionKey, AgentStatus};
     use anyhow::Result;
 
@@ -298,9 +299,9 @@ mod tests {
             session_view("codex", "ses_other", "main", "Other"),
         ];
         let query = StatusQuery::new(vec!["feature/auth".to_owned()], false);
-        let activities = workspace_activity_rows(&views, 300);
+        let activities = workspace_activities_from_sessions(views);
 
-        let entries = status_entries(&activities, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
 
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].agent_kind, "opencode");
@@ -316,9 +317,9 @@ mod tests {
             session_view("codex", "ses_other", "main", "Other"),
         ];
         let query = StatusQuery::new(Vec::new(), false);
-        let activities = workspace_activity_rows(&views, 300);
+        let activities = workspace_activities_from_sessions(views);
 
-        let entries = status_entries(&activities, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].session_id, "ses_feature");
@@ -334,9 +335,9 @@ mod tests {
             "Feature",
         )];
         let query = StatusQuery::new(vec!["Feature".to_owned()], false);
-        let activities = workspace_activity_rows(&views, 300);
+        let activities = workspace_activities_from_sessions(views);
 
-        let entries = status_entries(&activities, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
         let json = serde_json::to_value(&entries)?;
         let first = json
             .as_array()
@@ -369,9 +370,9 @@ mod tests {
         view.target.tmux_pane_title = Some("project".to_owned());
         view.target.tmux_pane_current_command = None;
         let query = StatusQuery::new(Vec::new(), false);
-        let activities = workspace_activity_rows(&[view], 300);
+        let activities = workspace_activities_from_sessions(vec![view]);
 
-        let entries = status_entries(&activities, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
 
         assert_eq!(entries[0].title.as_deref(), Some("project"));
         assert_eq!(
@@ -387,9 +388,9 @@ mod tests {
         view.target.tmux_pane_title = None;
         view.target.tmux_pane_current_command = None;
         let query = StatusQuery::new(Vec::new(), false);
-        let activities = workspace_activity_rows(&[view], 300);
+        let activities = workspace_activities_from_sessions(vec![view]);
 
-        let entries = status_entries(&activities, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
 
         assert_eq!(entries[0].title, None);
         assert_eq!(
@@ -404,21 +405,18 @@ mod tests {
         git_branch: &str,
         title: &str,
     ) -> ResolvedAgentSession {
-        let workspace_path = format!("/repo/{session_id}");
+        let workspace_path = format!("/repo/{}", git_branch.replace('/', "-"));
         let key = AgentSessionKey {
             agent_kind: agent_kind.to_owned(),
             session_id: session_id.to_owned(),
         };
         ResolvedAgentSession {
-            member_session_keys: vec![key.clone()],
             key,
-            workspace: Some(
-                ResolvedAgentWorkspace::from_canonical_root(
-                    workspace_path.clone().into(),
-                    workspace_path.clone(),
-                )
-                .expect("test workspace should be valid"),
-            ),
+            workspace: ResolvedAgentWorkspace::from_canonical_root(
+                workspace_path.clone().into(),
+                workspace_path,
+            )
+            .expect("test workspace should be valid"),
             tmux_target: AgentTmuxTarget::Windows {
                 session_name: "project".to_owned(),
                 candidates: vec![crate::agent::sessions::AgentTmuxWindowCandidate {
@@ -435,8 +433,6 @@ mod tests {
             title: Some(title.to_owned()),
             context: None,
             target: ResolvedAgentTarget {
-                kmux_workspace_slug: Some(git_branch.replace('/', "-")),
-                git_worktree_path: Some(workspace_path),
                 git_branch: Some(git_branch.to_owned()),
                 tmux_session_name: Some("project".to_owned()),
                 tmux_window_id: Some("@1".to_owned()),

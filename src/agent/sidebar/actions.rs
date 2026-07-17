@@ -379,10 +379,10 @@ impl SidebarJumpDestination {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sessions::session_views;
     use crate::agent::sidebar::test_support::{
-        report_state, row_from_view, set_session_key, set_workspace,
+        report_state, row_from_activity, row_from_view, set_session_key, set_workspace,
     };
+    use crate::agent::workspace_activity::workspace_activities;
     use crate::state::{
         AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
         AgentStatus,
@@ -761,22 +761,22 @@ mod tests {
             store.upsert_observation(observation)?;
         }
         let tmux = Tmux::new();
-        let before = session_views(&store, &tmux)?;
+        let before = workspace_activities(&store, &tmux)?;
         assert_eq!(before.len(), 2);
         let selected = before
             .iter()
-            .find(|view| view.workspace_key() == Some(selected_repo.to_string_lossy().as_ref()))
+            .find(|activity| activity.workspace_key() == selected_repo.to_string_lossy().as_ref())
             .ok_or_else(|| anyhow::anyhow!("expected selected workspace"))?;
-        assert_eq!(selected.key.session_id, "ses_primary");
+        assert_eq!(selected.primary_session_key().session_id, "ses_primary");
         assert_eq!(
-            selected.member_session_keys,
+            selected.member_session_keys(),
             [
                 session_key("codex", "ses_companion"),
                 session_key("opencode", "ses_primary"),
                 session_key("opencode", "ses_secondary"),
             ]
         );
-        let selected_row = row_from_view(selected, 200);
+        let selected_row = row_from_activity(selected, 200);
         let actions = SidebarActions::new(tmux.clone(), store.clone(), StatusIcons::default());
 
         actions
@@ -785,16 +785,16 @@ mod tests {
         let remaining = store.list_observations()?;
         assert_eq!(remaining.len(), 1);
         assert_eq!(remaining[0].key.session.session_id, "ses_unrelated");
-        let after = session_views(&store, &tmux)?;
+        let after = workspace_activities(&store, &tmux)?;
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].key.session_id, "ses_unrelated");
+        assert_eq!(after[0].primary_session_key().session_id, "ses_unrelated");
 
         store.upsert_observation(&observations[0])?;
-        let recreated = session_views(&store, &tmux)?;
+        let recreated = workspace_activities(&store, &tmux)?;
         assert_eq!(recreated.len(), 2);
-        assert!(recreated.iter().any(|view| {
-            view.workspace_key() == Some(selected_repo.to_string_lossy().as_ref())
-                && view.member_session_keys == [session_key("opencode", "ses_primary")]
+        assert!(recreated.iter().any(|activity| {
+            activity.workspace_key() == selected_repo.to_string_lossy().as_ref()
+                && activity.member_session_keys() == [session_key("opencode", "ses_primary")]
         }));
         Ok(())
     }
@@ -815,9 +815,9 @@ mod tests {
         );
         store.upsert_observation(&captured)?;
         let tmux = Tmux::new();
-        let before = session_views(&store, &tmux)?;
+        let before = workspace_activities(&store, &tmux)?;
         assert_eq!(before.len(), 1);
-        let captured_row = row_from_view(&before[0], 200);
+        let captured_row = row_from_activity(&before[0], 200);
 
         let arrived_after_snapshot = observation_for_session(
             "codex",
@@ -834,9 +834,12 @@ mod tests {
             .execute_delete_workspace_row(SidebarDeleteWorkspaceRowIntent::new(0, captured_row))?;
 
         assert_eq!(store.list_observations()?, vec![arrived_after_snapshot]);
-        let after = session_views(&store, &tmux)?;
+        let after = workspace_activities(&store, &tmux)?;
         assert_eq!(after.len(), 1);
-        assert_eq!(after[0].key.session_id, "ses_arrived_later");
+        assert_eq!(
+            after[0].primary_session_key().session_id,
+            "ses_arrived_later"
+        );
         Ok(())
     }
 
