@@ -49,6 +49,31 @@ impl RepoPaths {
     }
 }
 
+/// Compare paths after canonicalization when possible, falling back to literal comparison.
+pub fn same_path(left: &Path, right: &Path) -> bool {
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => left == right,
+    }
+}
+
+/// Infer repo name, repo path, and branch from the first path that belongs to a Git repo.
+pub fn infer_repo_metadata_from_paths(paths: &[Option<&str>]) -> RepoMetadata {
+    paths
+        .iter()
+        .flatten()
+        .find_map(|path| infer_repo_metadata(path))
+        .unwrap_or_default()
+}
+
+/// Return the final path component as owned text, ignoring empty basenames.
+pub fn path_basename(path: &str) -> Option<String> {
+    Path::new(path)
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .filter(|name| !name.is_empty())
+}
+
 fn discover_repo_paths(cwd: &Path) -> Result<RepoPaths> {
     let git = Git::new(cwd);
     let repo_info = git.repo_info()?;
@@ -90,31 +115,6 @@ fn discover_repo_paths(cwd: &Path) -> Result<RepoPaths> {
         git_common_dir,
         worktree_base_dir,
     })
-}
-
-/// Compare paths after canonicalization when possible, falling back to literal comparison.
-pub fn same_path(left: &Path, right: &Path) -> bool {
-    match (left.canonicalize(), right.canonicalize()) {
-        (Ok(left), Ok(right)) => left == right,
-        _ => left == right,
-    }
-}
-
-/// Infer repo name, repo path, and branch from the first path that belongs to a Git repo.
-pub fn infer_repo_metadata_from_paths(paths: &[Option<&str>]) -> RepoMetadata {
-    paths
-        .iter()
-        .flatten()
-        .find_map(|path| infer_repo_metadata(path))
-        .unwrap_or_default()
-}
-
-/// Return the final path component as owned text, ignoring empty basenames.
-pub fn path_basename(path: &str) -> Option<String> {
-    Path::new(path)
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .filter(|name| !name.is_empty())
 }
 
 /// Return the sibling directory where kmux stores linked worktrees for a main worktree.

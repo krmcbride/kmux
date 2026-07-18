@@ -9,7 +9,7 @@ use crate::agent::workspace_activity::WorkspaceActivity;
 use crate::paths::same_path;
 
 #[derive(Debug, Clone)]
-/// Workspace identity used when matching agent observations.
+/// Workspace identity used when matching workspace activity aggregates.
 pub struct WorkspaceTarget<'a> {
     path: &'a Path,
 }

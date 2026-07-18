@@ -19,7 +19,7 @@ pub enum ObservationCommand {
     Upsert(Box<ObservationUpdate>),
 }
 
-/// Sanitized application input for recording one producer observation.
+/// Sanitized application input for recording one reporter observation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ObservationUpdate {
     pub key: AgentObservationKey,
@@ -29,7 +29,7 @@ pub struct ObservationUpdate {
     pub target: LocationUpdate,
 }
 
-/// Sanitized location update reported by an external producer.
+/// Sanitized location update reported by an external reporter.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LocationUpdate {
     pub tmux_instance: Option<String>,
@@ -106,7 +106,7 @@ impl LocationUpdate {
         apply_optional(&mut target.git_repo_path, self.git_repo_path);
         apply_optional(&mut target.git_branch, self.git_branch);
 
-        // Directory is the producer's current location, so omitted or blank values
+        // Directory is the reporter's current location, so omitted or blank values
         // replace the previous directory rather than preserving stale routing data.
         target.directory = self.directory;
     }
@@ -119,7 +119,7 @@ fn apply_optional(target: &mut Option<String>, value: Option<String>) {
     }
 }
 
-// Fill missing repo fields opportunistically from path hints so sparse producer
+// Fill missing repo fields opportunistically from path hints so sparse reporter
 // reports still show useful repo/branch labels.
 fn apply_inferred_repo_metadata(
     target: &mut AgentLocationHints,
@@ -226,7 +226,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_observation_removes_only_matching_producer() -> Result<()> {
+    fn delete_observation_removes_only_matching_reporter() -> Result<()> {
         let temp = TempDir::new()?;
         let store = store_with_path(temp.path().join("state"))?;
         let server = observation_key("ses_root", "server", "default");
@@ -246,7 +246,7 @@ mod tests {
     }
 
     #[test]
-    fn delete_session_removes_all_producer_observations() -> Result<()> {
+    fn delete_session_removes_all_reporter_observations() -> Result<()> {
         let temp = TempDir::new()?;
         let store = store_with_path(temp.path().join("state"))?;
         let server = observation_key("ses_root", "server", "default");
@@ -282,16 +282,16 @@ mod tests {
 
     fn observation_key(
         session_id: &str,
-        producer_kind: &str,
-        producer_instance: &str,
+        reporter_kind: &str,
+        reporter_instance: &str,
     ) -> AgentObservationKey {
         AgentObservationKey {
             session: AgentSessionKey {
                 agent_kind: "opencode".to_owned(),
                 session_id: session_id.to_owned(),
             },
-            producer_kind: producer_kind.to_owned(),
-            producer_instance: producer_instance.to_owned(),
+            reporter_kind: reporter_kind.to_owned(),
+            reporter_instance: reporter_instance.to_owned(),
         }
     }
 }

@@ -47,10 +47,12 @@ class ManualScheduler implements ReporterScheduler {
   }
 }
 
+const DEFAULT_REPORTER_INSTANCE = '["http://127.0.0.1:4096","/repo/project-alpha"]';
+
 type HarnessOptions = {
   source?: Partial<ReporterSource>;
   runCommand?: KmuxServerReporterDependencies["runCommand"];
-  producerInstance?: string;
+  reporterInstance?: string;
   bootstrapTimeoutMs?: number;
   contextTimeoutMs?: number;
   disposeTimeoutMs?: number;
@@ -68,7 +70,7 @@ function createHarness(options: HarnessOptions = {}) {
     ...options.source,
   };
   const reporter = new KmuxServerReporter({
-    producerInstance: options.producerInstance ?? "http://127.0.0.1:4096|/repo/project-alpha",
+    reporterInstance: options.reporterInstance ?? DEFAULT_REPORTER_INSTANCE,
     fallbackDirectory: "/repo/project-alpha",
     source,
     runCommand: async (command) => {
@@ -116,7 +118,34 @@ function commandStatus(command: ReadonlyArray<string>): string | undefined {
   return command[2]?.startsWith("--") ? undefined : command[2];
 }
 
+function expectReporterIdentity(
+  command: ReadonlyArray<string>,
+  reporterInstance = DEFAULT_REPORTER_INSTANCE,
+) {
+  const reporterKindIndex = command.indexOf("--reporter-kind");
+  expect(command.slice(reporterKindIndex, reporterKindIndex + 4)).toEqual([
+    "--reporter-kind",
+    "server",
+    "--reporter-instance",
+    reporterInstance,
+  ]);
+  expect(command).not.toContain("--producer-kind");
+  expect(command).not.toContain("--producer-instance");
+}
+
 describe("KmuxServerReporter", () => {
+  test("emits the server reporter identity", async () => {
+    const harness = createHarness();
+    await harness.reporter.start();
+    await harness.reporter.event(created("root"));
+    await harness.reporter.event(status("root", "busy"));
+    harness.scheduler.flush();
+    await settle();
+
+    const command = harness.commands.at(-1) ?? [];
+    expectReporterIdentity(command);
+  });
+
   test("buffers events during bootstrap so newer hook state wins", async () => {
     const sessions = deferred<ReadonlyArray<{ id: string; directory: string }>>();
     const statuses = deferred<Readonly<Record<string, unknown>>>();
@@ -226,7 +255,7 @@ describe("KmuxServerReporter", () => {
     );
   });
 
-  test("recomputes after child deletion and deletes all producers for a deleted root", async () => {
+  test("recomputes after child deletion and deletes all reporters for a deleted root", async () => {
     const harness = createHarness();
     await harness.reporter.start();
     await harness.reporter.event(created("root"));
@@ -250,7 +279,9 @@ describe("KmuxServerReporter", () => {
       properties: { info: { id: "root" } },
     });
     await settle();
-    expect(harness.commands.at(-1)).toContain("--delete-session");
+    const deleteCommand = harness.commands.at(-1) ?? [];
+    expect(deleteCommand).toContain("--delete-session");
+    expectReporterIdentity(deleteCommand);
   });
 
   test("prevents stale context work from overwriting a newer report revision", async () => {
@@ -680,7 +711,9 @@ describe("KmuxServerReporter", () => {
     const secondDispose = harness.reporter.dispose();
     expect(firstDispose).toBe(secondDispose);
     await firstDispose;
-    expect(harness.commands.at(-1)).toContain("--delete");
+    const deleteCommand = harness.commands.at(-1) ?? [];
+    expect(deleteCommand).toContain("--delete");
+    expectReporterIdentity(deleteCommand);
 
     await harness.reporter.event(status("root", "busy"));
     harness.scheduler.flush();
@@ -736,9 +769,11 @@ describe("KmuxServerReporter", () => {
     expect(harness.commands.at(-1)).toContain("--delete");
   });
 
-  test("keeps directory-scoped producer cleanup isolated", async () => {
-    const first = createHarness({ producerInstance: "server|/repo/project-alpha" });
-    const second = createHarness({ producerInstance: "server|/repo/project-beta" });
+  test("keeps directory-scoped reporter cleanup isolated", async () => {
+    const firstReporterInstance = '["http://127.0.0.1:4096","/repo/project-alpha"]';
+    const secondReporterInstance = '["http://127.0.0.1:4096","/repo/project-beta"]';
+    const first = createHarness({ reporterInstance: firstReporterInstance });
+    const second = createHarness({ reporterInstance: secondReporterInstance });
     await Promise.all([first.reporter.start(), second.reporter.start()]);
     await first.reporter.event(created("root-alpha"));
     await second.reporter.event(created("root-beta"));
@@ -749,10 +784,10 @@ describe("KmuxServerReporter", () => {
     await settle();
 
     await first.reporter.dispose();
-    expect(first.commands.at(-1)).toContain("server|/repo/project-alpha");
+    expect(first.commands.at(-1)).toContain(firstReporterInstance);
     expect(first.commands.at(-1)).toContain("--delete");
     expect(second.commands).toHaveLength(1);
-    expect(second.commands[0]).toContain("server|/repo/project-beta");
+    expect(second.commands[0]).toContain(secondReporterInstance);
   });
 
   test("bounds disposal when a command never exits", async () => {

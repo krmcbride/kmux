@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use anyhow::{Context, Result, bail};
 
 use crate::cli;
@@ -38,12 +40,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     // dangling child links instead of silently reparenting or deleting them.
     let remaining_children = state.children_of(branch);
 
-    std::env::set_current_dir(&repo.paths.main_worktree).with_context(|| {
-        format!(
-            "failed to change directory to {} before removing worktree",
-            repo.paths.main_worktree.display()
-        )
-    })?;
+    leave_worktree_before_removal(&repo.paths.main_worktree)?;
     repo.git.remove_worktree(resolved.path(), args.force)?;
     repo.git.delete_local_branch(branch, true)?;
     if state.remove_parent(branch) {
@@ -67,6 +64,17 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
 
     println!("removed {}", resolved.workspace_slug());
     Ok(())
+}
+
+// Leave the worktree before deleting it so the process cwd remains valid and
+// later Git and tmux subprocesses inherit the existing main-worktree directory.
+fn leave_worktree_before_removal(main_worktree: &Path) -> Result<()> {
+    std::env::set_current_dir(main_worktree).with_context(|| {
+        format!(
+            "failed to change directory to {} before removing worktree",
+            main_worktree.display()
+        )
+    })
 }
 
 // Support both explicit removal by name and short-form removal from inside a kmux worktree.

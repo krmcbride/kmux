@@ -22,7 +22,7 @@ pub enum Command {
     /// Remove a workspace.
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
-    /// Show tracked external tool status.
+    /// Show global agent workspace activity.
     Status(StatusArgs),
     /// Toggle the tmux sidebar.
     Sidebar(SidebarArgs),
@@ -90,9 +90,6 @@ pub struct RemoveArgs {
 
 #[derive(Debug, Args)]
 pub struct StatusArgs {
-    /// Optional workspace, branch, or agent filters.
-    pub filters: Vec<String>,
-
     /// Emit JSON instead of human-readable output.
     #[arg(long)]
     pub json: bool,
@@ -116,19 +113,21 @@ pub struct SetAgentStatusArgs {
     #[arg(long)]
     pub session_id: String,
 
-    /// Stable integration-defined source category for this observation, such as tui or server.
+    /// Stable class of reporter contributing observations to this logical
+    /// session, such as a server or pane-scoped adapter.
     #[arg(long)]
-    pub producer_kind: String,
+    pub reporter_kind: String,
 
-    /// Stable ID for this producer instance, such as a tmux pane id or server URL.
+    /// Stable ownership scope for one reporter within its class. Repeated
+    /// updates replace, and `--delete` removes, only this reporter's observation.
     #[arg(long)]
-    pub producer_instance: String,
+    pub reporter_instance: String,
 
-    /// Delete the observation identified by this session and producer key.
+    /// Delete the observation identified by this session and reporter key.
     #[arg(long)]
     pub delete: bool,
 
-    /// Delete all producer observations for the session identified by --agent-kind and --session-id.
+    /// Delete all reporter observations for the session identified by --agent-kind and --session-id.
     #[arg(long)]
     pub delete_session: bool,
 

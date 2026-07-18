@@ -60,7 +60,7 @@ export type ReporterScheduler = {
 };
 
 export type KmuxServerReporterDependencies = {
-  producerInstance: string;
+  reporterInstance: string;
   fallbackDirectory: string;
   source: ReporterSource;
   runCommand: KmuxCommandRunner;
@@ -92,7 +92,7 @@ type DeliveryState = {
 };
 
 const AGENT_KIND = "opencode";
-const PRODUCER_KIND = "server";
+const REPORTER_KIND = "server";
 const DEFAULT_REPORT_DEBOUNCE_MS = 150;
 const DEFAULT_BOOTSTRAP_TIMEOUT_MS = 2000;
 const DEFAULT_CONTEXT_TIMEOUT_MS = 500;
@@ -113,7 +113,7 @@ const nativeScheduler: ReporterScheduler = {
  * boundaries because OpenCode does not supervise event-hook promises.
  */
 export class KmuxServerReporter {
-  private readonly producerInstance: string;
+  private readonly reporterInstance: string;
   private readonly fallbackDirectory: string;
   private readonly source: ReporterSource;
   private readonly logTransport: ReporterLogger;
@@ -146,7 +146,7 @@ export class KmuxServerReporter {
   private disposed = false;
 
   constructor(dependencies: KmuxServerReporterDependencies) {
-    this.producerInstance = dependencies.producerInstance;
+    this.reporterInstance = dependencies.reporterInstance;
     this.fallbackDirectory = dependencies.fallbackDirectory;
     this.source = dependencies.source;
     this.logTransport = dependencies.log;
@@ -495,10 +495,10 @@ export class KmuxServerReporter {
       AGENT_KIND,
       "--session-id",
       rootID,
-      "--producer-kind",
-      PRODUCER_KIND,
-      "--producer-instance",
-      this.producerInstance,
+      "--reporter-kind",
+      REPORTER_KIND,
+      "--reporter-instance",
+      this.reporterInstance,
     ];
     if (title) {
       command.push("--title", title);
@@ -537,10 +537,10 @@ export class KmuxServerReporter {
         AGENT_KIND,
         "--session-id",
         rootID,
-        "--producer-kind",
-        PRODUCER_KIND,
-        "--producer-instance",
-        this.producerInstance,
+        "--reporter-kind",
+        REPORTER_KIND,
+        "--reporter-instance",
+        this.reporterInstance,
         deleteSession ? "--delete-session" : "--delete",
       ],
       this.disposed,

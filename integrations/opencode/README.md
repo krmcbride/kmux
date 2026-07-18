@@ -8,7 +8,7 @@ The server plugin is the only required status integration. OpenCode session-fami
 topology, status, title, context usage, directory, and deletion are reported by
 `kmux-status-server.ts`. kmux resolves that directory to a canonical Git worktree,
 matches the worktree to live tmux state, and displays one primary agent row per
-worktree. No TUI plugin or producer-supplied pane identity is required.
+worktree. No TUI plugin or reporter-supplied pane identity is required.
 
 ## Installation
 
@@ -57,7 +57,7 @@ payloads.
 
 ## Pre-release state reset
 
-Removing the former TUI producer and changing the server producer identity can
+Removing the former TUI reporter and changing the server reporter identity can
 leave old observations that the new reporter does not own. Before using this
 pre-release integration, remove the contents of the kmux agent-observation state
 directory while OpenCode is stopped:
@@ -69,7 +69,7 @@ ${XDG_STATE_HOME:-$HOME/.local/state}/kmux/agent-observations/
 On platforms without an XDG state directory, kmux uses the platform local-data
 directory under `kmux/agent-observations/`. This reset removes observations from all
 agent integrations, not only OpenCode, so inspect or back up the directory when
-other producers matter. No automatic migration is provided for pre-release state.
+other reporters matter. No automatic migration is provided for pre-release state.
 
 A clean plugin disposal removes observations it successfully owns. A process crash
 can still leave valid observations because kmux does not currently apply a TTL or

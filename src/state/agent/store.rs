@@ -3,7 +3,7 @@
 //! The store uses the user's XDG state directory because observations are local
 //! process telemetry, not repo metadata. It owns filename construction,
 //! pruning of stale files, and transactional atomic writes from short-lived
-//! producers.
+//! reporters.
 
 use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
@@ -46,14 +46,14 @@ impl StateStore {
         Self::with_path(state_root.join("kmux"))
     }
 
-    /// Insert or replace one producer's latest observation for an agent session.
+    /// Insert or replace one reporter's latest observation for an agent session.
     #[cfg(test)]
     pub fn upsert_observation(&self, state: &AgentObservationState) -> Result<()> {
         let _lock = self.lock_observation_mutations()?;
         self.upsert_observation_unlocked(state)
     }
 
-    /// Mutate one producer observation from its latest committed state.
+    /// Mutate one reporter observation from its latest committed state.
     ///
     /// The closure runs while the cross-process observation lock is held. It
     /// must avoid slow external work and must not call another mutating store
@@ -90,6 +90,34 @@ impl StateStore {
     pub fn list_observations(&self) -> Result<Vec<AgentObservationState>> {
         let _lock = self.lock_observation_mutations()?;
         self.list_observations_unlocked()
+    }
+
+    /// Delete a single observation file if it exists.
+    pub fn delete_observation(&self, key: &AgentObservationKey) -> Result<()> {
+        let _lock = self.lock_observation_mutations()?;
+        self.delete_observation_unlocked(key)
+    }
+
+    /// Delete every reporter observation associated with one agent session.
+    pub fn delete_session(&self, session: &AgentSessionKey) -> Result<()> {
+        self.delete_sessions(std::slice::from_ref(session))
+    }
+
+    /// Delete every reporter observation for the selected logical sessions.
+    ///
+    /// Requested keys are normalized before the stable observation lock is
+    /// acquired. Listing, stale-file pruning, and all matching deletes then run
+    /// under that one lock so cooperating reporters observe one serialized
+    /// store mutation.
+    pub fn delete_sessions(&self, sessions: &[AgentSessionKey]) -> Result<()> {
+        let sessions = sessions.iter().collect::<BTreeSet<_>>();
+        let _lock = self.lock_observation_mutations()?;
+        for observation in self.list_observations_unlocked()? {
+            if sessions.contains(&observation.key.session) {
+                self.delete_observation_unlocked(&observation.key)?;
+            }
+        }
+        Ok(())
     }
 
     fn list_observations_unlocked(&self) -> Result<Vec<AgentObservationState>> {
@@ -152,36 +180,7 @@ impl StateStore {
         result.map(|telemetry| telemetry.observations)
     }
 
-    /// Delete a single observation file if it exists.
-    pub fn delete_observation(&self, key: &AgentObservationKey) -> Result<()> {
-        let _lock = self.lock_observation_mutations()?;
-        self.delete_observation_unlocked(key)
-    }
-
-    /// Delete every producer observation associated with one agent session.
-    pub fn delete_session(&self, session: &AgentSessionKey) -> Result<()> {
-        self.delete_sessions(std::slice::from_ref(session))
-    }
-
-    /// Delete every producer observation for the selected logical sessions.
-    ///
-    /// Requested keys are normalized before the stable observation lock is
-    /// acquired. Listing, stale-file pruning, and all matching deletes then run
-    /// under that one lock so cooperating producers observe one serialized
-    /// store mutation.
-    pub fn delete_sessions(&self, sessions: &[AgentSessionKey]) -> Result<()> {
-        let sessions = sessions.iter().collect::<BTreeSet<_>>();
-        let _lock = self.lock_observation_mutations()?;
-        for observation in self.list_observations_unlocked()? {
-            if sessions.contains(&observation.key.session) {
-                self.delete_observation_unlocked(&observation.key)?;
-            }
-        }
-        Ok(())
-    }
-
-    /// Open a store at an explicit base path for tests and controlled callers.
-    pub(super) fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
+    fn with_path(base_path: impl Into<PathBuf>) -> Result<Self> {
         let base_path = base_path.into();
         fs::create_dir_all(base_path.join("agent-observations"))
             .with_context(|| format!("failed to create state directory {}", base_path.display()))?;
@@ -236,6 +235,11 @@ impl StateStore {
     }
 }
 
+#[cfg(test)]
+pub(super) fn state_store_with_path(base_path: impl Into<PathBuf>) -> Result<StateStore> {
+    StateStore::with_path(base_path)
+}
+
 struct ObservationMutationLock {
     file: File,
 }
@@ -288,7 +292,7 @@ fn write_atomic(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
-// Deletion races are harmless because producers can refresh observations later.
+// Deletion races are harmless because reporters can refresh observations later.
 fn delete_file_if_exists(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
@@ -306,8 +310,8 @@ fn observation_filename(key: &AgentObservationKey) -> String {
     for component in [
         &key.session.agent_kind,
         &key.session.session_id,
-        &key.producer_kind,
-        &key.producer_instance,
+        &key.reporter_kind,
+        &key.reporter_instance,
     ] {
         let bytes = component.as_bytes();
         digest.update((bytes.len() as u64).to_be_bytes());
@@ -371,6 +375,54 @@ mod tests {
             "metadata".to_owned(),
             serde_json::json!({"workspace_id": "wrk_example"}),
         );
+        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
+        Ok(())
+    }
+
+    #[test]
+    fn obsolete_only_observation_identity_fields_are_pruned() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let state = test_observation("server", "default", AgentStatus::Working, 100);
+        let mut persisted = serde_json::to_value(&state)?;
+        let key = persisted
+            .get_mut("key")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| anyhow::anyhow!("observation key should serialize as an object"))?;
+        let reporter_kind = key
+            .remove("reporter_kind")
+            .ok_or_else(|| anyhow::anyhow!("reporter kind should be serialized"))?;
+        let reporter_instance = key
+            .remove("reporter_instance")
+            .ok_or_else(|| anyhow::anyhow!("reporter instance should be serialized"))?;
+        key.insert("producer_kind".to_owned(), reporter_kind);
+        key.insert("producer_instance".to_owned(), reporter_instance);
+
+        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
+        Ok(())
+    }
+
+    #[test]
+    fn mixed_current_and_obsolete_observation_identity_fields_are_pruned() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = StateStore::with_path(temp.path().join("state"))?;
+        let state = test_observation("server", "default", AgentStatus::Working, 100);
+        let mut persisted = serde_json::to_value(&state)?;
+        let key = persisted
+            .get_mut("key")
+            .and_then(serde_json::Value::as_object_mut)
+            .ok_or_else(|| anyhow::anyhow!("observation key should serialize as an object"))?;
+        let reporter_kind = key
+            .get("reporter_kind")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("reporter kind should be serialized"))?;
+        let reporter_instance = key
+            .get("reporter_instance")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("reporter instance should be serialized"))?;
+        key.insert("producer_kind".to_owned(), reporter_kind);
+        key.insert("producer_instance".to_owned(), reporter_instance);
+
         assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
         Ok(())
     }
@@ -497,7 +549,7 @@ mod tests {
     }
 
     #[test]
-    fn observation_files_are_keyed_by_session_and_producer() -> Result<()> {
+    fn observation_files_are_keyed_by_session_and_reporter() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
         let tui = test_observation("tui", "default/%1", AgentStatus::Working, 100);
@@ -510,14 +562,14 @@ mod tests {
         assert_eq!(observations.len(), 2);
         assert_eq!(observations[0].key.session, observations[1].key.session);
         assert_ne!(
-            observations[0].key.producer_kind,
-            observations[1].key.producer_kind
+            observations[0].key.reporter_kind,
+            observations[1].key.reporter_kind
         );
         Ok(())
     }
 
     #[test]
-    fn delete_session_removes_all_producer_observations() -> Result<()> {
+    fn delete_session_removes_all_reporter_observations() -> Result<()> {
         let temp = TempDir::new()?;
         let store = StateStore::with_path(temp.path().join("state"))?;
         let tui = test_observation("tui", "default/%1", AgentStatus::Working, 100);
@@ -639,13 +691,13 @@ mod tests {
     }
 
     fn test_observation(
-        producer_kind: &str,
-        producer_instance: &str,
+        reporter_kind: &str,
+        reporter_instance: &str,
         status: AgentStatus,
         status_changed_at: u64,
     ) -> AgentObservationState {
         AgentObservationState {
-            key: test_observation_key("ses_root", producer_kind, producer_instance),
+            key: test_observation_key("ses_root", reporter_kind, reporter_instance),
             created_at: status_changed_at,
             status: Some(status),
             status_observed_at: Some(status_changed_at),
@@ -676,13 +728,13 @@ mod tests {
 
     fn test_observation_key(
         session_id: &str,
-        producer_kind: &str,
-        producer_instance: &str,
+        reporter_kind: &str,
+        reporter_instance: &str,
     ) -> AgentObservationKey {
         AgentObservationKey {
             session: test_session_key("opencode", session_id),
-            producer_kind: producer_kind.to_owned(),
-            producer_instance: producer_instance.to_owned(),
+            reporter_kind: reporter_kind.to_owned(),
+            reporter_instance: reporter_instance.to_owned(),
         }
     }
 

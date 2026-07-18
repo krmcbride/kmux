@@ -1,13 +1,13 @@
 //! Serializable model for external agent observation state.
 //!
-//! These types define the JSON contract written by `set-agent-status` producers
+//! These types define the JSON contract written by `set-agent-status` reporters
 //! and read by status/sidebar presentation.
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
-/// Persisted lifecycle status reported by an external agent producer.
+/// Persisted lifecycle status reported by an external agent reporter.
 pub enum AgentStatus {
     Working,
     Waiting,
@@ -26,23 +26,30 @@ impl AgentStatus {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-/// Logical agent session identity shared by multiple observation producers.
+#[serde(deny_unknown_fields)]
+/// Logical agent session identity shared by multiple observation reporters.
 pub struct AgentSessionKey {
     pub agent_kind: String,
     pub session_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-/// Unique persisted observation identity for one session producer.
+#[serde(deny_unknown_fields)]
+/// Unique persisted identity for one independently owned observation stream.
+///
+/// The session key identifies the logical agent session. The reporter kind
+/// identifies a reporter class, while the reporter instance identifies that
+/// reporter's stable ownership scope. Updates with the same full key replace
+/// only that stream, and targeted deletion removes only that stream.
 pub struct AgentObservationKey {
     pub session: AgentSessionKey,
-    pub producer_kind: String,
-    pub producer_instance: String,
+    pub reporter_kind: String,
+    pub reporter_instance: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Current producer-supplied metadata used to attach agent sessions to tmux and Git.
+/// Current reporter-supplied metadata used to attach agent sessions to tmux and Git.
 pub struct AgentLocationHints {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub tmux_instance: Option<String>,
@@ -58,7 +65,7 @@ pub struct AgentLocationHints {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-/// Latest observed state from one producer for one logical agent session.
+/// Latest observed state from one reporter for one logical agent session.
 pub struct AgentObservationState {
     pub key: AgentObservationKey,
     pub created_at: u64,

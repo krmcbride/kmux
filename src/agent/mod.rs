@@ -3,14 +3,14 @@
 //! This module turns persisted agent observations and live tmux state into user
 //! surfaces such as status output, workspace badges, and the sidebar UI.
 
+mod sessions;
+mod status_badges;
 mod workspace;
 
 pub mod observations;
 pub mod query;
-pub mod sessions;
 pub mod sidebar;
 pub mod status;
-pub mod status_badges;
 pub mod workspace_activity;
 
 use crate::config::StatusIcons;

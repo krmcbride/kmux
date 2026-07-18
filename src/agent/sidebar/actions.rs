@@ -57,13 +57,6 @@ pub(super) struct SidebarJumpFailure {
     pub(super) rollback_error: Option<anyhow::Error>,
 }
 
-#[derive(Debug)]
-struct SidebarJumpDestination {
-    session_name: String,
-    window_id: String,
-    pane_ids: Vec<String>,
-}
-
 /// Jump execution result separated from app state updates.
 #[derive(Debug)]
 pub(super) enum SidebarJumpExecution {
@@ -84,6 +77,13 @@ pub(super) struct SidebarActions {
     tmux: Tmux,
     store: StateStore,
     status_icons: StatusIcons,
+}
+
+#[derive(Debug)]
+struct SidebarJumpDestination {
+    session_name: String,
+    window_id: String,
+    pane_ids: Vec<String>,
 }
 
 impl SidebarJumpIntent {
@@ -720,8 +720,8 @@ mod tests {
             &selected_repo,
             "Primary TUI",
         );
-        primary_tui.key.producer_kind = "tui".to_owned();
-        primary_tui.key.producer_instance = "default/%1".to_owned();
+        primary_tui.key.reporter_kind = "tui".to_owned();
+        primary_tui.key.reporter_instance = "default/%1".to_owned();
         let observations = [
             observation_for_session(
                 "opencode",
@@ -884,8 +884,8 @@ mod tests {
         AgentObservationState {
             key: AgentObservationKey {
                 session: session_key(agent_kind, session_id),
-                producer_kind: "server".to_owned(),
-                producer_instance: "reporter".to_owned(),
+                reporter_kind: "server".to_owned(),
+                reporter_instance: "reporter".to_owned(),
             },
             created_at: observed_at,
             status: Some(status),

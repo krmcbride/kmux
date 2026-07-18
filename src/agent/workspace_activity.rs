@@ -32,6 +32,101 @@ pub struct WorkspaceActivity {
 }
 
 impl WorkspaceActivity {
+    /// Return the logical session selected to represent this workspace.
+    pub fn primary_session_key(&self) -> &AgentSessionKey {
+        &self.primary_session.key
+    }
+
+    /// Return the canonical Git root used as this activity's identity.
+    pub fn workspace_key(&self) -> &str {
+        &self.workspace_key
+    }
+
+    /// Return the sorted logical sessions represented by this workspace.
+    pub fn member_session_keys(&self) -> &[AgentSessionKey] {
+        &self.member_session_keys
+    }
+
+    /// Return the status selected by the shared workspace activity policy.
+    pub fn status(&self) -> AgentStatus {
+        self.primary_session.status
+    }
+
+    /// Return the age of the primary session's current status.
+    pub fn status_age_secs(&self, now: u64) -> u64 {
+        now.saturating_sub(self.primary_session.status_changed_at)
+    }
+
+    /// Return display-neutral elapsed seconds for the primary session at `now`.
+    pub fn elapsed_secs(&self, now: u64) -> u64 {
+        self.primary_session.elapsed_secs(now)
+    }
+
+    /// Return the settled live tmux candidates or unavailable reason.
+    pub fn tmux_target(&self) -> &AgentTmuxTarget {
+        &self.primary_session.tmux_target
+    }
+
+    /// Return whether this activity has an exact matching-window candidate set.
+    pub fn has_window_tmux_target(&self) -> bool {
+        matches!(self.tmux_target(), AgentTmuxTarget::Windows { .. })
+    }
+
+    /// Return the latest primary-session title reported by a reporter.
+    pub fn title(&self) -> Option<&str> {
+        self.primary_session.title.as_deref()
+    }
+
+    /// Return the latest primary-session context reported by a reporter.
+    pub fn context(&self) -> Option<&str> {
+        self.primary_session.context.as_deref()
+    }
+
+    /// Return the workspace slug derived from the canonical worktree path.
+    pub fn workspace_slug(&self) -> Option<&str> {
+        self.workspace_slug.as_deref()
+    }
+
+    /// Return the primary session's best known Git branch.
+    pub fn git_branch(&self) -> Option<&str> {
+        self.primary_session.git_branch()
+    }
+
+    /// Return the canonical Git worktree path.
+    pub fn git_worktree_path(&self) -> &str {
+        self.primary_session.git_worktree_path()
+    }
+
+    /// Return the latest directory reported by the primary session.
+    pub fn directory(&self) -> Option<&str> {
+        self.primary_session.directory()
+    }
+
+    /// Return the exact tmux session selected by reconciliation.
+    pub fn tmux_session_name(&self) -> Option<&str> {
+        self.primary_session.tmux_session_name()
+    }
+
+    /// Return the preferred matching tmux window name.
+    pub fn tmux_window_name(&self) -> Option<&str> {
+        self.primary_session.tmux_window_name()
+    }
+
+    /// Return the preferred matching physical tmux window ID.
+    pub fn tmux_window_id(&self) -> Option<&str> {
+        self.primary_session.tmux_window_id()
+    }
+
+    /// Return the preferred matching non-sidebar pane ID.
+    pub fn tmux_pane_id(&self) -> Option<&str> {
+        self.primary_session.tmux_pane_id()
+    }
+
+    /// Return the preferred pane title used as a display fallback.
+    pub fn tmux_pane_title(&self) -> Option<&str> {
+        self.primary_session.tmux_pane_title()
+    }
+
     fn from_primary(
         primary_session: ResolvedAgentSession,
         member_session_keys: Vec<AgentSessionKey>,
@@ -73,134 +168,27 @@ impl WorkspaceActivity {
         }
     }
 
-    /// Return the logical session selected to represent this workspace.
-    pub fn primary_session_key(&self) -> &AgentSessionKey {
-        &self.primary_session.key
-    }
-
-    /// Return the canonical Git root used as this activity's identity.
-    pub fn workspace_key(&self) -> &str {
-        &self.workspace_key
-    }
-
-    /// Return the sorted logical sessions represented by this workspace.
-    pub fn member_session_keys(&self) -> &[AgentSessionKey] {
-        &self.member_session_keys
-    }
-
-    /// Return the status selected by the shared workspace activity policy.
-    pub fn status(&self) -> AgentStatus {
-        self.primary_session.status
-    }
-
-    /// Return when the primary session was first observed.
-    pub fn created_at(&self) -> u64 {
+    fn created_at(&self) -> u64 {
         self.primary_session.created_at
-    }
-
-    /// Return the age of the primary session's current status.
-    pub fn status_age_secs(&self, now: u64) -> u64 {
-        now.saturating_sub(self.primary_session.status_changed_at)
-    }
-
-    /// Return display-neutral elapsed seconds for the primary session at `now`.
-    pub fn elapsed_secs(&self, now: u64) -> u64 {
-        self.primary_session.elapsed_secs(now)
-    }
-
-    /// Return the settled live tmux candidates or unavailable reason.
-    pub fn tmux_target(&self) -> &AgentTmuxTarget {
-        &self.primary_session.tmux_target
-    }
-
-    /// Return whether this activity has an exact matching-window candidate set.
-    pub fn has_window_tmux_target(&self) -> bool {
-        matches!(self.tmux_target(), AgentTmuxTarget::Windows { .. })
-    }
-
-    /// Return the latest primary-session title reported by a producer.
-    pub fn title(&self) -> Option<&str> {
-        self.primary_session.title.as_deref()
-    }
-
-    /// Return the latest primary-session context reported by a producer.
-    pub fn context(&self) -> Option<&str> {
-        self.primary_session.context.as_deref()
-    }
-
-    /// Return whether this row matches a user-supplied status filter.
-    pub fn matches_filter(&self, filter: &str) -> bool {
-        self.primary_session.key.agent_kind == filter
-            || self.primary_session.key.session_id == filter
-            || self.workspace_key == filter
-            || self.primary == filter
-            || self.secondary == filter
-            || self.workspace_slug() == Some(filter)
-            || self.git_branch() == Some(filter)
-            || self.tmux_window_name() == Some(filter)
-            || self.git_worktree_path() == filter
-            || self.directory() == Some(filter)
-            || self.title() == Some(filter)
-            || self.display_title == filter
-    }
-
-    /// Return the workspace slug derived from the canonical worktree path.
-    pub fn workspace_slug(&self) -> Option<&str> {
-        self.workspace_slug.as_deref()
-    }
-
-    /// Return the primary session's best known Git branch.
-    pub fn git_branch(&self) -> Option<&str> {
-        self.primary_session.git_branch()
-    }
-
-    /// Return the canonical Git worktree path.
-    pub fn git_worktree_path(&self) -> &str {
-        self.primary_session.git_worktree_path()
-    }
-
-    /// Return the latest directory reported by the primary session.
-    pub fn directory(&self) -> Option<&str> {
-        self.primary_session.directory()
-    }
-
-    /// Return the exact tmux session selected by reconciliation.
-    pub fn tmux_session_name(&self) -> Option<&str> {
-        self.primary_session.target.tmux_session_name.as_deref()
-    }
-
-    /// Return the preferred matching tmux window name.
-    pub fn tmux_window_name(&self) -> Option<&str> {
-        self.primary_session.tmux_window_name()
-    }
-
-    /// Return the preferred matching physical tmux window ID.
-    pub fn tmux_window_id(&self) -> Option<&str> {
-        self.primary_session.tmux_window_id()
-    }
-
-    /// Return the preferred matching non-sidebar pane ID.
-    pub fn tmux_pane_id(&self) -> Option<&str> {
-        self.primary_session.target.tmux_pane_id.as_deref()
-    }
-
-    /// Return the preferred pane title used as a display fallback.
-    pub fn tmux_pane_title(&self) -> Option<&str> {
-        self.primary_session.tmux_pane_title()
     }
 }
 
 /// Query the shared workspace activity read model from persisted and live state.
 pub fn workspace_activities(store: &StateStore, tmux: &Tmux) -> Result<Vec<WorkspaceActivity>> {
-    Ok(workspace_activities_from_sessions(resolved_agent_sessions(
+    Ok(aggregate_workspace_activities(resolved_agent_sessions(
         store, tmux,
     )?))
 }
 
-/// Collapse logical sessions into deterministic workspace activity aggregates.
-pub fn workspace_activities_from_sessions(
+#[cfg(test)]
+pub(super) fn workspace_activities_from_sessions(
     sessions: Vec<ResolvedAgentSession>,
 ) -> Vec<WorkspaceActivity> {
+    aggregate_workspace_activities(sessions)
+}
+
+// Collapse logical sessions into deterministic workspace activity aggregates.
+fn aggregate_workspace_activities(sessions: Vec<ResolvedAgentSession>) -> Vec<WorkspaceActivity> {
     let mut by_workspace = BTreeMap::<String, WorkspaceActivityAccumulator>::new();
     for session in sessions {
         let workspace_key = session.workspace_key().to_owned();
@@ -362,8 +350,6 @@ mod tests {
         assert_eq!(rows[0].secondary, "feature/sidebar");
         assert_eq!(rows[0].display_title, "Implement shared rows");
         assert_eq!(rows[0].display_context, "55.2K");
-        assert!(rows[0].matches_filter("feature/sidebar"));
-        assert!(rows[0].matches_filter("/repo/project-alpha"));
     }
 
     #[test]
@@ -462,8 +448,8 @@ mod tests {
                     agent_kind: "example-agent".to_owned(),
                     session_id: "ses_project_alpha".to_owned(),
                 },
-                producer_kind: "example-producer".to_owned(),
-                producer_instance: "instance-1".to_owned(),
+                reporter_kind: "example-reporter".to_owned(),
+                reporter_instance: "instance-1".to_owned(),
             },
             created_at: 100,
             status: Some(AgentStatus::Working),

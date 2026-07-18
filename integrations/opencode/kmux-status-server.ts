@@ -187,7 +187,7 @@ function createLogger(client: OpenCodeClient, directory: string): ReporterLogger
   };
 }
 
-function producerInstance(serverUrl: URL, directory: string): string {
+function reporterInstance(serverUrl: URL, directory: string): string {
   const normalizedUrl = new URL(serverUrl);
   normalizedUrl.username = "";
   normalizedUrl.password = "";
@@ -197,7 +197,7 @@ function producerInstance(serverUrl: URL, directory: string): string {
 
 const server: Plugin = async (input: PluginInput) => {
   const reporter = new KmuxServerReporter({
-    producerInstance: producerInstance(input.serverUrl, input.directory),
+    reporterInstance: reporterInstance(input.serverUrl, input.directory),
     fallbackDirectory: input.directory,
     source: createReporterSource(input.client, input.directory),
     runCommand: runKmux,

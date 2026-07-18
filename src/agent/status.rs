@@ -1,4 +1,4 @@
-//! Status query and presentation for workspace activity rows.
+//! Status presentation for workspace activity rows.
 //!
 //! Workflows own command orchestration. This module turns shared workspace
 //! activity rows into the stable table and JSON status surface.
@@ -11,31 +11,6 @@ use crate::agent::workspace_activity::WorkspaceActivity;
 use crate::config::StatusIcons;
 use crate::git::Git;
 use crate::state::AgentStatus as StoredAgentStatus;
-
-/// Input for filtering and decorating the shared workspace activity surface.
-pub struct StatusQuery {
-    filters: Vec<String>,
-    show_git: bool,
-}
-
-impl StatusQuery {
-    /// Build a status query from command-boundary input.
-    pub fn new(filters: Vec<String>, show_git: bool) -> Self {
-        Self { filters, show_git }
-    }
-
-    /// Return whether Git status decoration should be included.
-    pub fn show_git(&self) -> bool {
-        self.show_git
-    }
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct GitInfo {
-    has_staged: bool,
-    has_unstaged: bool,
-    has_unmerged_commits: bool,
-}
 
 #[derive(Debug, Serialize)]
 pub struct StatusEntry {
@@ -64,6 +39,13 @@ pub struct StatusEntry {
     git: Option<GitInfo>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct GitInfo {
+    has_staged: bool,
+    has_unstaged: bool,
+    has_unmerged_commits: bool,
+}
+
 struct DisplayRow {
     workspace: String,
     status: String,
@@ -76,20 +58,52 @@ struct DisplayRow {
 pub fn status_entries(
     activities: &[WorkspaceActivity],
     now: u64,
-    query: &StatusQuery,
+    show_git: bool,
     icons: &StatusIcons,
 ) -> Vec<StatusEntry> {
     activities
         .iter()
-        .filter(|activity| {
-            query.filters.is_empty()
-                || query
-                    .filters
-                    .iter()
-                    .any(|filter| activity.matches_filter(filter))
-        })
-        .map(|activity| entry_for_activity(activity, now, query.show_git, icons))
+        .map(|activity| entry_for_activity(activity, now, show_git, icons))
         .collect()
+}
+
+/// Print status entries in the stable human-readable table format.
+pub fn print_table(entries: &[StatusEntry], show_git: bool) {
+    let rows = entries
+        .iter()
+        .map(|entry| DisplayRow {
+            workspace: format_workspace(entry),
+            status: entry.status.clone(),
+            elapsed: compact_elapsed(entry.elapsed_secs),
+            git: git_label(&entry.git),
+            title: entry
+                .display_title
+                .clone()
+                .or_else(|| entry.title.clone())
+                .unwrap_or_else(|| "-".to_owned()),
+        })
+        .collect::<Vec<_>>();
+    let headers = if show_git {
+        vec!["WORKSPACE", "STATUS", "ELAPSED", "GIT", "TITLE"]
+    } else {
+        vec!["WORKSPACE", "STATUS", "ELAPSED", "TITLE"]
+    };
+    let mut widths = headers
+        .iter()
+        .map(|header| header.len())
+        .collect::<Vec<_>>();
+
+    for row in &rows {
+        let values = row_values(row, show_git);
+        for (index, value) in values.iter().enumerate() {
+            widths[index] = widths[index].max(value.chars().count());
+        }
+    }
+
+    println!("{}", format_row(&headers, &widths));
+    for row in &rows {
+        println!("{}", format_row(&row_values(row, show_git), &widths));
+    }
 }
 
 // Build a status presentation row from the shared workspace activity aggregate.
@@ -168,45 +182,6 @@ fn compute_git_info(path: &Path, branch: &str) -> GitInfo {
                 .map(|safe| !safe)
                 .unwrap_or(false)
         },
-    }
-}
-
-/// Print status entries in the stable human-readable table format.
-pub fn print_table(entries: &[StatusEntry], show_git: bool) {
-    let rows = entries
-        .iter()
-        .map(|entry| DisplayRow {
-            workspace: format_workspace(entry),
-            status: entry.status.clone(),
-            elapsed: compact_elapsed(entry.elapsed_secs),
-            git: git_label(&entry.git),
-            title: entry
-                .display_title
-                .clone()
-                .or_else(|| entry.title.clone())
-                .unwrap_or_else(|| "-".to_owned()),
-        })
-        .collect::<Vec<_>>();
-    let headers = if show_git {
-        vec!["WORKSPACE", "STATUS", "ELAPSED", "GIT", "TITLE"]
-    } else {
-        vec!["WORKSPACE", "STATUS", "ELAPSED", "TITLE"]
-    };
-    let mut widths = headers
-        .iter()
-        .map(|header| header.len())
-        .collect::<Vec<_>>();
-
-    for row in &rows {
-        let values = row_values(row, show_git);
-        for (index, value) in values.iter().enumerate() {
-            widths[index] = widths[index].max(value.chars().count());
-        }
-    }
-
-    println!("{}", format_row(&headers, &widths));
-    for row in &rows {
-        println!("{}", format_row(&row_values(row, show_git), &widths));
     }
 }
 
@@ -293,33 +268,14 @@ mod tests {
     use anyhow::Result;
 
     #[test]
-    fn status_entries_filter_by_branch_without_current_repo_scope() -> Result<()> {
+    fn status_entries_include_all_activity_rows() {
         let views = vec![
             session_view("opencode", "ses_feature", "feature/auth", "Feature"),
             session_view("codex", "ses_other", "main", "Other"),
         ];
-        let query = StatusQuery::new(vec!["feature/auth".to_owned()], false);
         let activities = workspace_activities_from_sessions(views);
 
-        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
-
-        assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].agent_kind, "opencode");
-        assert_eq!(entries[0].session_id, "ses_feature");
-        assert_eq!(entries[0].git_branch, "feature/auth");
-        Ok(())
-    }
-
-    #[test]
-    fn status_entries_without_filters_include_all_activity_rows() {
-        let views = vec![
-            session_view("opencode", "ses_feature", "feature/auth", "Feature"),
-            session_view("codex", "ses_other", "main", "Other"),
-        ];
-        let query = StatusQuery::new(Vec::new(), false);
-        let activities = workspace_activities_from_sessions(views);
-
-        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, false, &StatusIcons::default());
 
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].session_id, "ses_feature");
@@ -334,10 +290,9 @@ mod tests {
             "feature/auth",
             "Feature",
         )];
-        let query = StatusQuery::new(vec!["Feature".to_owned()], false);
         let activities = workspace_activities_from_sessions(views);
 
-        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, false, &StatusIcons::default());
         let json = serde_json::to_value(&entries)?;
         let first = json
             .as_array()
@@ -364,15 +319,14 @@ mod tests {
     }
 
     #[test]
-    fn status_json_title_preserves_source_title_even_when_display_filters_it() {
+    fn status_json_title_preserves_source_title_when_display_uses_fallback() {
         let mut view = session_view("opencode", "ses_feature", "feature/auth", "project");
         view.target.git_repo_name = Some("project".to_owned());
         view.target.tmux_pane_title = Some("project".to_owned());
         view.target.tmux_pane_current_command = None;
-        let query = StatusQuery::new(Vec::new(), false);
         let activities = workspace_activities_from_sessions(vec![view]);
 
-        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, false, &StatusIcons::default());
 
         assert_eq!(entries[0].title.as_deref(), Some("project"));
         assert_eq!(
@@ -387,10 +341,9 @@ mod tests {
         view.title = None;
         view.target.tmux_pane_title = None;
         view.target.tmux_pane_current_command = None;
-        let query = StatusQuery::new(Vec::new(), false);
         let activities = workspace_activities_from_sessions(vec![view]);
 
-        let entries = status_entries(&activities, 300, &query, &StatusIcons::default());
+        let entries = status_entries(&activities, 300, false, &StatusIcons::default());
 
         assert_eq!(entries[0].title, None);
         assert_eq!(

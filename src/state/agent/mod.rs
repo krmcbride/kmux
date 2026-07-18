@@ -1,7 +1,7 @@
 //! XDG-backed persistence for external agent observations.
 //!
 //! This module owns the stored report model, file layout, and timing rules used
-//! to merge status updates from producers such as editor or CLI integrations.
+//! to merge status updates from reporters such as editor or CLI integrations.
 
 mod model;
 mod store;
@@ -19,6 +19,6 @@ pub(super) mod test_support {
     pub fn store_with_path(
         base_path: impl Into<std::path::PathBuf>,
     ) -> anyhow::Result<super::StateStore> {
-        super::StateStore::with_path(base_path)
+        super::store::state_store_with_path(base_path)
     }
 }

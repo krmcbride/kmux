@@ -139,7 +139,7 @@ fn format_agent(
         .unwrap_or_else(|| "-".to_owned())
 }
 
-// Match agent observations against the full workspace identity that list rows know.
+// Match workspace activity against the canonical identity known to list rows.
 fn workspace_target(item: &WorkspaceInventoryItem) -> WorkspaceTarget<'_> {
     WorkspaceTarget::new(Path::new(item.git_worktree_path()))
 }

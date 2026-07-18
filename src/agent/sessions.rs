@@ -1,8 +1,8 @@
 //! Reconciliation of persisted agent observations with live tmux state.
 //!
-//! External producers report a current directory for each logical session. This
+//! External reporters report a current directory for each logical session. This
 //! module attaches those observations to Git worktree roots, then derives the
-//! best honest live tmux target for selection.
+//! ordered live tmux navigation candidates or an explicit unavailability reason.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
@@ -28,7 +28,7 @@ pub struct ResolvedAgentWorkspace {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// One logical agent session reconciled from all of its producer observations.
+/// One logical agent session reconciled from all of its reporter observations.
 pub struct ResolvedAgentSession {
     pub key: AgentSessionKey,
     pub workspace: ResolvedAgentWorkspace,
@@ -121,7 +121,7 @@ impl ResolvedAgentWorkspace {
         &self.path
     }
 
-    /// Return the path originally reported by the producer before Git-root resolution.
+    /// Return the path originally reported by the reporter before Git-root resolution.
     pub fn reported_path(&self) -> &str {
         &self.reported_path
     }
@@ -178,7 +178,7 @@ impl ResolvedAgentSession {
         self.target.git_branch.as_deref()
     }
 
-    /// Return the latest producer-reported directory, if one was provided.
+    /// Return the latest reporter-provided directory, if one was provided.
     pub fn directory(&self) -> Option<&str> {
         self.target
             .directory
@@ -194,6 +194,16 @@ impl ResolvedAgentSession {
     /// Return the resolved tmux window name for display.
     pub fn tmux_window_name(&self) -> Option<&str> {
         self.target.tmux_window_name.as_deref()
+    }
+
+    /// Return the exact tmux session selected by reconciliation.
+    pub fn tmux_session_name(&self) -> Option<&str> {
+        self.target.tmux_session_name.as_deref()
+    }
+
+    /// Return the preferred matching non-sidebar pane ID.
+    pub fn tmux_pane_id(&self) -> Option<&str> {
+        self.target.tmux_pane_id.as_deref()
     }
 
     /// Return the live tmux pane title captured for display fallback.
@@ -307,7 +317,7 @@ impl AgentWorkspaceLookup for AgentWorkspaceResolver {
 }
 
 // Ignore observations scoped to another tmux socket. Unscoped observations remain
-// eligible because server-side producers may not know the active tmux instance.
+// eligible because server-side reporters may not know the active tmux instance.
 fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_id: &str) -> bool {
     observation
         .target
@@ -487,8 +497,9 @@ fn newest_value(
         .map(|(_, value)| value)
 }
 
-// A producer-visible row exists when the reported directory resolves to a Git
-// worktree root. Live tmux facts only determine how precise selection can be.
+// An observation can participate in workspace activity when its reported
+// directory resolves to a Git worktree root. Live tmux facts then provide exact
+// navigation candidates or an explicit unavailable result.
 fn resolve_observation_target(
     observation: &AgentObservationState,
     workspace_attachment: Option<&AgentWorkspaceAttachment>,
@@ -715,7 +726,7 @@ fn enrich_target_from_window_match(
 }
 
 // Merge newest display/routing metadata first. Live tmux target fields come only
-// from the matched kmux window, not from producer hints.
+// from the matched kmux window, not from reporter hints.
 fn merge_target_metadata(target: &mut ResolvedAgentTarget, observations: &[EnrichedObservation]) {
     let mut sorted = observations.iter().collect::<Vec<_>>();
     sorted.sort_by_key(|observation| observation.state.observed_at);
@@ -1459,7 +1470,7 @@ mod tests {
     }
 
     #[test]
-    fn multi_root_window_uses_matching_live_pane_without_producer_hint() {
+    fn multi_root_window_uses_matching_live_pane_without_reporter_hint() {
         let (_directory_temp, directory) = git_repo_path();
         let (_other_temp, other) = git_repo_path();
         let server = observation(
@@ -1672,8 +1683,8 @@ mod tests {
     }
 
     fn observation(
-        producer_kind: &str,
-        producer_instance: &str,
+        reporter_kind: &str,
+        reporter_instance: &str,
         status: Option<AgentStatus>,
         observed_at: u64,
         title: Option<&str>,
@@ -1686,8 +1697,8 @@ mod tests {
                     agent_kind: "opencode".to_owned(),
                     session_id: "ses_root".to_owned(),
                 },
-                producer_kind: producer_kind.to_owned(),
-                producer_instance: producer_instance.to_owned(),
+                reporter_kind: reporter_kind.to_owned(),
+                reporter_instance: reporter_instance.to_owned(),
             },
             created_at: observed_at,
             status,
@@ -1707,14 +1718,14 @@ mod tests {
 
     fn observation_for_session(
         session_id: &str,
-        producer_kind: &str,
-        producer_instance: &str,
+        reporter_kind: &str,
+        reporter_instance: &str,
         directory: &str,
         title: &str,
     ) -> AgentObservationState {
         let mut observation = observation(
-            producer_kind,
-            producer_instance,
+            reporter_kind,
+            reporter_instance,
             Some(AgentStatus::Working),
             100,
             Some(title),

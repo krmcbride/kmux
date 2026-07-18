@@ -1,6 +1,6 @@
 //! Timing derivation for agent observation updates.
 //!
-//! Producers may send partial statusless updates or repeated statuses, so this
+//! Reporters may send partial statusless updates or repeated statuses, so this
 //! module computes the persisted status-change time and accumulated working
 //! duration from the previous observation plus the incoming status.
 
@@ -127,8 +127,8 @@ mod tests {
     }
 
     fn test_observation(
-        producer_kind: &str,
-        producer_instance: &str,
+        reporter_kind: &str,
+        reporter_instance: &str,
         status: AgentStatus,
         status_changed_at: u64,
     ) -> AgentObservationState {
@@ -138,8 +138,8 @@ mod tests {
                     agent_kind: "opencode".to_owned(),
                     session_id: "ses_root".to_owned(),
                 },
-                producer_kind: producer_kind.to_owned(),
-                producer_instance: producer_instance.to_owned(),
+                reporter_kind: reporter_kind.to_owned(),
+                reporter_instance: reporter_instance.to_owned(),
             },
             created_at: status_changed_at,
             status: Some(status),

@@ -198,7 +198,7 @@ pub(super) fn row_index_by_window(rows: &[SidebarRow], window_id: &str) -> Optio
     rows.iter().position(|row| row.window_id == window_id)
 }
 
-/// Return the row index associated with a logical agent session identity.
+/// Return the row index associated with a stable workspace row identity.
 pub(super) fn row_index_by_identity(
     rows: &[SidebarRow],
     identity: &SidebarRowIdentity,
@@ -225,7 +225,7 @@ mod tests {
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, report_state, set_session_key, set_workspace, test_icons,
     };
-    use crate::agent::status::{self, StatusQuery};
+    use crate::agent::status;
     use crate::agent::workspace_activity::workspace_activities_from_sessions;
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
@@ -437,12 +437,8 @@ mod tests {
 
         let sidebar_rows =
             build_rows_with_working_icon(&activities, 300, &test_icons(), None, 1_800);
-        let status_entries = status::status_entries(
-            &activities,
-            300,
-            &StatusQuery::new(Vec::new(), false),
-            &StatusIcons::default(),
-        );
+        let status_entries =
+            status::status_entries(&activities, 300, false, &StatusIcons::default());
         let status_json = serde_json::to_value(status_entries)
             .expect("status entries should serialize for consistency test");
 

@@ -436,8 +436,8 @@ pub fn set_agent_status_args(
     agent_kind: &str,
     status: Option<&str>,
     session_id: &str,
-    producer_kind: &str,
-    producer_instance: &str,
+    reporter_kind: &str,
+    reporter_instance: &str,
     extra: &[(&str, &str)],
 ) -> Vec<String> {
     let mut args = vec!["set-agent-status".to_owned()];
@@ -449,10 +449,10 @@ pub fn set_agent_status_args(
         agent_kind.to_owned(),
         "--session-id".to_owned(),
         session_id.to_owned(),
-        "--producer-kind".to_owned(),
-        producer_kind.to_owned(),
-        "--producer-instance".to_owned(),
-        producer_instance.to_owned(),
+        "--reporter-kind".to_owned(),
+        reporter_kind.to_owned(),
+        "--reporter-instance".to_owned(),
+        reporter_instance.to_owned(),
     ]);
     for (flag, value) in extra {
         args.push((*flag).to_owned());
@@ -464,38 +464,38 @@ pub fn set_agent_status_args(
 pub fn set_opencode_status_args(
     status: Option<&str>,
     session_id: &str,
-    producer_kind: &str,
-    producer_instance: &str,
+    reporter_kind: &str,
+    reporter_instance: &str,
     extra: &[(&str, &str)],
 ) -> Vec<String> {
     set_agent_status_args(
         "opencode",
         status,
         session_id,
-        producer_kind,
-        producer_instance,
+        reporter_kind,
+        reporter_instance,
         extra,
     )
 }
 
 pub fn delete_opencode_agent_observation_args(
     session_id: &str,
-    producer_kind: &str,
-    producer_instance: &str,
+    reporter_kind: &str,
+    reporter_instance: &str,
 ) -> Vec<String> {
     let mut args =
-        set_opencode_status_args(None, session_id, producer_kind, producer_instance, &[]);
+        set_opencode_status_args(None, session_id, reporter_kind, reporter_instance, &[]);
     args.push("--delete".to_owned());
     args
 }
 
 pub fn delete_opencode_agent_session_args(
     session_id: &str,
-    producer_kind: &str,
-    producer_instance: &str,
+    reporter_kind: &str,
+    reporter_instance: &str,
 ) -> Vec<String> {
     let mut args =
-        set_opencode_status_args(None, session_id, producer_kind, producer_instance, &[]);
+        set_opencode_status_args(None, session_id, reporter_kind, reporter_instance, &[]);
     args.push("--delete-session".to_owned());
     args
 }
@@ -514,8 +514,8 @@ pub fn agent_observation_for_key(
     config_home: &Path,
     agent_kind: &str,
     session_id: &str,
-    producer_kind: &str,
-    producer_instance: &str,
+    reporter_kind: &str,
+    reporter_instance: &str,
 ) -> Result<serde_json::Value> {
     find_agent_observation(config_home, |value| {
         value
@@ -527,17 +527,17 @@ pub fn agent_observation_for_key(
                 .and_then(serde_json::Value::as_str)
                 == Some(session_id)
             && value
-                .pointer("/key/producer_kind")
+                .pointer("/key/reporter_kind")
                 .and_then(serde_json::Value::as_str)
-                == Some(producer_kind)
+                == Some(reporter_kind)
             && value
-                .pointer("/key/producer_instance")
+                .pointer("/key/reporter_instance")
                 .and_then(serde_json::Value::as_str)
-                == Some(producer_instance)
+                == Some(reporter_instance)
     })?
     .ok_or_else(|| {
         anyhow!(
-            "state for observation '{agent_kind}/{session_id}/{producer_kind}/{producer_instance}' not found"
+            "state for observation '{agent_kind}/{session_id}/{reporter_kind}/{reporter_instance}' not found"
         )
     })
 }

@@ -66,6 +66,19 @@ fn remove_help_has_no_partial_branch_retention_flag() {
 }
 
 #[test]
+fn status_help_documents_global_export_options() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["status", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("global agent workspace activity"))
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--git"))
+        .stdout(predicate::str::contains("[FILTERS]").not());
+}
+
+#[test]
 fn set_agent_status_help_documents_integration_contract() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
@@ -75,16 +88,18 @@ fn set_agent_status_help_documents_integration_contract() {
         .stdout(predicate::str::contains("supported integration surface"))
         .stdout(predicate::str::contains("--agent-kind"))
         .stdout(predicate::str::contains("--session-id"))
-        .stdout(predicate::str::contains("--producer-kind"))
-        .stdout(predicate::str::contains("--producer-instance"))
+        .stdout(predicate::str::contains("--reporter-kind"))
+        .stdout(predicate::str::contains("--reporter-instance"))
+        .stdout(predicate::str::contains("--producer-kind").not())
+        .stdout(predicate::str::contains("--producer-instance").not())
         .stdout(predicate::str::contains("title, context, or target hints"))
         .stdout(predicate::str::contains("working"))
         .stdout(predicate::str::contains("waiting"))
         .stdout(predicate::str::contains("done"))
         .stdout(predicate::str::contains(
-            "Delete the observation identified by this session and producer key",
+            "Delete the observation identified by this session and reporter key",
         ))
-        .stdout(predicate::str::contains("Delete all producer observations"))
+        .stdout(predicate::str::contains("Delete all reporter observations"))
         .stdout(predicate::str::contains("--tmux-instance"))
         .stdout(predicate::str::contains("--agent-meta").not())
         .stdout(predicate::str::contains("--clear-agent-meta").not())
@@ -236,8 +251,20 @@ fn removed_add_base_flag_fails_clearly() {
 }
 
 #[test]
-fn removed_set_agent_status_producer_flags_fail_clearly() {
+fn removed_status_filters_fail_clearly() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["status", "feature/example"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
+}
+
+#[test]
+fn removed_set_agent_status_flags_fail_clearly() {
     for (flag, value) in [
+        ("--producer-kind", "tui"),
+        ("--producer-instance", "default/%1"),
         ("--agent-workspace-id", "wrk_example"),
         ("--clear-agent-workspace-id", "wrk_example"),
         ("--git-worktree-path", "/repo/project-alpha"),
@@ -254,9 +281,9 @@ fn removed_set_agent_status_producer_flags_fail_clearly() {
                 "opencode",
                 "--session-id",
                 "ses_test",
-                "--producer-kind",
-                "tui",
-                "--producer-instance",
+                "--reporter-kind",
+                "server",
+                "--reporter-instance",
                 "default/%1",
                 flag,
                 value,

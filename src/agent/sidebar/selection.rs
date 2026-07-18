@@ -95,14 +95,6 @@ pub(super) fn persisted_sidebar_context_identity_index(
     )
 }
 
-fn row_matches_sidebar_context(
-    row: &SidebarRow,
-    sidebar_window_id: Option<&str>,
-    _sidebar_session_name: Option<&str>,
-) -> bool {
-    sidebar_window_id.is_some_and(|window_id| row.window_id == window_id)
-}
-
 /// Return the best workspace row index for manual selection after row refreshes.
 pub(super) fn manual_selection_index(
     rows: &[SidebarRow],
@@ -137,6 +129,14 @@ pub(super) fn decode_selected_target(value: &str) -> Option<SidebarRowIdentity> 
         return None;
     }
     Some(option.target)
+}
+
+fn row_matches_sidebar_context(
+    row: &SidebarRow,
+    sidebar_window_id: Option<&str>,
+    _sidebar_session_name: Option<&str>,
+) -> bool {
+    sidebar_window_id.is_some_and(|window_id| row.window_id == window_id)
 }
 
 #[cfg(test)]

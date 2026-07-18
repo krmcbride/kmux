@@ -101,13 +101,13 @@ status_icons:
 
     let worktree_pane = tmux.pane_for_window("kmux-feature-auth")?;
     let worktree_path = worktree.display().to_string();
-    let producer_instance = format!("default/{worktree_pane}");
+    let reporter_instance = format!("default/{worktree_pane}");
     kmux_with_pane(&repo, &config_home, &tmux, &worktree_pane)?
         .args(set_opencode_status_args(
             Some("working"),
             "ses_feature_auth",
             "tui",
-            &producer_instance,
+            &reporter_instance,
             &[
                 ("--tmux-instance", &tmux.socket_name),
                 ("--directory", &worktree_path),
@@ -142,7 +142,7 @@ status_icons:
         .args(delete_opencode_agent_observation_args(
             "ses_feature_auth",
             "tui",
-            &producer_instance,
+            &reporter_instance,
         ))
         .assert()
         .success();

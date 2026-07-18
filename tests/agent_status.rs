@@ -37,13 +37,13 @@ status_icons:
     let worktree_path = worktree.display().to_string();
 
     tmux.set_pane_title(&tmux.pane_id, "Main agent")?;
-    let main_producer = format!("default/{}", tmux.pane_id);
+    let main_reporter = format!("default/{}", tmux.pane_id);
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
             Some("done"),
             "ses_main_status",
             "tui",
-            &main_producer,
+            &main_reporter,
             &[
                 ("--git-repo-name", "project"),
                 ("--git-repo-path", &repo_path),
@@ -59,14 +59,14 @@ status_icons:
         .assert()
         .success();
     let worktree_pane = tmux.pane_for_window("kmux-feature-status")?;
-    let feature_producer = format!("default/{worktree_pane}");
+    let feature_reporter = format!("default/{worktree_pane}");
     tmux.set_pane_title(&worktree_pane, "Feature agent")?;
     kmux_with_pane(&worktree, &config_home, &tmux, &worktree_pane)?
         .args(set_opencode_status_args(
             Some("working"),
             "ses_feature_status",
             "tui",
-            &feature_producer,
+            &feature_reporter,
             &[
                 ("--git-repo-name", "project"),
                 ("--git-repo-path", &repo_path),
@@ -81,7 +81,7 @@ status_icons:
         "opencode",
         "ses_feature_status",
         "tui",
-        &feature_producer,
+        &feature_reporter,
     )?;
     assert_eq!(
         feature_report
@@ -144,7 +144,7 @@ status_icons:
 }
 
 #[test]
-fn status_without_filters_includes_agents_from_other_repos() -> Result<()> {
+fn status_includes_agents_from_other_repos() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -207,14 +207,14 @@ status_icons:
 "#,
     )?;
     let repo_path = repo.display().to_string();
-    let producer_instance = format!("default/{}", tmux.pane_id);
+    let reporter_instance = format!("default/{}", tmux.pane_id);
 
     kmux(&repo, &config_home, &tmux)?
         .args(set_opencode_status_args(
             Some("working"),
             "ses_visible_root",
             "tui",
-            &producer_instance,
+            &reporter_instance,
             &[
                 ("--directory", &repo_path),
                 ("--title", "Implement richer sidebar"),
@@ -228,7 +228,7 @@ status_icons:
         "opencode",
         "ses_visible_root",
         "tui",
-        &producer_instance,
+        &reporter_instance,
     )?;
     let first_changed = state_timestamp(&first, "status_changed_at")?;
     let first_observed = state_timestamp(&first, "observed_at")?;
@@ -253,7 +253,7 @@ status_icons:
             Some("working"),
             "ses_visible_root",
             "tui",
-            &producer_instance,
+            &reporter_instance,
             &[
                 ("--directory", &repo_path),
                 ("--title", "Implement richer sidebar"),
@@ -267,7 +267,7 @@ status_icons:
         "opencode",
         "ses_visible_root",
         "tui",
-        &producer_instance,
+        &reporter_instance,
     )?;
     let second_changed = state_timestamp(&second, "status_changed_at")?;
     let second_observed = state_timestamp(&second, "observed_at")?;
@@ -285,7 +285,7 @@ status_icons:
             Some("waiting"),
             "ses_visible_root",
             "tui",
-            &producer_instance,
+            &reporter_instance,
             &[],
         ))
         .assert()
@@ -295,7 +295,7 @@ status_icons:
         "opencode",
         "ses_visible_root",
         "tui",
-        &producer_instance,
+        &reporter_instance,
     )?;
     let third_changed = state_timestamp(&third, "status_changed_at")?;
     let third_observed = state_timestamp(&third, "observed_at")?;
@@ -326,7 +326,7 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
             "server",
             "http://127.0.0.1:4096",
             &[
-                ("--title", "Implement producer"),
+                ("--title", "Implement reporter"),
                 ("--context", "12.3K (6%)"),
                 ("--git-repo-name", "project"),
                 ("--git-repo-path", "/repo/project"),
@@ -345,7 +345,7 @@ fn set_agent_status_accepts_non_pane_observations() -> Result<()> {
         "http://127.0.0.1:4096",
     )?;
     assert_eq!(report["status"].as_str(), Some("working"));
-    assert_eq!(report["title"].as_str(), Some("Implement producer"));
+    assert_eq!(report["title"].as_str(), Some("Implement reporter"));
     assert_eq!(report["context"].as_str(), Some("12.3K (6%)"));
     assert_eq!(
         report
@@ -455,12 +455,12 @@ fn set_agent_status_persists_non_opencode_agent_kind() -> Result<()> {
 }
 
 #[test]
-fn set_agent_status_delete_session_removes_all_producer_observations() -> Result<()> {
+fn set_agent_status_delete_session_removes_all_reporter_observations() -> Result<()> {
     let temp = TempDir::new()?;
     let config_home = write_config(temp.path(), "")?;
     let cwd = temp.path().join("workspace");
     fs::create_dir(&cwd)?;
-    for (producer_kind, producer_instance) in
+    for (reporter_kind, reporter_instance) in
         [("tui", "default/%1"), ("server", "http://127.0.0.1:4096")]
     {
         Command::cargo_bin("kmux")?
@@ -472,8 +472,8 @@ fn set_agent_status_delete_session_removes_all_producer_observations() -> Result
             .args(set_opencode_status_args(
                 Some("working"),
                 "ses_parent",
-                producer_kind,
-                producer_instance,
+                reporter_kind,
+                reporter_instance,
                 &[],
             ))
             .assert()
@@ -732,7 +732,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
             "server",
             "http://127.0.0.1:4096",
             &[
-                ("--title", "Implement producer"),
+                ("--title", "Implement reporter"),
                 ("--directory", &repo_path),
             ],
         ))
@@ -772,7 +772,7 @@ fn non_pane_agent_observation_resolves_to_matching_tmux_workspace_window() -> Re
     let stdout = String::from_utf8_lossy(&status.get_output().stdout);
     assert!(stdout.contains("project"));
     assert!(stdout.contains("working"));
-    assert!(stdout.contains("Implement producer"));
+    assert!(stdout.contains("Implement reporter"));
     Ok(())
 }
 

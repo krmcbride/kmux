@@ -13,26 +13,25 @@ use crate::tmux::Tmux;
 
 /// Print global workspace activity using the shared application read model.
 pub(super) fn run_status(args: cli::StatusArgs) -> Result<()> {
-    let cli::StatusArgs { filters, json, git } = args;
+    let cli::StatusArgs { json, git } = args;
     let store = StateStore::new()?;
     let tmux = Tmux::from_env();
     let config = Config::load()?;
     let activities = workspace_activities(&store, &tmux)?;
     let now = now_unix_seconds();
-    let query = status::StatusQuery::new(filters, git);
-    let entries = status::status_entries(&activities, now, &query, &config.status_icons);
+    let entries = status::status_entries(&activities, now, git, &config.status_icons);
 
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
     } else if entries.is_empty() {
         println!("No active agents");
     } else {
-        status::print_table(&entries, query.show_git());
+        status::print_table(&entries, git);
     }
     Ok(())
 }
 
-/// Record or delete one agent status observation from an external producer.
+/// Record or delete one agent status observation from an external reporter.
 pub(super) fn run_set_agent_status(args: cli::SetAgentStatusArgs) -> Result<()> {
     if std::env::var_os("KMUX_DISABLE_SET_AGENT_STATUS").is_some() {
         return Ok(());
@@ -78,8 +77,8 @@ fn observation_key(args: &cli::SetAgentStatusArgs) -> Result<AgentObservationKey
             agent_kind: clean_required(&args.agent_kind, "--agent-kind")?,
             session_id: clean_required(&args.session_id, "--session-id")?,
         },
-        producer_kind: clean_required(&args.producer_kind, "--producer-kind")?,
-        producer_instance: clean_required(&args.producer_instance, "--producer-instance")?,
+        reporter_kind: clean_required(&args.reporter_kind, "--reporter-kind")?,
+        reporter_instance: clean_required(&args.reporter_instance, "--reporter-instance")?,
     })
 }
 
@@ -115,8 +114,8 @@ mod tests {
         let mut args = set_status_args();
         args.agent_kind = " opencode ".to_owned();
         args.session_id = " ses_root ".to_owned();
-        args.producer_kind = " server ".to_owned();
-        args.producer_instance = " default ".to_owned();
+        args.reporter_kind = " server ".to_owned();
+        args.reporter_instance = " default ".to_owned();
         args.title = Some(" Implement status ".to_owned());
         args.context = Some(" 12K ".to_owned());
         args.git_branch = Some(" feature/auth ".to_owned());
@@ -129,8 +128,8 @@ mod tests {
         };
         assert_eq!(update.key.session.agent_kind, "opencode");
         assert_eq!(update.key.session.session_id, "ses_root");
-        assert_eq!(update.key.producer_kind, "server");
-        assert_eq!(update.key.producer_instance, "default");
+        assert_eq!(update.key.reporter_kind, "server");
+        assert_eq!(update.key.reporter_instance, "default");
         assert_eq!(update.status, Some(StoredAgentStatus::Working));
         assert_eq!(update.title.as_deref(), Some("Implement status"));
         assert_eq!(update.context.as_deref(), Some("12K"));
@@ -172,8 +171,8 @@ mod tests {
             status: Some(cli::AgentStatus::Working),
             agent_kind: "opencode".to_owned(),
             session_id: "ses_root".to_owned(),
-            producer_kind: "server".to_owned(),
-            producer_instance: "default".to_owned(),
+            reporter_kind: "server".to_owned(),
+            reporter_instance: "default".to_owned(),
             delete: false,
             delete_session: false,
             title: None,

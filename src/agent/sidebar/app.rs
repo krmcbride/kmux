@@ -144,7 +144,8 @@ impl SidebarApp {
         }
     }
 
-    /// Switch tmux focus to the selected agent row's pane or window.
+    /// Switch to the selected workspace's exact matching window, then try to
+    /// focus its matching pane.
     pub(super) fn jump_to_selected(&mut self) {
         let Some(intent) = self.selected_jump_intent() else {
             return;
@@ -162,18 +163,6 @@ impl SidebarApp {
                 self.last_error = Some(format!("jump failed: {}{rollback_error}", failure.error));
             }
         }
-    }
-
-    fn apply_successful_jump_outcome(&mut self, outcome: SidebarJumpOutcome) {
-        if let Some(row) = self
-            .rows
-            .iter_mut()
-            .find(|row| row.identity == outcome.row.identity)
-        {
-            row.clone_from(&outcome.row);
-        }
-        self.reset_after_successful_jump(&outcome.row);
-        self.last_error = outcome.persistence_warning;
     }
 
     /// Delete all observations represented by the selected workspace row.
@@ -260,6 +249,18 @@ impl SidebarApp {
                 row.icon.clone_from(&icon);
             }
         }
+    }
+
+    fn apply_successful_jump_outcome(&mut self, outcome: SidebarJumpOutcome) {
+        if let Some(row) = self
+            .rows
+            .iter_mut()
+            .find(|row| row.identity == outcome.row.identity)
+        {
+            row.clone_from(&outcome.row);
+        }
+        self.reset_after_successful_jump(&outcome.row);
+        self.last_error = outcome.persistence_warning;
     }
 
     fn apply_rows_snapshot(&mut self, snapshot: SidebarRowsSnapshot) {
@@ -436,6 +437,10 @@ impl SidebarApp {
         Self::test_with_store(tmux, store, sidebar_session_name, sidebar_window_id, rows)
     }
 
+    pub(super) fn set_last_error_for_test(&mut self, error: impl Into<String>) {
+        self.last_error = Some(error.into());
+    }
+
     fn test_with_store(
         tmux: Tmux,
         store: crate::state::StateStore,
@@ -470,10 +475,6 @@ impl SidebarApp {
         };
         app.sync_selection();
         app
-    }
-
-    pub(super) fn set_last_error_for_test(&mut self, error: impl Into<String>) {
-        self.last_error = Some(error.into());
     }
 }
 

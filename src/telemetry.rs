@@ -54,11 +54,6 @@ pub fn init() {
     let _ = tracing::subscriber::set_global_default(subscriber);
 }
 
-/// Return elapsed milliseconds as a tracing-friendly integer.
-fn elapsed_ms(started: Instant) -> u64 {
-    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-}
-
 /// Run an operation and return its value with elapsed milliseconds.
 pub fn timed<T>(operation: impl FnOnce() -> T) -> (T, u64) {
     let started = Instant::now();
@@ -71,6 +66,11 @@ pub fn timed_result<T, E>(operation: impl FnOnce() -> Result<T, E>) -> (Result<T
     let started = Instant::now();
     let result = operation();
     (result, elapsed_ms(started))
+}
+
+/// Return elapsed milliseconds as a tracing-friendly integer.
+fn elapsed_ms(started: Instant) -> u64 {
+    started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
 }
 
 /// Time a fallible operation and emit one summary event with static fields.
@@ -117,6 +117,8 @@ macro_rules! timed_result_event {
     }};
 }
 
+// Crate visibility enables namespaced macro use across adapters without making
+// this internal instrumentation helper part of the external crate surface.
 pub(crate) use timed_result_event;
 
 fn telemetry_path() -> Option<PathBuf> {
