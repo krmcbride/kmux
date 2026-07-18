@@ -8,7 +8,7 @@ The server plugin is the only required status integration. OpenCode session-fami
 topology, status, title, context usage, directory, and deletion are reported by
 `kmux-status-server.ts`. kmux resolves that directory to a canonical Git worktree,
 matches the worktree to live tmux state, and displays one primary agent row per
-worktree. No TUI plugin or reporter-supplied pane identity is required.
+worktree. No reporter-supplied pane identity is required.
 
 ## Installation
 
@@ -28,9 +28,30 @@ When kmux is installed from the Nix package, integration files are installed und
 $out/share/kmux/integrations/opencode/
 ```
 
-Reference `kmux-status-server.ts` from OpenCode configuration, either directly from
-a checkout during development or from the packaged Nix store path in declarative
-configuration. The runtime requires `bun` and `kmux` on `PATH`.
+From a checkout, print the exact package output path with:
+
+```sh
+nix build --no-link --print-out-paths
+```
+
+Load only `kmux-status-server.ts` as the plugin entrypoint. OpenCode `1.17.11`
+accepts an absolute TypeScript path in the `plugin` array, so an `opencode.json`
+can reference either a checkout or the packaged Nix store path:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "plugin": [
+    "/absolute/path/to/kmux-status-server.ts"
+  ]
+}
+```
+
+Keep the four files above adjacent because the entrypoint imports the other three.
+Using an explicit path also avoids placing helper modules in OpenCode's auto-loaded
+plugin directory. The runtime requires `bun` and `kmux` on `PATH`. Restart OpenCode
+after changing its plugin configuration, then use `kmux status` to confirm reports
+are arriving.
 
 ## Behavior and diagnostics
 
@@ -73,7 +94,9 @@ other reporters matter. No automatic migration is provided for pre-release state
 
 A clean plugin disposal removes observations it successfully owns. A process crash
 can still leave valid observations because kmux does not currently apply a TTL or
-lease policy.
+lease policy. For one stale workspace row, select it in the kmux sidebar and press
+`x`; kmux clears every current session represented by that row. Ongoing OpenCode
+activity may recreate it immediately.
 
 ## Development
 
