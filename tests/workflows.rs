@@ -346,7 +346,7 @@ fn remove_warns_when_other_links_still_reference_removed_branch() -> Result<()> 
         .assert()
         .success();
     kmux(&repo, &config_home, &tmux)?
-        .args(["parent", "feature-child", "feature/parent"])
+        .args(["parent", "feature/parent", "feature-child"])
         .assert()
         .success();
 

@@ -29,14 +29,14 @@ pub(super) fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
     lifecycle::notify_observation_changed(tmux)
 }
 
-/// Dispatch sidebar lifecycle commands or toggle the sidebar when no subcommand is provided.
+/// Dispatch an explicit sidebar lifecycle command.
 pub fn run(args: SidebarArgs) -> Result<()> {
     match args.command {
-        Some(SidebarCommand::On) => lifecycle::enable(),
-        Some(SidebarCommand::Off) => lifecycle::disable(),
-        Some(SidebarCommand::Refresh) => lifecycle::refresh(),
-        Some(SidebarCommand::Run) => lifecycle::run_tui(),
-        Some(SidebarCommand::Wake { window_id }) => lifecycle::wake(&window_id),
-        None => lifecycle::toggle(),
+        SidebarCommand::On => lifecycle::enable(),
+        SidebarCommand::Off => lifecycle::disable(),
+        SidebarCommand::Toggle => lifecycle::toggle(),
+        SidebarCommand::Refresh => lifecycle::refresh(),
+        SidebarCommand::Run => lifecycle::run_tui(),
+        SidebarCommand::Wake { window_id } => lifecycle::wake(&window_id),
     }
 }

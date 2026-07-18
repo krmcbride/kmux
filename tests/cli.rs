@@ -23,7 +23,85 @@ fn help_shows_current_commands() {
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("sidebar"))
         .stdout(predicate::str::contains("set-agent-status"))
-        .stdout(predicate::str::contains("completions"));
+        .stdout(predicate::str::contains("completions"))
+        .stdout(predicate::str::contains("\n  help ").not());
+}
+
+#[test]
+fn help_subcommands_are_disabled() {
+    for args in [["help"].as_slice(), ["sidebar", "help"].as_slice()] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .args(args)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unrecognized subcommand"));
+    }
+}
+
+#[test]
+fn parent_help_uses_stable_parent_then_child_order() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["parent", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Usage: kmux parent <PARENT> [CHILD]",
+        ))
+        .stdout(predicate::str::contains(
+            "Defaults to the current kmux workspace",
+        ));
+}
+
+#[test]
+fn sidebar_help_exposes_only_public_explicit_commands() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["sidebar", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: kmux sidebar <COMMAND>"))
+        .stdout(predicate::str::contains("  on"))
+        .stdout(predicate::str::contains("  off"))
+        .stdout(predicate::str::contains("  toggle"))
+        .stdout(predicate::str::contains("refresh").not())
+        .stdout(predicate::str::contains("  run").not())
+        .stdout(predicate::str::contains("  wake").not())
+        .stdout(predicate::str::contains("  help").not());
+}
+
+#[test]
+fn private_sidebar_entrypoints_require_underscore_names() {
+    for command in ["_refresh", "_run", "_wake"] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .args(["sidebar", command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!(
+                "Usage: kmux sidebar {command}"
+            )));
+    }
+
+    for command in ["refresh", "run", "wake"] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .args(["sidebar", command])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unrecognized subcommand"));
+    }
+}
+
+#[test]
+fn sidebar_requires_an_explicit_command() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .arg("sidebar")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage: kmux sidebar <COMMAND>"));
 }
 
 #[test]

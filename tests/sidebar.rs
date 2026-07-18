@@ -13,7 +13,7 @@ const IDLE_PANE_COMMAND: &str = "sh -c 'while :; do sleep 60; done'";
 const FIXED_WIDTH_CONFIG: &str = "sidebar: {width: {min: 30, percent: 20, max: 30}}\n";
 
 #[test]
-fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
+fn sidebar_on_creates_refreshes_and_off_removes_marked_panes() -> Result<()> {
     let cwd = TempDir::new()?;
     let Some(tmux) = TmuxFixture::new(cwd.path())? else {
         return Ok(());
@@ -37,11 +37,11 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
     tmux.wait_for_sidebar_title("kmux")?;
     assert!(
         tmux.global_hook("after-new-window[90]")?
-            .contains("sidebar refresh")
+            .contains("sidebar _refresh")
     );
     assert!(
         tmux.global_hook("window-resized[90]")?
-            .contains("sidebar refresh")
+            .contains("sidebar _refresh")
     );
     for hook_name in [
         "after-select-window[90]",
@@ -49,7 +49,7 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
         "client-session-changed[90]",
     ] {
         let wake_hook = tmux.global_hook(hook_name)?;
-        assert!(wake_hook.contains("sidebar wake"));
+        assert!(wake_hook.contains("sidebar _wake"));
         assert!(wake_hook.contains("#{window_id}"));
     }
     assert!(tmux.has_one_sidebar_per_window()?);
@@ -81,13 +81,40 @@ fn sidebar_toggle_creates_refreshes_and_removes_marked_panes() -> Result<()> {
     assert!(
         !tmux
             .tmux_output(&["show-hooks", "-g"])?
-            .contains("sidebar refresh")
+            .contains("sidebar _refresh")
     );
     assert!(
         !tmux
             .tmux_output(&["show-hooks", "-g"])?
-            .contains("sidebar wake")
+            .contains("sidebar _wake")
     );
+    Ok(())
+}
+
+#[test]
+fn sidebar_toggle_enables_and_disables_sidebar() -> Result<()> {
+    let cwd = TempDir::new()?;
+    let Some(tmux) = TmuxFixture::new(cwd.path())? else {
+        return Ok(());
+    };
+    let config_home = write_config(cwd.path(), FIXED_WIDTH_CONFIG)?;
+
+    kmux(cwd.path(), &config_home, &tmux)?
+        .args(["sidebar", "toggle"])
+        .assert()
+        .success();
+    assert_eq!(
+        tmux.global_option("@kmux_sidebar_enabled")?.as_deref(),
+        Some("1")
+    );
+    assert_eq!(tmux.sidebar_pane_count()?, 1);
+
+    kmux(cwd.path(), &config_home, &tmux)?
+        .args(["sidebar", "toggle"])
+        .assert()
+        .success();
+    assert_eq!(tmux.global_option("@kmux_sidebar_enabled")?, None);
+    assert_eq!(tmux.sidebar_pane_count()?, 0);
     Ok(())
 }
 
@@ -203,7 +230,7 @@ fn sidebar_creation_uses_full_window_left_edge_in_multi_pane_layout() -> Result<
 }
 
 #[test]
-fn sidebar_refresh_reloads_width_policy_from_config() -> Result<()> {
+fn sidebar_on_reloads_width_policy_from_config() -> Result<()> {
     let cwd = TempDir::new()?;
     let Some(tmux) = TmuxFixture::new(cwd.path())? else {
         return Ok(());
@@ -225,7 +252,7 @@ fn sidebar_refresh_reloads_width_policy_from_config() -> Result<()> {
         "sidebar: {width: {min: 45, percent: 20, max: 45}}\n",
     )?;
     kmux(cwd.path(), &config_home, &tmux)?
-        .args(["sidebar", "refresh"])
+        .args(["sidebar", "on"])
         .assert()
         .success();
 
@@ -380,7 +407,7 @@ fn sidebar_wake_sends_key_only_to_target_window_sidebar() -> Result<()> {
     wait_for_path(&target_ready)?;
 
     kmux(cwd.path(), &config_home, &tmux)?
-        .args(["sidebar", "wake", &target_window_id])
+        .args(["sidebar", "_wake", &target_window_id])
         .assert()
         .success();
 

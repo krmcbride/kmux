@@ -59,17 +59,16 @@ pub(super) fn validate_no_cycle(state: &WorkspaceState, child: &str, parent: &st
     Ok(())
 }
 
-// `kmux parent <child> <parent>` targets an explicit child; `kmux parent <parent>`
-// targets the current kmux workspace for the short form.
+// `kmux parent <parent> <child>` targets an explicit child; `kmux parent <parent>`
+// discovers the child from the current kmux workspace.
 fn resolve_target(repo: &RepoContext, args: cli::ParentArgs) -> Result<(WorkspaceRecord, String)> {
-    if let Some(parent) = args.parent {
-        return Ok((resolve_workspace(repo, &args.child_or_parent)?, parent));
-    }
+    let cli::ParentArgs { parent, child } = args;
+    let resolved = match child {
+        Some(child) => resolve_workspace(repo, &child)?,
+        None => resolve_current_kmux_workspace(repo, "parent")?,
+    };
 
-    Ok((
-        resolve_current_kmux_workspace(repo, "parent")?,
-        args.child_or_parent,
-    ))
+    Ok((resolved, parent))
 }
 
 // Keep command output readable while retaining enough of the recorded anchor to identify it.

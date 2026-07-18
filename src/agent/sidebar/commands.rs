@@ -10,12 +10,12 @@ use anyhow::{Context, Result};
 
 /// Build the shell command tmux uses to run the sidebar TUI pane.
 pub(super) fn sidebar_tui_command() -> Result<String> {
-    sidebar_command(["sidebar", "run"])
+    sidebar_command(["sidebar", "_run"])
 }
 
 /// Build the shell command tmux hooks use to reconcile sidebar panes.
 pub(super) fn sidebar_refresh_command() -> Result<String> {
-    sidebar_command(["sidebar", "refresh"])
+    sidebar_command(["sidebar", "_refresh"])
 }
 
 /// Build the shell command used to disable the sidebar from inside tmux.
@@ -25,7 +25,7 @@ pub(super) fn sidebar_off_command() -> Result<String> {
 
 /// Build the shell command that wakes the sidebar pane for one window.
 pub(super) fn sidebar_wake_command(window_id: &str) -> Result<String> {
-    sidebar_command(["sidebar", "wake", window_id])
+    sidebar_command(["sidebar", "_wake", window_id])
 }
 
 /// Build the tmux hook command that expands `#{window_id}` at hook runtime.
@@ -74,7 +74,7 @@ mod tests {
         let command = sidebar_tui_command()?;
 
         assert!(command.starts_with("exec env "));
-        assert!(command.contains(" sidebar run"));
+        assert!(command.contains(" sidebar _run"));
         assert!(!command.contains("while :; do"));
         Ok(())
     }
@@ -93,8 +93,8 @@ mod tests {
         let command = sidebar_wake_command("@42")?;
 
         assert!(command.starts_with("exec env "));
-        assert!(command.contains(" sidebar wake "));
-        assert!(command.ends_with(" sidebar wake @42"));
+        assert!(command.contains(" sidebar _wake "));
+        assert!(command.ends_with(" sidebar _wake @42"));
         Ok(())
     }
 
@@ -103,7 +103,7 @@ mod tests {
         let command = sidebar_wake_hook_command()?;
 
         assert!(command.starts_with("run-shell -b "));
-        assert!(command.contains("sidebar wake"));
+        assert!(command.contains("sidebar _wake"));
         assert!(command.contains("#{window_id}"));
         Ok(())
     }

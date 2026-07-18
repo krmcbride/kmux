@@ -56,10 +56,9 @@ _kmux() {
             for ((index = 3; index < CURRENT; index++)); do
                 [[ "${words[index]}" != -* ]] && ((positional_before++))
             done
-            if (( positional_before >= 1 )); then
-                _kmux_git_branches
-            else
+            if (( positional_before == 1 )); then
                 _kmux_workspaces
+            elif (( positional_before == 0 )); then
                 _kmux_git_branches
             fi
             ;;

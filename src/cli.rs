@@ -2,7 +2,11 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(name = "kmux")]
-#[command(version, about = "Lean tmux and git worktree helper")]
+#[command(
+    version,
+    about = "Lean tmux and git worktree helper",
+    disable_help_subcommand = true
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -24,7 +28,7 @@ pub enum Command {
     Remove(RemoveArgs),
     /// Show global agent workspace activity.
     Status(StatusArgs),
-    /// Toggle the tmux sidebar.
+    /// Manage the tmux sidebar.
     Sidebar(SidebarArgs),
     /// Generate shell completions.
     Completions {
@@ -64,11 +68,11 @@ pub struct AddArgs {
 
 #[derive(Debug, Args)]
 pub struct ParentArgs {
-    /// Child workspace slug/branch, or parent branch when run inside a workspace.
-    pub child_or_parent: String,
-
     /// Local parent branch for the child workspace.
-    pub parent: Option<String>,
+    pub parent: String,
+
+    /// Child workspace slug/branch. Defaults to the current kmux workspace.
+    pub child: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -163,7 +167,7 @@ pub struct SetAgentStatusArgs {
 #[derive(Debug, Args)]
 pub struct SidebarArgs {
     #[command(subcommand)]
-    pub command: Option<SidebarCommand>,
+    pub command: SidebarCommand,
 }
 
 #[derive(Debug, Subcommand)]
@@ -172,13 +176,16 @@ pub enum SidebarCommand {
     On,
     /// Disable sidebar panes and remove hooks.
     Off,
+    /// Toggle sidebar panes on or off.
+    Toggle,
     /// Reconcile sidebar panes after tmux window/session changes.
+    #[command(name = "_refresh", hide = true)]
     Refresh,
     /// Run the interactive sidebar TUI.
-    #[command(hide = true)]
+    #[command(name = "_run", hide = true)]
     Run,
     /// Wake the sidebar TUI for a visible tmux window.
-    #[command(hide = true)]
+    #[command(name = "_wake", hide = true)]
     Wake { window_id: String },
 }
 

@@ -57,10 +57,12 @@ _kmux_dynamic() {
                             ((positional_before++))
                         fi
                     done
-                    if (( positional_before >= 1 )); then
+                    if (( positional_before == 1 )); then
+                        COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
+                    elif (( positional_before == 0 )); then
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
                     else
-                        COMPREPLY=($(compgen -W "$(_kmux_workspaces) $(_kmux_git_branches)" -- "$cur"))
+                        COMPREPLY=()
                     fi
                     return
                 fi

@@ -4,7 +4,7 @@
 //! and fail closed so shell completion stays quiet outside supported contexts.
 
 use anyhow::Result;
-use clap::CommandFactory;
+use clap::{Command, CommandFactory};
 use clap_complete::{Shell, generate as generate_for_shell};
 
 use crate::cli;
@@ -14,7 +14,8 @@ use crate::workspace::strict_kmux_workspace_records;
 
 /// Print static clap completions plus kmux dynamic completion hooks for a shell.
 pub fn generate(shell: Shell) -> Result<()> {
-    let mut command = cli::Cli::command();
+    let command = cli::Cli::command();
+    let mut command = public_completion_command(&command);
     let name = command.get_name().to_owned();
 
     let mut buffer = Vec::new();
@@ -38,6 +39,51 @@ pub fn generate(shell: Shell) -> Result<()> {
     }
 
     Ok(())
+}
+
+// clap_complete's ahead-of-time generators include hidden subcommands. Build a
+// presentation-only command tree so internal process entrypoints are not
+// advertised as shell candidates while the runtime parser can still accept them.
+fn public_completion_command(command: &Command) -> Command {
+    let mut public = Command::new(command.get_name().to_owned())
+        .subcommand_required(command.is_subcommand_required_set())
+        .arg_required_else_help(command.is_arg_required_else_help_set())
+        .disable_help_subcommand(command.is_disable_help_subcommand_set())
+        .disable_help_flag(command.is_disable_help_flag_set())
+        .disable_version_flag(command.is_disable_version_flag_set())
+        .args(
+            command
+                .get_arguments()
+                .filter(|argument| !argument.is_hide_set())
+                .cloned(),
+        )
+        .subcommands(
+            command
+                .get_subcommands()
+                .filter(|subcommand| !subcommand.is_hide_set())
+                .map(public_completion_command),
+        );
+
+    if let Some(about) = command.get_about() {
+        public = public.about(about.clone());
+    }
+    if let Some(long_about) = command.get_long_about() {
+        public = public.long_about(long_about.clone());
+    }
+    if let Some(version) = command.get_version() {
+        public = public.version(version.to_owned());
+    }
+    if let Some(long_version) = command.get_long_version() {
+        public = public.long_version(long_version.to_owned());
+    }
+    for alias in command.get_aliases() {
+        public = public.alias(alias.to_owned());
+    }
+    for alias in command.get_visible_aliases() {
+        public = public.visible_alias(alias.to_owned());
+    }
+
+    public
 }
 
 /// Print strict kmux workspace slugs for shell completion.
@@ -170,5 +216,51 @@ mod tests {
         assert!(result.contains("'kmux commands'"));
         assert!(!result.contains("funcstack"));
         assert!(!result.contains("compdef _kmux_base"));
+    }
+
+    #[test]
+    fn parent_dynamic_completion_follows_parent_then_child_order() {
+        let bash = include_str!("bash_dynamic.bash");
+        assert!(bash.contains(concat!(
+            "if (( positional_before == 1 )); then\n",
+            "                        COMPREPLY=($(compgen -W \"$(_kmux_workspaces)\""
+        )));
+        assert!(bash.contains(concat!(
+            "elif (( positional_before == 0 )); then\n",
+            "                        COMPREPLY=($(compgen -W \"$(_kmux_git_branches)\""
+        )));
+        assert!(bash.contains(concat!("else\n", "                        COMPREPLY=()")));
+
+        let zsh = include_str!("zsh_dynamic.zsh");
+        assert!(zsh.contains(concat!(
+            "if (( positional_before == 1 )); then\n",
+            "                _kmux_workspaces\n",
+            "            elif (( positional_before == 0 )); then\n",
+            "                _kmux_git_branches"
+        )));
+
+        let fish = include_str!("fish_dynamic.fish");
+        assert!(fish.contains("parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'"));
+        assert!(fish.contains("parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'"));
+        assert!(!fish.contains("parent_completed_arg_count) -ge 1'"));
+    }
+
+    #[test]
+    fn public_completion_command_excludes_hidden_process_entrypoints() {
+        let command = public_completion_command(&cli::Cli::command());
+        assert!(
+            command
+                .get_subcommands()
+                .all(|subcommand| !subcommand.is_hide_set())
+        );
+
+        let sidebar = command
+            .find_subcommand("sidebar")
+            .expect("public sidebar command should remain");
+        let sidebar_commands = sidebar
+            .get_subcommands()
+            .map(Command::get_name)
+            .collect::<Vec<_>>();
+        assert_eq!(sidebar_commands, ["on", "off", "toggle"]);
     }
 }

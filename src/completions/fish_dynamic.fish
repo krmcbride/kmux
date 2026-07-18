@@ -40,5 +40,5 @@ end
 complete -c kmux -n '__fish_seen_subcommand_from remove rm status' -f -a '(__kmux_workspaces)'
 complete -c kmux -n '__fish_seen_subcommand_from add; and __fish_prev_arg_in --parent' -f -a '(__kmux_git_branches)'
 complete -c kmux -n '__fish_seen_subcommand_from add; and not __fish_prev_arg_in --parent' -f -a '(__kmux_add_branches)'
-complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 0' -f -a '(__kmux_workspaces) (__kmux_git_branches)'
-complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -ge 1' -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'
