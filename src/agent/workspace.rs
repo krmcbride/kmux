@@ -146,48 +146,15 @@ fn clean_path(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use anyhow::{Context, Result};
+    use crate::git::test_support::GitRepoFixture;
+    use anyhow::Result;
     use std::fs;
-    use std::process::Command;
     use tempfile::TempDir;
-
-    fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .with_context(|| format!("failed to run {} {}", program, args.join(" ")))?;
-        assert!(
-            output.status.success(),
-            "{} {} failed\nstdout: {}\nstderr: {}",
-            program,
-            args.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(())
-    }
-
-    fn git(cwd: &Path, args: &[&str]) -> Result<()> {
-        run(cwd, "git", args)
-    }
-
-    fn init_repo() -> Result<(TempDir, PathBuf)> {
-        let temp = TempDir::new()?;
-        let repo = temp.path().join("project");
-        fs::create_dir(&repo)?;
-        git(&repo, &["init", "--initial-branch", "main"])?;
-        git(&repo, &["config", "user.email", "test@example.invalid"])?;
-        git(&repo, &["config", "user.name", "Test User"])?;
-        fs::write(repo.join("README.md"), "test\n")?;
-        git(&repo, &["add", "README.md"])?;
-        git(&repo, &["commit", "-m", "initial"])?;
-        Ok((temp, repo))
-    }
 
     #[test]
     fn repo_root_resolves_to_canonical_git_worktree_root() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
         let mut resolver = AgentWorkspaceResolver::default();
 
         let attachment = resolver
@@ -204,7 +171,8 @@ mod tests {
 
     #[test]
     fn subdirectory_resolves_to_git_worktree_root() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
         let nested = repo.join("src/bin");
         fs::create_dir_all(&nested)?;
         let mut resolver = AgentWorkspaceResolver::default();
@@ -222,19 +190,17 @@ mod tests {
 
     #[test]
     fn linked_worktree_root_is_distinct_from_main_root() -> Result<()> {
-        let (temp, repo) = init_repo()?;
-        let worktree = temp.path().join("project__worktrees/feature");
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let worktree = fixture.root().join("project-alpha__worktrees/feature");
         fs::create_dir_all(worktree.parent().expect("worktree should have parent"))?;
-        git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature",
-                worktree.to_str().unwrap(),
-            ],
-        )?;
+        fixture.git(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature",
+            worktree.to_str().unwrap(),
+        ])?;
         let mut resolver = AgentWorkspaceResolver::default();
 
         let main = resolver

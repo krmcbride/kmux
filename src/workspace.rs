@@ -463,4 +463,25 @@ mod tests {
         assert_eq!(records[0].branch(), Some("feature/auth"));
         Ok(())
     }
+
+    #[test]
+    fn inventory_json_preserves_parent_and_anchor_field_names() -> Result<()> {
+        let record = WorkspaceRecord::from_worktree(
+            worktree(
+                "/repo/project__worktrees/feature-auth",
+                Some("feature/auth"),
+            ),
+            false,
+        )?;
+        let mut item = WorkspaceInventoryItem::from_record(record, Some(100));
+        item.set_parent_state("main".to_owned(), "anchor-commit".to_owned());
+        item.set_tree_depth(1);
+
+        let json = serde_json::to_value(item)?;
+
+        assert_eq!(json["git_parent_branch"], "main");
+        assert_eq!(json["git_anchor_commit"], "anchor-commit");
+        assert!(json.get("tree_depth").is_none());
+        Ok(())
+    }
 }

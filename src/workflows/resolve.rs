@@ -279,3 +279,60 @@ fn name_candidates(config: &Config, name: &str) -> Vec<String> {
     }
     candidates
 }
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use super::*;
+
+    #[test]
+    fn parent_tree_order_is_depth_first_with_stable_siblings() -> Result<()> {
+        let main = inventory_item("project-alpha", "main", true)?;
+        let mut child = inventory_item("feature-child", "feature/child", false)?;
+        child.set_parent_state("main".to_owned(), "anchor-child".to_owned());
+        let mut sibling = inventory_item("feature-sibling", "feature/sibling", false)?;
+        sibling.set_parent_state("main".to_owned(), "anchor-sibling".to_owned());
+        let mut grandchild = inventory_item("feature-grandchild", "feature/grandchild", false)?;
+        grandchild.set_parent_state("feature/child".to_owned(), "anchor-grandchild".to_owned());
+        let mut missing_parent = inventory_item("feature-orphan", "feature/orphan", false)?;
+        missing_parent.set_parent_state("missing-parent".to_owned(), "anchor-orphan".to_owned());
+
+        let ordered = parent_tree_order(vec![sibling, missing_parent, grandchild, child, main]);
+
+        assert_eq!(
+            ordered
+                .iter()
+                .map(|item| (item.git_branch(), item.tree_depth()))
+                .collect::<Vec<_>>(),
+            [
+                (Some("main"), 0),
+                (Some("feature/child"), 1),
+                (Some("feature/grandchild"), 2),
+                (Some("feature/sibling"), 1),
+                (Some("feature/orphan"), 0),
+            ]
+        );
+        Ok(())
+    }
+
+    fn inventory_item(
+        workspace_slug: &str,
+        branch: &str,
+        is_main: bool,
+    ) -> Result<WorkspaceInventoryItem> {
+        let record = WorkspaceRecord::from_worktree(
+            WorktreeInfo {
+                path: PathBuf::from("/repo").join(workspace_slug),
+                head: None,
+                branch: Some(branch.to_owned()),
+                detached: false,
+                bare: false,
+                locked: None,
+                prunable: None,
+            },
+            is_main,
+        )?;
+        Ok(WorkspaceInventoryItem::from_record(record, None))
+    }
+}

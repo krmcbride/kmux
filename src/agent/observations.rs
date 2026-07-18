@@ -143,13 +143,12 @@ fn apply_inferred_repo_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::test_support::store_with_path;
-    use tempfile::TempDir;
+    use crate::state::test_support::StateStoreFixture;
 
     #[test]
     fn upsert_creates_observation_with_status_and_display_fields() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = store_with_path(temp.path().join("state"))?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let key = observation_key("ses_root", "server", "default");
         let command = ObservationCommand::Upsert(Box::new(ObservationUpdate {
             key: key.clone(),
@@ -163,7 +162,7 @@ mod tests {
             },
         }));
 
-        apply_observation_command_at(&store, command, 100)?;
+        apply_observation_command_at(store, command, 100)?;
         let observation = store
             .get_observation(&key)?
             .ok_or_else(|| anyhow::anyhow!("expected observation to be stored"))?;
@@ -182,11 +181,11 @@ mod tests {
 
     #[test]
     fn statusless_update_preserves_status_timing_and_replaces_directory() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = store_with_path(temp.path().join("state"))?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let key = observation_key("ses_root", "server", "default");
         apply_observation_command_at(
-            &store,
+            store,
             ObservationCommand::Upsert(Box::new(ObservationUpdate {
                 key: key.clone(),
                 status: Some(AgentStatus::Working),
@@ -201,7 +200,7 @@ mod tests {
         )?;
 
         apply_observation_command_at(
-            &store,
+            store,
             ObservationCommand::Upsert(Box::new(ObservationUpdate {
                 key: key.clone(),
                 status: None,
@@ -227,35 +226,35 @@ mod tests {
 
     #[test]
     fn delete_observation_removes_only_matching_reporter() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = store_with_path(temp.path().join("state"))?;
-        let server = observation_key("ses_root", "server", "default");
-        let tui = observation_key("ses_root", "tui", "default/%1");
-        upsert_test_observation(&store, server.clone(), 100)?;
-        upsert_test_observation(&store, tui.clone(), 100)?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let first = observation_key("ses_root", "reporter-a", "instance-1");
+        let second = observation_key("ses_root", "reporter-b", "instance-2");
+        upsert_test_observation(store, first.clone(), 100)?;
+        upsert_test_observation(store, second.clone(), 100)?;
 
         apply_observation_command_at(
-            &store,
-            ObservationCommand::DeleteObservation(server.clone()),
+            store,
+            ObservationCommand::DeleteObservation(first.clone()),
             120,
         )?;
 
-        assert_eq!(store.get_observation(&server)?, None);
-        assert!(store.get_observation(&tui)?.is_some());
+        assert_eq!(store.get_observation(&first)?, None);
+        assert!(store.get_observation(&second)?.is_some());
         Ok(())
     }
 
     #[test]
     fn delete_session_removes_all_reporter_observations() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = store_with_path(temp.path().join("state"))?;
-        let server = observation_key("ses_root", "server", "default");
-        let tui = observation_key("ses_root", "tui", "default/%1");
-        let session = server.session.clone();
-        upsert_test_observation(&store, server, 100)?;
-        upsert_test_observation(&store, tui, 100)?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let first = observation_key("ses_root", "reporter-a", "instance-1");
+        let second = observation_key("ses_root", "reporter-b", "instance-2");
+        let session = first.session.clone();
+        upsert_test_observation(store, first, 100)?;
+        upsert_test_observation(store, second, 100)?;
 
-        apply_observation_command_at(&store, ObservationCommand::DeleteSession(session), 120)?;
+        apply_observation_command_at(store, ObservationCommand::DeleteSession(session), 120)?;
 
         assert!(store.list_observations()?.is_empty());
         Ok(())

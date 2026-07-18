@@ -380,95 +380,34 @@ impl SidebarJumpDestination {
 mod tests {
     use super::*;
     use crate::agent::sidebar::test_support::{
-        report_state, row_from_activity, row_from_view, set_session_key, set_workspace,
+        SidebarTmuxFixture, report_state, row_from_activity, row_from_view, set_session_key,
+        set_workspace,
     };
     use crate::agent::workspace_activity::workspace_activities;
-    use crate::state::{
-        AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
-        AgentStatus,
-    };
-    use crate::tmux::test_support::{TmuxFixture, create_test_session};
+    use crate::git::test_support::GitRepoFixture;
+    use crate::state::test_support::{StateStoreFixture, observation_state};
+    use crate::state::{AgentObservationState, AgentSessionKey, AgentStatus};
     use anyhow::Result;
-    use std::fs;
-    use std::process::Command;
-    use tempfile::{TempDir, tempdir};
 
-    struct SidebarActionFixture {
-        fixture: TmuxFixture,
-        _temp: TempDir,
-        window_id: String,
-    }
-
-    impl SidebarActionFixture {
-        fn new() -> Result<Option<Self>> {
-            let Some(fixture) = TmuxFixture::new()? else {
-                return Ok(None);
-            };
-            let temp = tempdir()?;
-            create_test_session(&fixture.tmux, "project", temp.path())?;
-            let pane_id = fixture.tmux.create_window_with_command(
-                "project",
-                "feature-sidebar",
-                temp.path(),
-                None,
-            )?;
-            let window_id = fixture
-                .tmux
-                .list_pane_snapshots()?
-                .into_iter()
-                .find(|pane| pane.pane_id == pane_id)
-                .map(|pane| pane.window_id)
-                .ok_or_else(|| anyhow::anyhow!("expected created pane in tmux snapshot"))?;
-
-            Ok(Some(Self {
-                fixture,
-                _temp: temp,
-                window_id,
-            }))
-        }
-
-        fn actions(&self) -> SidebarActions {
-            SidebarActions::new(
+    impl SidebarTmuxFixture {
+        fn actions(&self) -> Result<SidebarActions> {
+            Ok(SidebarActions::new(
                 self.fixture.tmux.clone(),
-                crate::agent::sidebar::test_support::empty_state_store(),
+                self.state_store()?,
                 StatusIcons::default(),
-            )
-        }
-
-        fn set_selected_row(&self, row: &SidebarRow) -> Result<()> {
-            let encoded = encode_selected_target(&row.identity)?;
-            self.set_raw_selected_target(&encoded)
-        }
-
-        fn set_raw_selected_target(&self, value: &str) -> Result<()> {
-            self.fixture
-                .tmux
-                .set_window_option(&self.window_id, SELECTED_TARGET_OPTION, value)
-        }
-
-        fn raw_selected_target(&self) -> Result<Option<String>> {
-            self.fixture
-                .tmux
-                .show_window_option(&self.window_id, SELECTED_TARGET_OPTION)
-        }
-
-        fn selected_target(&self) -> Result<Option<SidebarRowIdentity>> {
-            Ok(self
-                .raw_selected_target()?
-                .as_deref()
-                .and_then(decode_selected_target))
+            ))
         }
     }
 
     #[test]
     fn rollback_does_not_overwrite_newer_persisted_selection() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
         fixture.set_selected_row(&previous)?;
         let row = server_row_in_window("ses_attempted", "Attempted", &fixture.window_id);
-        let actions = fixture.actions();
+        let actions = fixture.actions()?;
         let rollback = actions
             .persist_selection_before_jump(&row)?
             .ok_or_else(|| anyhow::anyhow!("expected persisted selection rollback"))?;
@@ -483,7 +422,7 @@ mod tests {
 
     #[test]
     fn successful_selection_clears_other_window_persisted_targets() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let other_window_id = fixture
@@ -508,7 +447,7 @@ mod tests {
             SELECTED_TARGET_OPTION,
             stale_encoded.as_str(),
         )?;
-        let actions = fixture.actions();
+        let actions = fixture.actions()?;
 
         actions.clear_other_persisted_selections(&fixture.window_id);
 
@@ -528,7 +467,7 @@ mod tests {
 
     #[test]
     fn jump_resolution_skips_a_candidate_window_that_disappeared() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let mut row = server_row_in_window("ses_selected", "Selected", &fixture.window_id);
@@ -543,7 +482,7 @@ mod tests {
             },
         );
 
-        let destination = fixture.actions().resolve_jump_destination(&row)?;
+        let destination = fixture.actions()?.resolve_jump_destination(&row)?;
 
         assert_eq!(destination.session_name, "project");
         assert_eq!(destination.window_id, fixture.window_id);
@@ -552,7 +491,7 @@ mod tests {
 
     #[test]
     fn stale_candidate_error_includes_restore_guidance() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let mut row = server_row_in_window("ses_stale", "Stale", "@999999");
@@ -565,7 +504,7 @@ mod tests {
         };
 
         let error = fixture
-            .actions()
+            .actions()?
             .resolve_jump_destination(&row)
             .expect_err("stale candidates should fail");
 
@@ -575,7 +514,7 @@ mod tests {
 
     #[test]
     fn unavailable_jump_preserves_existing_selection_option() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let previous = server_row_in_window("ses_previous", "Previous", &fixture.window_id);
@@ -584,7 +523,7 @@ mod tests {
         unavailable.jump_target = AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing);
 
         let result = fixture
-            .actions()
+            .actions()?
             .execute_jump(SidebarJumpIntent::new(unavailable));
 
         let failure = match result {
@@ -598,7 +537,7 @@ mod tests {
 
     #[test]
     fn cross_session_jump_error_names_conflicting_sessions() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let mut row = server_row_in_window("ses_ambiguous", "Ambiguous", &fixture.window_id);
@@ -607,7 +546,7 @@ mod tests {
         });
 
         let error = fixture
-            .actions()
+            .actions()?
             .resolve_jump_destination(&row)
             .expect_err("ambiguous target should fail");
 
@@ -617,7 +556,7 @@ mod tests {
 
     #[test]
     fn stale_matching_pane_allows_sidebar_only_window_to_remain_selected() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let target_pane = fixture
@@ -637,7 +576,7 @@ mod tests {
             .select_window_id_in_session("project", &fixture.window_id)?;
 
         let selected_pane = fixture
-            .actions()
+            .actions()?
             .focus_first_available_pane(&fixture.window_id, &[target_pane.pane_id]);
 
         let active_window = fixture
@@ -665,7 +604,7 @@ mod tests {
 
     #[test]
     fn pane_focus_skips_stale_candidate_and_selects_next_live_pane() -> Result<()> {
-        let Some(fixture) = SidebarActionFixture::new()? else {
+        let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
         let content_pane_id = fixture
@@ -687,7 +626,7 @@ mod tests {
             .set_pane_option(&sidebar_pane_id, "@kmux_role", "sidebar")?;
         fixture.fixture.tmux.select_pane(&sidebar_pane_id)?;
 
-        let selected_pane = fixture.actions().focus_first_available_pane(
+        let selected_pane = fixture.actions()?.focus_first_available_pane(
             &fixture.window_id,
             &["%999999".to_owned(), content_pane_id.clone()],
         );
@@ -706,38 +645,38 @@ mod tests {
 
     #[test]
     fn deleting_workspace_row_removes_all_members_and_allows_recreation() -> Result<()> {
-        let temp = tempdir()?;
-        let selected_repo = temp.path().join("project-alpha");
-        let unrelated_repo = temp.path().join("project-beta");
-        initialize_git_repo(&selected_repo)?;
-        initialize_git_repo(&unrelated_repo)?;
-        let store = crate::state::test_support::store_with_path(temp.path().join("state"))?;
-        let mut primary_tui = observation_for_session(
+        let selected_fixture = GitRepoFixture::new()?;
+        let unrelated_fixture = GitRepoFixture::new()?;
+        let selected_repo = selected_fixture.path();
+        let unrelated_repo = unrelated_fixture.path();
+        let state = StateStoreFixture::new()?;
+        let store = state.store().clone();
+        let mut primary_report = observation_for_session(
             "opencode",
             "ses_primary",
             AgentStatus::Working,
             150,
-            &selected_repo,
-            "Primary TUI",
+            selected_repo,
+            "Primary report",
         );
-        primary_tui.key.reporter_kind = "tui".to_owned();
-        primary_tui.key.reporter_instance = "default/%1".to_owned();
+        primary_report.key.reporter_kind = "reporter-a".to_owned();
+        primary_report.key.reporter_instance = "instance-1".to_owned();
         let observations = [
             observation_for_session(
                 "opencode",
                 "ses_primary",
                 AgentStatus::Waiting,
                 200,
-                &selected_repo,
+                selected_repo,
                 "Primary",
             ),
-            primary_tui,
+            primary_report,
             observation_for_session(
                 "opencode",
                 "ses_secondary",
                 AgentStatus::Done,
                 100,
-                &selected_repo,
+                selected_repo,
                 "Secondary",
             ),
             observation_for_session(
@@ -745,7 +684,7 @@ mod tests {
                 "ses_companion",
                 AgentStatus::Working,
                 175,
-                &selected_repo,
+                selected_repo,
                 "Companion",
             ),
             observation_for_session(
@@ -753,7 +692,7 @@ mod tests {
                 "ses_unrelated",
                 AgentStatus::Working,
                 125,
-                &unrelated_repo,
+                unrelated_repo,
                 "Unrelated",
             ),
         ];
@@ -801,16 +740,15 @@ mod tests {
 
     #[test]
     fn deleting_workspace_row_uses_captured_member_snapshot() -> Result<()> {
-        let temp = tempdir()?;
-        let repo = temp.path().join("project-alpha");
-        initialize_git_repo(&repo)?;
-        let store = crate::state::test_support::store_with_path(temp.path().join("state"))?;
+        let repo = GitRepoFixture::new()?;
+        let state = StateStoreFixture::new()?;
+        let store = state.store().clone();
         let captured = observation_for_session(
             "opencode",
             "ses_captured",
             AgentStatus::Waiting,
             200,
-            &repo,
+            repo.path(),
             "Captured",
         );
         store.upsert_observation(&captured)?;
@@ -824,7 +762,7 @@ mod tests {
             "ses_arrived_later",
             AgentStatus::Working,
             250,
-            &repo,
+            repo.path(),
             "Arrived later",
         );
         store.upsert_observation(&arrived_after_snapshot)?;
@@ -839,20 +777,6 @@ mod tests {
         assert_eq!(
             after[0].primary_session_key().session_id,
             "ses_arrived_later"
-        );
-        Ok(())
-    }
-
-    fn initialize_git_repo(path: &std::path::Path) -> Result<()> {
-        fs::create_dir(path)?;
-        let output = Command::new("git")
-            .args(["init", "--initial-branch", "main"])
-            .current_dir(path)
-            .output()?;
-        anyhow::ensure!(
-            output.status.success(),
-            "git init failed: {}",
-            String::from_utf8_lossy(&output.stderr)
         );
         Ok(())
     }
@@ -881,24 +805,16 @@ mod tests {
         directory: &std::path::Path,
         title: &str,
     ) -> AgentObservationState {
-        AgentObservationState {
-            key: AgentObservationKey {
-                session: session_key(agent_kind, session_id),
-                reporter_kind: "server".to_owned(),
-                reporter_instance: "reporter".to_owned(),
-            },
-            created_at: observed_at,
-            status: Some(status),
-            status_observed_at: Some(observed_at),
-            status_changed_at: Some(observed_at),
-            working_elapsed_secs: 0,
-            observed_at,
-            title: Some(title.to_owned()),
-            context: None,
-            target: AgentLocationHints {
-                directory: Some(directory.display().to_string()),
-                ..AgentLocationHints::default()
-            },
-        }
+        let mut observation = observation_state();
+        observation.key.session = session_key(agent_kind, session_id);
+        observation.created_at = observed_at;
+        observation.status = Some(status);
+        observation.status_observed_at = Some(observed_at);
+        observation.status_changed_at = Some(observed_at);
+        observation.observed_at = observed_at;
+        observation.title = Some(title.to_owned());
+        observation.context = None;
+        observation.target.directory = Some(directory.display().to_string());
+        observation
     }
 }

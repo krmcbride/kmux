@@ -327,14 +327,14 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
+    use crate::state::test_support::{StateStoreFixture, observation_state};
     use crate::state::{AgentLocationHints, AgentStatus};
-    use tempfile::TempDir;
 
     #[test]
     fn state_store_round_trips_agent_observation_state() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let key = test_observation_key("ses_123", "tui", "default/%1");
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let key = test_observation_key("ses_project_alpha", "example-reporter", "instance-1");
         let state = AgentObservationState {
             key: key.clone(),
             created_at: 41,
@@ -343,14 +343,14 @@ mod tests {
             status_changed_at: Some(42),
             working_elapsed_secs: 5,
             observed_at: 43,
-            title: Some("OpenCode session".to_owned()),
-            context: Some("163.2K (41%)".to_owned()),
+            title: Some("Example task".to_owned()),
+            context: Some("Example context".to_owned()),
             target: AgentLocationHints {
-                tmux_instance: Some("test".to_owned()),
-                git_repo_name: Some("repo".to_owned()),
-                git_repo_path: Some("/repo".to_owned()),
-                git_branch: Some("feature/auth".to_owned()),
-                directory: Some("/repo__worktrees/feature-auth".to_owned()),
+                tmux_instance: Some("example-tmux".to_owned()),
+                git_repo_name: Some("project-alpha".to_owned()),
+                git_repo_path: Some("/repo/project-alpha".to_owned()),
+                git_branch: Some("feature/sidebar".to_owned()),
+                directory: Some("/repo/project-alpha".to_owned()),
             },
         };
 
@@ -363,89 +363,34 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_pre_release_observation_fields_are_pruned() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
+    fn current_schema_unknown_fields_are_pruned() -> Result<()> {
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let state = test_observation("server", "default", AgentStatus::Working, 100);
-        let mut persisted = serde_json::to_value(&state)?;
-        let object = persisted
-            .as_object_mut()
-            .ok_or_else(|| anyhow::anyhow!("observation should serialize as an object"))?;
-        object.insert(
-            "metadata".to_owned(),
-            serde_json::json!({"workspace_id": "wrk_example"}),
-        );
-        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
-        Ok(())
-    }
 
-    #[test]
-    fn obsolete_only_observation_identity_fields_are_pruned() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let state = test_observation("server", "default", AgentStatus::Working, 100);
-        let mut persisted = serde_json::to_value(&state)?;
-        let key = persisted
-            .get_mut("key")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| anyhow::anyhow!("observation key should serialize as an object"))?;
-        let reporter_kind = key
-            .remove("reporter_kind")
-            .ok_or_else(|| anyhow::anyhow!("reporter kind should be serialized"))?;
-        let reporter_instance = key
-            .remove("reporter_instance")
-            .ok_or_else(|| anyhow::anyhow!("reporter instance should be serialized"))?;
-        key.insert("producer_kind".to_owned(), reporter_kind);
-        key.insert("producer_instance".to_owned(), reporter_instance);
+        for (case, parent) in [
+            ("top-level", None),
+            ("nested key", Some("key")),
+            ("nested target", Some("target")),
+        ] {
+            let mut persisted = serde_json::to_value(&state)?;
+            let object = match parent {
+                Some(field) => persisted
+                    .get_mut(field)
+                    .and_then(serde_json::Value::as_object_mut),
+                None => persisted.as_object_mut(),
+            }
+            .ok_or_else(|| anyhow::anyhow!("{case} fixture should serialize as an object"))?;
+            object.insert("unknown_field".to_owned(), serde_json::json!("unexpected"));
 
-        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
-        Ok(())
-    }
-
-    #[test]
-    fn mixed_current_and_obsolete_observation_identity_fields_are_pruned() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let state = test_observation("server", "default", AgentStatus::Working, 100);
-        let mut persisted = serde_json::to_value(&state)?;
-        let key = persisted
-            .get_mut("key")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| anyhow::anyhow!("observation key should serialize as an object"))?;
-        let reporter_kind = key
-            .get("reporter_kind")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("reporter kind should be serialized"))?;
-        let reporter_instance = key
-            .get("reporter_instance")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("reporter instance should be serialized"))?;
-        key.insert("producer_kind".to_owned(), reporter_kind);
-        key.insert("producer_instance".to_owned(), reporter_instance);
-
-        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
-        Ok(())
-    }
-
-    #[test]
-    fn obsolete_pre_release_location_fields_are_pruned() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let state = test_observation("server", "default", AgentStatus::Working, 100);
-        let mut persisted = serde_json::to_value(&state)?;
-        persisted
-            .get_mut("target")
-            .and_then(serde_json::Value::as_object_mut)
-            .ok_or_else(|| anyhow::anyhow!("target should serialize as an object"))?
-            .insert("tmux_pane_id".to_owned(), serde_json::json!("%old"));
-
-        assert_persisted_observation_is_pruned(&store, &state, &persisted)?;
+            assert_persisted_observation_is_pruned(store, &state, &persisted, case)?;
+        }
         Ok(())
     }
 
     #[test]
     fn observation_filenames_are_stable_and_fixed_length() {
-        let key = test_observation_key("ses_123", "server", "http://127.0.0.1:4096");
+        let key = test_observation_key("ses_project_alpha", "example-reporter", "instance-1");
         let filename = observation_filename(&key);
 
         assert_eq!(filename.len(), 72);
@@ -453,14 +398,14 @@ mod tests {
         assert!(filename.ends_with(".json"));
         assert_eq!(
             filename,
-            "v1-f1877b65b83300e8ea777010f7712189be6590120c1822b2fa699c6598f69b33.json"
+            "v1-b89486281ea93ef1948c3886808f45ef0e73c3b345f16e86f43e53b47984131b.json"
         );
     }
 
     #[test]
     fn observation_filename_components_have_unambiguous_boundaries() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let first = test_observation_key("a", "bc", "default");
         let second = test_observation_key("ab", "c", "default");
 
@@ -473,8 +418,8 @@ mod tests {
 
     #[test]
     fn long_observation_keys_round_trip_with_bounded_filenames() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let state = test_observation("server", &"instance".repeat(512), AgentStatus::Working, 100);
         let path = store.observation_path(&state.key);
 
@@ -493,9 +438,9 @@ mod tests {
 
     #[test]
     fn get_observation_rejects_mismatched_file_key() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let requested = test_observation_key("requested", "server", "default");
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let requested = test_observation_key("ses_requested", "server", "default");
         let state = test_observation("server", "default", AgentStatus::Working, 100);
         fs::write(
             store.observation_path(&requested),
@@ -507,13 +452,11 @@ mod tests {
     }
 
     #[test]
-    fn old_reversible_observation_filenames_are_pruned() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
+    fn noncanonical_observation_filenames_are_pruned() -> Result<()> {
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let state = test_observation("server", "default", AgentStatus::Working, 100);
-        let non_canonical_path = store
-            .observations_dir()
-            .join("6f70656e636f6465__7365735f726f6f74__736572766572__64656661756c74.json");
+        let non_canonical_path = store.observations_dir().join("noncanonical.json");
         fs::write(&non_canonical_path, serde_json::to_vec_pretty(&state)?)?;
 
         assert!(store.list_observations()?.is_empty());
@@ -524,8 +467,8 @@ mod tests {
 
     #[test]
     fn corrupt_agent_observation_state_is_pruned() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let corrupt_path = store.observations_dir().join("bad.json");
         fs::write(&corrupt_path, "not json")?;
 
@@ -536,8 +479,8 @@ mod tests {
 
     #[test]
     fn interrupted_atomic_write_temporary_files_are_ignored() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
         let temporary_path = store
             .observations_dir()
             .join("observation.json.123.456.tmp");
@@ -550,13 +493,13 @@ mod tests {
 
     #[test]
     fn observation_files_are_keyed_by_session_and_reporter() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let tui = test_observation("tui", "default/%1", AgentStatus::Working, 100);
-        let server = test_observation("server", "http://127.0.0.1:4096", AgentStatus::Waiting, 100);
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let first = test_observation("reporter-a", "instance-1", AgentStatus::Working, 100);
+        let second = test_observation("reporter-b", "instance-2", AgentStatus::Waiting, 100);
 
-        store.upsert_observation(&tui)?;
-        store.upsert_observation(&server)?;
+        store.upsert_observation(&first)?;
+        store.upsert_observation(&second)?;
 
         let observations = store.list_observations()?;
         assert_eq!(observations.len(), 2);
@@ -570,13 +513,13 @@ mod tests {
 
     #[test]
     fn delete_session_removes_all_reporter_observations() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let tui = test_observation("tui", "default/%1", AgentStatus::Working, 100);
-        let server = test_observation("server", "http://127.0.0.1:4096", AgentStatus::Waiting, 100);
-        let session = tui.key.session.clone();
-        store.upsert_observation(&tui)?;
-        store.upsert_observation(&server)?;
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let first = test_observation("reporter-a", "instance-1", AgentStatus::Working, 100);
+        let second = test_observation("reporter-b", "instance-2", AgentStatus::Waiting, 100);
+        let session = first.key.session.clone();
+        store.upsert_observation(&first)?;
+        store.upsert_observation(&second)?;
 
         store.delete_session(&session)?;
 
@@ -586,24 +529,24 @@ mod tests {
 
     #[test]
     fn delete_sessions_removes_selected_sessions_and_prunes_stale_files() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = StateStore::with_path(temp.path().join("state"))?;
-        let first_session = test_session_key("opencode", "ses_project_alpha");
-        let second_session = test_session_key("codex", "ses_project_beta");
-        let unrelated_session = test_session_key("opencode", "ses_project_gamma");
+        let fixture = StateStoreFixture::new()?;
+        let store = fixture.store();
+        let first_session = test_session_key("example-agent", "ses_project_alpha");
+        let second_session = test_session_key("second-agent", "ses_project_beta");
+        let unrelated_session = test_session_key("example-agent", "ses_project_gamma");
 
-        let mut first_tui = test_observation("tui", "default/%1", AgentStatus::Working, 100);
-        first_tui.key.session.clone_from(&first_session);
-        let mut first_server =
-            test_observation("server", "http://127.0.0.1:4096", AgentStatus::Waiting, 101);
-        first_server.key.session.clone_from(&first_session);
-        let mut second_server =
-            test_observation("server", "http://127.0.0.1:4097", AgentStatus::Done, 102);
-        second_server.key.session.clone_from(&second_session);
-        let mut unrelated = test_observation("server", "default", AgentStatus::Working, 103);
+        let mut first_report =
+            test_observation("reporter-a", "instance-1", AgentStatus::Working, 100);
+        first_report.key.session.clone_from(&first_session);
+        let mut second_report =
+            test_observation("reporter-b", "instance-2", AgentStatus::Waiting, 101);
+        second_report.key.session.clone_from(&first_session);
+        let mut third_report = test_observation("reporter-b", "instance-3", AgentStatus::Done, 102);
+        third_report.key.session.clone_from(&second_session);
+        let mut unrelated = test_observation("reporter-b", "instance-4", AgentStatus::Working, 103);
         unrelated.key.session.clone_from(&unrelated_session);
 
-        for observation in [&first_tui, &first_server, &second_server, &unrelated] {
+        for observation in [&first_report, &second_report, &third_report, &unrelated] {
             store.upsert_observation(observation)?;
         }
         let corrupt_path = store.observations_dir().join("corrupt.json");
@@ -611,12 +554,12 @@ mod tests {
         let noncanonical_path = store.observations_dir().join("old-format.json");
         fs::write(
             &noncanonical_path,
-            serde_json::to_vec_pretty(&first_server)?,
+            serde_json::to_vec_pretty(&second_report)?,
         )?;
         store.delete_sessions(&[
             second_session,
             first_session.clone(),
-            test_session_key("opencode", "ses_missing"),
+            test_session_key("example-agent", "ses_missing"),
             first_session,
         ])?;
 
@@ -628,9 +571,9 @@ mod tests {
 
     #[test]
     fn concurrent_mutations_see_the_latest_committed_observation() -> Result<()> {
-        let temp = TempDir::new()?;
-        let store = Arc::new(StateStore::with_path(temp.path().join("state"))?);
-        let initial = test_observation("tui", "default/%1", AgentStatus::Working, 100);
+        let fixture = StateStoreFixture::new()?;
+        let store = Arc::new(fixture.store().clone());
+        let initial = test_observation("reporter-a", "instance-1", AgentStatus::Working, 100);
         let key = initial.key.clone();
         store.upsert_observation(&initial)?;
 
@@ -696,33 +639,31 @@ mod tests {
         status: AgentStatus,
         status_changed_at: u64,
     ) -> AgentObservationState {
-        AgentObservationState {
-            key: test_observation_key("ses_root", reporter_kind, reporter_instance),
-            created_at: status_changed_at,
-            status: Some(status),
-            status_observed_at: Some(status_changed_at),
-            status_changed_at: Some(status_changed_at),
-            working_elapsed_secs: 0,
-            observed_at: status_changed_at,
-            title: None,
-            context: None,
-            target: AgentLocationHints {
-                git_branch: Some("feature".to_owned()),
-                ..AgentLocationHints::default()
-            },
-        }
+        let mut observation = observation_state();
+        observation.key.reporter_kind = reporter_kind.to_owned();
+        observation.key.reporter_instance = reporter_instance.to_owned();
+        observation.created_at = status_changed_at;
+        observation.status = Some(status);
+        observation.status_observed_at = Some(status_changed_at);
+        observation.status_changed_at = Some(status_changed_at);
+        observation.observed_at = status_changed_at;
+        observation
     }
 
     fn assert_persisted_observation_is_pruned(
         store: &StateStore,
         state: &AgentObservationState,
         persisted: &serde_json::Value,
+        case: &str,
     ) -> Result<()> {
         let path = store.observation_path(&state.key);
         fs::write(&path, serde_json::to_vec_pretty(persisted)?)?;
 
-        assert!(store.list_observations()?.is_empty());
-        assert!(!path.exists());
+        assert!(
+            store.list_observations()?.is_empty(),
+            "{case} unknown field should invalidate the observation"
+        );
+        assert!(!path.exists(), "{case} unknown field file should be pruned");
         Ok(())
     }
 
@@ -732,7 +673,7 @@ mod tests {
         reporter_instance: &str,
     ) -> AgentObservationKey {
         AgentObservationKey {
-            session: test_session_key("opencode", session_id),
+            session: test_session_key("example-agent", session_id),
             reporter_kind: reporter_kind.to_owned(),
             reporter_instance: reporter_instance.to_owned(),
         }

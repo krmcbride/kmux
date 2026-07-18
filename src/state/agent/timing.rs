@@ -68,11 +68,11 @@ fn fresh_observation_timing(now: u64) -> AgentObservationTiming {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state::{AgentLocationHints, AgentObservationKey, AgentSessionKey};
+    use crate::state::test_support::observation_state;
 
     #[test]
     fn timing_accumulates_working_across_waiting_pause() {
-        let mut observation = test_observation("tui", "default/%1", AgentStatus::Working, 0);
+        let mut observation = test_observation(AgentStatus::Working, 0);
 
         let waiting =
             next_observation_timing(Some(&observation), Some(AgentStatus::Waiting), 20 * 60);
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn statusless_updates_preserve_previous_timing() {
-        let observation = test_observation("tui", "default/%1", AgentStatus::Working, 300);
+        let observation = test_observation(AgentStatus::Working, 300);
 
         let timing = next_observation_timing(Some(&observation), None, 400);
 
@@ -100,12 +100,12 @@ mod tests {
 
     #[test]
     fn timing_starts_and_ends_runs_cleanly() {
-        let done = test_observation("tui", "default/%1", AgentStatus::Done, 100);
+        let done = test_observation(AgentStatus::Done, 100);
         let started = next_observation_timing(Some(&done), Some(AgentStatus::Working), 300);
         assert_eq!(started.status_changed_at, Some(300));
         assert_eq!(started.working_elapsed_secs, 0);
 
-        let working = test_observation("tui", "default/%1", AgentStatus::Working, 300);
+        let working = test_observation(AgentStatus::Working, 300);
         let finished = next_observation_timing(Some(&working), Some(AgentStatus::Done), 500);
         assert_eq!(finished.status_changed_at, Some(500));
         assert_eq!(finished.working_elapsed_secs, 0);
@@ -117,7 +117,7 @@ mod tests {
 
     #[test]
     fn timing_saturates_when_clock_moves_backwards() {
-        let mut observation = test_observation("tui", "default/%1", AgentStatus::Working, 300);
+        let mut observation = test_observation(AgentStatus::Working, 300);
         observation.working_elapsed_secs = 10;
 
         let waiting = next_observation_timing(Some(&observation), Some(AgentStatus::Waiting), 200);
@@ -126,33 +126,13 @@ mod tests {
         assert_eq!(waiting.working_elapsed_secs, 10);
     }
 
-    fn test_observation(
-        reporter_kind: &str,
-        reporter_instance: &str,
-        status: AgentStatus,
-        status_changed_at: u64,
-    ) -> AgentObservationState {
-        AgentObservationState {
-            key: AgentObservationKey {
-                session: AgentSessionKey {
-                    agent_kind: "opencode".to_owned(),
-                    session_id: "ses_root".to_owned(),
-                },
-                reporter_kind: reporter_kind.to_owned(),
-                reporter_instance: reporter_instance.to_owned(),
-            },
-            created_at: status_changed_at,
-            status: Some(status),
-            status_observed_at: Some(status_changed_at),
-            status_changed_at: Some(status_changed_at),
-            working_elapsed_secs: 0,
-            observed_at: status_changed_at,
-            title: None,
-            context: None,
-            target: AgentLocationHints {
-                git_branch: Some("feature".to_owned()),
-                ..AgentLocationHints::default()
-            },
-        }
+    fn test_observation(status: AgentStatus, status_changed_at: u64) -> AgentObservationState {
+        let mut observation = observation_state();
+        observation.created_at = status_changed_at;
+        observation.status = Some(status);
+        observation.status_observed_at = Some(status_changed_at);
+        observation.status_changed_at = Some(status_changed_at);
+        observation.observed_at = status_changed_at;
+        observation
     }
 }

@@ -647,57 +647,81 @@ fn bail_git<T>(output: GitOutput) -> Result<T> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use std::collections::HashSet;
+pub mod test_support {
     use std::process::Command;
 
     use tempfile::TempDir;
 
-    fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .with_context(|| format!("failed to run {} {}", program, args.join(" ")))?;
-        assert!(
-            output.status.success(),
-            "{} {} failed\nstdout: {}\nstderr: {}",
-            program,
-            args.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(())
+    use super::*;
+
+    /// Owned Git repository fixture for crate-local adapter and policy tests.
+    pub struct GitRepoFixture {
+        temp: TempDir,
+        path: PathBuf,
     }
 
-    fn git(cwd: &Path, args: &[&str]) -> Result<()> {
-        run(cwd, "git", args)
-    }
+    impl GitRepoFixture {
+        /// Initialize a repository with one commit and neutral test identity.
+        pub fn new() -> Result<Self> {
+            let temp = TempDir::new()?;
+            let path = temp.path().join("project-alpha");
+            fs::create_dir(&path)?;
+            let fixture = Self { temp, path };
+            fixture.git(&["init", "--initial-branch", "main"])?;
+            fixture.git(&["config", "user.email", "test@example.invalid"])?;
+            fixture.git(&["config", "user.name", "Test User"])?;
+            fixture.commit_file("README.md", "test\n", "initial")?;
+            Ok(fixture)
+        }
 
-    fn commit_file(repo: &Path, file_name: &str, content: &str, message: &str) -> Result<()> {
-        fs::write(repo.join(file_name), content)?;
-        git(repo, &["add", file_name])?;
-        git(repo, &["commit", "-m", message])?;
-        Ok(())
-    }
+        /// Return the repository path while retaining its temporary owner.
+        pub fn path(&self) -> &Path {
+            &self.path
+        }
 
-    fn init_repo() -> Result<(TempDir, PathBuf)> {
-        let temp = TempDir::new()?;
-        let repo = temp.path().join("project");
-        fs::create_dir(&repo)?;
-        git(&repo, &["init", "--initial-branch", "main"])?;
-        git(&repo, &["config", "user.email", "test@example.invalid"])?;
-        git(&repo, &["config", "user.name", "Test User"])?;
-        commit_file(&repo, "README.md", "test\n", "initial")?;
-        Ok((temp, repo))
+        /// Return the fixture root for sibling worktree paths.
+        pub fn root(&self) -> &Path {
+            self.temp.path()
+        }
+
+        /// Run a Git command in the fixture repository and require success.
+        pub fn git(&self, args: &[&str]) -> Result<()> {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&self.path)
+                .output()
+                .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+            assert!(
+                output.status.success(),
+                "git {} failed\nstdout: {}\nstderr: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            Ok(())
+        }
+
+        /// Write and commit one file in the fixture repository.
+        pub fn commit_file(&self, file_name: &str, content: &str, message: &str) -> Result<()> {
+            fs::write(self.path.join(file_name), content)?;
+            self.git(&["add", file_name])?;
+            self.git(&["commit", "-m", message])
+        }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::test_support::GitRepoFixture;
+    use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn discovers_repo_info_from_primary_worktree() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
 
-        let info = Git::new(&repo).repo_info()?;
+        let info = Git::new(repo).repo_info()?;
 
         assert_eq!(info.current_worktree, repo.canonicalize()?);
         assert_eq!(info.git_common_dir, repo.join(".git").canonicalize()?);
@@ -706,20 +730,18 @@ mod tests {
 
     #[test]
     fn discovers_repo_info_from_linked_worktree() -> Result<()> {
-        let (temp, repo) = init_repo()?;
-        let worktree_base = temp.path().join("project__worktrees");
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let worktree_base = fixture.root().join("project-alpha__worktrees");
         let linked = worktree_base.join("feature-auth");
         fs::create_dir(&worktree_base)?;
-        git(
-            &repo,
-            &[
-                "worktree",
-                "add",
-                "-b",
-                "feature/auth",
-                linked.to_string_lossy().as_ref(),
-            ],
-        )?;
+        fixture.git(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature/auth",
+            linked.to_string_lossy().as_ref(),
+        ])?;
 
         let info = Git::new(&linked).repo_info()?;
 
@@ -798,13 +820,13 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn detects_current_branch_and_detached_head() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
 
         assert_eq!(git_repo.current_branch()?.as_deref(), Some("main"));
 
         let head = git_repo.stdout(["rev-parse", "HEAD"])?;
-        git(&repo, &["checkout", "--detach", &head])?;
+        fixture.git(&["checkout", "--detach", &head])?;
 
         assert_eq!(git_repo.current_branch()?, None);
         let error = git_repo.require_current_branch().unwrap_err();
@@ -814,8 +836,8 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn creates_branch_from_current_branch_and_reuses_without_moving() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
 
         assert_eq!(
             git_repo.ensure_local_branch("feature/auth", None)?,
@@ -823,7 +845,7 @@ prunable gitdir file points to non-existent location\n";
         );
         let feature_rev = git_repo.stdout(["rev-parse", "feature/auth"])?;
 
-        commit_file(&repo, "after.txt", "after\n", "after feature branch")?;
+        fixture.commit_file("after.txt", "after\n", "after feature branch")?;
         let main_rev = git_repo.stdout(["rev-parse", "main"])?;
         assert_ne!(feature_rev, main_rev);
 
@@ -837,11 +859,11 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn creates_branch_from_explicit_start_point() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
         let initial_rev = git_repo.stdout(["rev-parse", "main"])?;
 
-        commit_file(&repo, "later.txt", "later\n", "later")?;
+        fixture.commit_file("later.txt", "later\n", "later")?;
 
         assert_eq!(
             git_repo.ensure_local_branch("from-initial", Some(&initial_rev))?,
@@ -854,11 +876,11 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn returns_merge_base_when_branches_share_history() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
         let initial_rev = git_repo.stdout(["rev-parse", "main"])?;
         git_repo.ensure_local_branch("feature/auth", Some("main"))?;
-        commit_file(&repo, "later.txt", "later\n", "later")?;
+        fixture.commit_file("later.txt", "later\n", "later")?;
 
         assert_eq!(
             git_repo.merge_base("feature/auth", "main")?.as_deref(),
@@ -869,23 +891,55 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn returns_none_when_branches_have_no_merge_base() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let git_repo = Git::new(repo);
         git_repo.ensure_local_branch("feature/auth", Some("main"))?;
-        git(&repo, &["checkout", "--orphan", "orphan-parent"])?;
+        fixture.git(&["checkout", "--orphan", "orphan-parent"])?;
         fs::remove_file(repo.join("README.md"))?;
-        commit_file(&repo, "orphan.txt", "orphan\n", "orphan")?;
-        git(&repo, &["checkout", "main"])?;
+        fixture.commit_file("orphan.txt", "orphan\n", "orphan")?;
+        fixture.git(&["checkout", "main"])?;
 
         assert_eq!(git_repo.merge_base("feature/auth", "orphan-parent")?, None);
         Ok(())
     }
 
     #[test]
+    fn safe_deletion_prefers_configured_upstream_over_local_head() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let remote = fixture.root().join("remote.git");
+        let remote = remote.to_string_lossy();
+        fixture.git(&["init", "--bare", remote.as_ref()])?;
+        fixture.git(&["remote", "add", "origin", remote.as_ref()])?;
+        fixture.git(&["push", "-u", "origin", "main"])?;
+        fixture.git(&["checkout", "-b", "feature/safety"])?;
+        fixture.commit_file("feature.txt", "feature\n", "feature change")?;
+        fixture.git(&[
+            "branch",
+            "--set-upstream-to",
+            "origin/main",
+            "feature/safety",
+        ])?;
+        fixture.git(&["checkout", "main"])?;
+        fixture.git(&[
+            "merge",
+            "--no-ff",
+            "feature/safety",
+            "-m",
+            "merge feature locally",
+        ])?;
+
+        let git = Git::new(fixture.path());
+
+        assert!(!git.branch_is_safely_deletable("feature/safety")?);
+        Ok(())
+    }
+
+    #[test]
     fn adds_and_finds_worktree_by_branch() -> Result<()> {
-        let (temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
-        let worktree_base = temp.path().join("project__worktrees");
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
+        let worktree_base = fixture.root().join("project-alpha__worktrees");
         let linked = worktree_base.join("feature-auth");
         fs::create_dir(&worktree_base)?;
 
@@ -903,9 +957,9 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn rejects_non_empty_worktree_path() -> Result<()> {
-        let (temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
-        let conflicting = temp.path().join("project__worktrees/conflict");
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
+        let conflicting = fixture.root().join("project-alpha__worktrees/conflict");
         fs::create_dir_all(&conflicting)?;
         fs::write(conflicting.join("file.txt"), "occupied\n")?;
 
@@ -919,9 +973,9 @@ prunable gitdir file points to non-existent location\n";
 
     #[test]
     fn remove_worktree_guards_dirty_paths_unless_forced() -> Result<()> {
-        let (temp, repo) = init_repo()?;
-        let git_repo = Git::new(&repo);
-        let worktree_base = temp.path().join("project__worktrees");
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = Git::new(fixture.path());
+        let worktree_base = fixture.root().join("project-alpha__worktrees");
         let linked = worktree_base.join("feature-auth");
         fs::create_dir(&worktree_base)?;
         git_repo.ensure_local_branch("feature/auth", None)?;

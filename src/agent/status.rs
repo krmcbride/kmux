@@ -261,8 +261,9 @@ fn compact_elapsed(seconds: u64) -> String {
 mod tests {
     use super::*;
     use crate::agent::sessions::{
-        AgentTmuxTarget, ResolvedAgentSession, ResolvedAgentTarget, ResolvedAgentWorkspace,
+        AgentTmuxTarget, AgentTmuxWindowCandidate, ResolvedAgentSession, ResolvedAgentWorkspace,
     };
+    use crate::agent::test_support::resolved_agent_session;
     use crate::agent::workspace_activity::workspace_activities_from_sessions;
     use crate::state::{AgentSessionKey, AgentStatus};
     use anyhow::Result;
@@ -280,6 +281,26 @@ mod tests {
         assert_eq!(entries.len(), 2);
         assert_eq!(entries[0].session_id, "ses_feature");
         assert_eq!(entries[1].session_id, "ses_other");
+    }
+
+    #[test]
+    fn status_entries_use_the_shared_workspace_primary_session() {
+        let mut working = session_view("opencode", "ses_a_working", "main", "Working");
+        working.status = AgentStatus::Working;
+        working.status_observed_at = 300;
+        working.observed_at = 300;
+        let mut waiting = session_view("codex", "ses_z_waiting", "main", "Waiting");
+        waiting.status = AgentStatus::Waiting;
+        waiting.status_observed_at = 100;
+        waiting.observed_at = 100;
+        let activities = workspace_activities_from_sessions(vec![working, waiting]);
+
+        let entries = status_entries(&activities, 300, false, &StatusIcons::default());
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].agent_kind, "codex");
+        assert_eq!(entries[0].session_id, "ses_z_waiting");
+        assert_eq!(entries[0].status, "waiting");
     }
 
     #[test]
@@ -359,39 +380,28 @@ mod tests {
         title: &str,
     ) -> ResolvedAgentSession {
         let workspace_path = format!("/repo/{}", git_branch.replace('/', "-"));
-        let key = AgentSessionKey {
+        let mut session = resolved_agent_session();
+        session.key = AgentSessionKey {
             agent_kind: agent_kind.to_owned(),
             session_id: session_id.to_owned(),
         };
-        ResolvedAgentSession {
-            key,
-            workspace: ResolvedAgentWorkspace::from_canonical_root(
-                workspace_path.clone().into(),
-                workspace_path,
-            )
-            .expect("test workspace should be valid"),
-            tmux_target: AgentTmuxTarget::Windows {
-                session_name: "project".to_owned(),
-                candidates: vec![crate::agent::sessions::AgentTmuxWindowCandidate {
-                    window_id: "@1".to_owned(),
-                    pane_ids: Vec::new(),
-                }],
-            },
-            created_at: 100,
-            status: AgentStatus::Working,
-            status_observed_at: 100,
-            status_changed_at: 100,
-            working_elapsed_secs: 0,
-            observed_at: 100,
-            title: Some(title.to_owned()),
-            context: None,
-            target: ResolvedAgentTarget {
-                git_branch: Some(git_branch.to_owned()),
-                tmux_session_name: Some("project".to_owned()),
-                tmux_window_id: Some("@1".to_owned()),
-                tmux_window_name: Some(format!("kmux-{}", git_branch.replace('/', "-"))),
-                ..ResolvedAgentTarget::default()
-            },
-        }
+        session.workspace = ResolvedAgentWorkspace::from_canonical_root(
+            workspace_path.clone().into(),
+            workspace_path,
+        )
+        .expect("test workspace should be valid");
+        session.tmux_target = AgentTmuxTarget::Windows {
+            session_name: "project".to_owned(),
+            candidates: vec![AgentTmuxWindowCandidate {
+                window_id: "@1".to_owned(),
+                pane_ids: Vec::new(),
+            }],
+        };
+        session.title = Some(title.to_owned());
+        session.target.git_branch = Some(git_branch.to_owned());
+        session.target.tmux_session_name = Some("project".to_owned());
+        session.target.tmux_window_id = Some("@1".to_owned());
+        session.target.tmux_window_name = Some(format!("kmux-{}", git_branch.replace('/', "-")));
+        session
     }
 }

@@ -251,3 +251,50 @@ fn format_row(values: &[&str; 7], widths: &[usize; 7]) -> String {
         .trim_end()
         .to_owned()
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::git::WorktreeInfo;
+    use crate::workspace::WorkspaceRecord;
+
+    use super::*;
+
+    #[test]
+    fn branch_formatting_draws_depth_first_tree_connectors() -> Result<()> {
+        let mut main = inventory_item("project-alpha", "main", true)?;
+        let mut child = inventory_item("feature-child", "feature/child", false)?;
+        let mut grandchild = inventory_item("feature-grandchild", "feature/grandchild", false)?;
+        let mut sibling = inventory_item("feature-sibling", "feature/sibling", false)?;
+        main.set_tree_depth(0);
+        child.set_tree_depth(1);
+        grandchild.set_tree_depth(2);
+        sibling.set_tree_depth(1);
+        let items = [main, child, grandchild, sibling];
+
+        assert_eq!(format_branch(&items, 0), "main");
+        assert_eq!(format_branch(&items, 1), "├── feature/child");
+        assert_eq!(format_branch(&items, 2), "│   └── feature/grandchild");
+        assert_eq!(format_branch(&items, 3), "└── feature/sibling");
+        Ok(())
+    }
+
+    fn inventory_item(
+        workspace_slug: &str,
+        branch: &str,
+        is_main: bool,
+    ) -> Result<WorkspaceInventoryItem> {
+        let record = WorkspaceRecord::from_worktree(
+            WorktreeInfo {
+                path: PathBuf::from("/repo").join(workspace_slug),
+                head: None,
+                branch: Some(branch.to_owned()),
+                detached: false,
+                bare: false,
+                locked: None,
+                prunable: None,
+            },
+            is_main,
+        )?;
+        Ok(WorkspaceInventoryItem::from_record(record, None))
+    }
+}

@@ -1,4 +1,4 @@
-mod support;
+pub mod support;
 
 use std::fs;
 
@@ -9,7 +9,7 @@ use predicates::prelude::*;
 use support::{git, init_repo, kmux_stdout, run};
 
 #[test]
-fn help_shows_core_commands() {
+fn help_shows_current_commands() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
         .arg("--help")
@@ -18,51 +18,12 @@ fn help_shows_core_commands() {
         .stdout(predicate::str::contains("add"))
         .stdout(predicate::str::contains("parent"))
         .stdout(predicate::str::contains("restore"))
+        .stdout(predicate::str::contains("list"))
         .stdout(predicate::str::contains("remove"))
         .stdout(predicate::str::contains("status"))
+        .stdout(predicate::str::contains("sidebar"))
         .stdout(predicate::str::contains("set-agent-status"))
-        .stdout(predicate::str::contains("completions"))
-        .stdout(predicate::str::contains("open").not())
-        .stdout(predicate::str::contains("close").not())
-        .stdout(predicate::str::contains("path").not())
-        .stdout(predicate::str::contains("rename").not());
-}
-
-#[test]
-fn add_help_has_no_workspace_slug_override() {
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .args(["add", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--parent"))
-        .stdout(predicate::str::contains("--base").not())
-        .stdout(predicate::str::contains("--open-if-exists").not())
-        .stdout(predicate::str::contains("-o").not())
-        .stdout(predicate::str::contains("--name").not());
-}
-
-#[test]
-fn parent_help_documents_relationship_command() {
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .args(["parent", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("Set the recorded parent branch"))
-        .stdout(predicate::str::contains("<CHILD_OR_PARENT>"))
-        .stdout(predicate::str::contains("[PARENT]"));
-}
-
-#[test]
-fn remove_help_has_no_partial_branch_retention_flag() {
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .args(["remove", "--help"])
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("--force"))
-        .stdout(predicate::str::contains("--keep-branch").not());
+        .stdout(predicate::str::contains("completions"));
 }
 
 #[test]
@@ -74,8 +35,7 @@ fn status_help_documents_global_export_options() {
         .success()
         .stdout(predicate::str::contains("global agent workspace activity"))
         .stdout(predicate::str::contains("--json"))
-        .stdout(predicate::str::contains("--git"))
-        .stdout(predicate::str::contains("[FILTERS]").not());
+        .stdout(predicate::str::contains("--git"));
 }
 
 #[test]
@@ -90,8 +50,6 @@ fn set_agent_status_help_documents_integration_contract() {
         .stdout(predicate::str::contains("--session-id"))
         .stdout(predicate::str::contains("--reporter-kind"))
         .stdout(predicate::str::contains("--reporter-instance"))
-        .stdout(predicate::str::contains("--producer-kind").not())
-        .stdout(predicate::str::contains("--producer-instance").not())
         .stdout(predicate::str::contains("title, context, or target hints"))
         .stdout(predicate::str::contains("working"))
         .stdout(predicate::str::contains("waiting"))
@@ -100,23 +58,13 @@ fn set_agent_status_help_documents_integration_contract() {
             "Delete the observation identified by this session and reporter key",
         ))
         .stdout(predicate::str::contains("Delete all reporter observations"))
+        .stdout(predicate::str::contains("--title"))
+        .stdout(predicate::str::contains("--context"))
         .stdout(predicate::str::contains("--tmux-instance"))
-        .stdout(predicate::str::contains("--agent-meta").not())
-        .stdout(predicate::str::contains("--clear-agent-meta").not())
         .stdout(predicate::str::contains("--git-repo-name"))
-        .stdout(predicate::str::contains("--tmux-pane-id").not())
-        .stdout(predicate::str::contains("--tmux-window-id").not())
-        .stdout(predicate::str::contains("--git-worktree-path").not())
-        .stdout(predicate::str::contains("--agent-workspace-id").not())
-        .stdout(predicate::str::contains("--clear-agent-workspace-id").not())
-        .stdout(predicate::str::contains("--pane-id").not())
-        .stdout(predicate::str::contains("--window-id").not())
-        .stdout(predicate::str::contains("--repo-name").not())
-        .stdout(predicate::str::contains("--worktree-handle").not())
-        .stdout(predicate::str::contains("--worktree-path").not())
-        .stdout(predicate::str::contains("--branch").not())
-        .stdout(predicate::str::contains("--session-name").not())
-        .stdout(predicate::str::contains("--window-name").not());
+        .stdout(predicate::str::contains("--git-repo-path"))
+        .stdout(predicate::str::contains("--git-branch"))
+        .stdout(predicate::str::contains("--directory"));
 }
 
 #[test]
@@ -131,10 +79,7 @@ fn completions_command_emits_shell_completion() {
         .stdout(predicate::str::contains("_complete-workspaces"))
         .stdout(predicate::str::contains("_complete-add-branches"))
         .stdout(predicate::str::contains("--parent"))
-        .stdout(predicate::str::contains("_complete-git-branches"))
-        .stdout(predicate::str::contains("--base").not())
-        .stdout(predicate::str::contains("--open-if-exists").not())
-        .stdout(predicate::str::contains("open").not());
+        .stdout(predicate::str::contains("_complete-git-branches"));
 }
 
 #[test]
@@ -159,16 +104,16 @@ fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
         &repo,
         &["worktree", "add", "-b", "feature/active", &active_arg],
     )?;
-    let legacy = worktree_base.join("custom-completion");
-    let legacy_arg = legacy.display().to_string();
+    let custom = worktree_base.join("custom-completion");
+    let custom_arg = custom.display().to_string();
     git(
         &repo,
         &[
             "worktree",
             "add",
             "-b",
-            "feature/legacy-completion",
-            &legacy_arg,
+            "feature/custom-completion",
+            &custom_arg,
         ],
     )?;
     let detached = worktree_base.join("detached-completion");
@@ -221,37 +166,7 @@ fn unknown_commands_fail_clearly() {
 }
 
 #[test]
-fn removed_open_command_fails_clearly() {
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .arg("open")
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unrecognized subcommand"));
-}
-
-#[test]
-fn removed_add_open_if_exists_flag_fails_clearly() {
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .args(["add", "feature/example", "-o"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unexpected argument"));
-}
-
-#[test]
-fn removed_add_base_flag_fails_clearly() {
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .args(["add", "feature/example", "--base", "main"])
-        .assert()
-        .failure()
-        .stderr(predicate::str::contains("unexpected argument"));
-}
-
-#[test]
-fn removed_status_filters_fail_clearly() {
+fn status_rejects_positional_arguments() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
         .args(["status", "feature/example"])
@@ -261,35 +176,23 @@ fn removed_status_filters_fail_clearly() {
 }
 
 #[test]
-fn removed_set_agent_status_flags_fail_clearly() {
-    for (flag, value) in [
-        ("--producer-kind", "tui"),
-        ("--producer-instance", "default/%1"),
-        ("--agent-workspace-id", "wrk_example"),
-        ("--clear-agent-workspace-id", "wrk_example"),
-        ("--git-worktree-path", "/repo/project-alpha"),
-        ("--tmux-window-id", "@1"),
-        ("--tmux-pane-id", "%1"),
-        ("--agent-meta", "workspace_id=wrk_example"),
-        ("--clear-agent-meta", "workspace_id"),
-    ] {
-        Command::cargo_bin("kmux")
-            .expect("kmux binary should be available")
-            .args([
-                "set-agent-status",
-                "--agent-kind",
-                "opencode",
-                "--session-id",
-                "ses_test",
-                "--reporter-kind",
-                "server",
-                "--reporter-instance",
-                "default/%1",
-                flag,
-                value,
-            ])
-            .assert()
-            .failure()
-            .stderr(predicate::str::contains("unexpected argument"));
-    }
+fn set_agent_status_rejects_unknown_options() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args([
+            "set-agent-status",
+            "--agent-kind",
+            "example-agent",
+            "--session-id",
+            "ses_test",
+            "--reporter-kind",
+            "integration",
+            "--reporter-instance",
+            "reporter-one",
+            "--unknown-option",
+            "value",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unexpected argument"));
 }

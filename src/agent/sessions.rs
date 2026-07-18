@@ -779,12 +779,9 @@ fn enrich_missing_repo_metadata(target: &mut ResolvedAgentTarget) {
 mod tests {
     use super::*;
     use crate::agent::workspace_activity::workspace_activities_from_sessions;
+    use crate::git::test_support::GitRepoFixture;
     use crate::state::{AgentObservationKey, AgentObservationState};
     use std::collections::BTreeMap;
-    use std::fs;
-    use std::path::Path;
-    use std::process::Command;
-    use tempfile::{TempDir, tempdir};
 
     #[derive(Default)]
     struct FakeWorkspaceResolver {
@@ -956,35 +953,35 @@ mod tests {
     }
 
     #[test]
-    fn merges_tui_and_server_observations_into_one_resolved_session() {
+    fn merges_multiple_reporters_into_one_resolved_session() {
         let (_directory_temp, directory) = git_repo_path();
-        let tui = observation(
-            "tui",
-            "default/%1",
+        let first = observation(
+            "reporter-a",
+            "instance-1",
             Some(AgentStatus::Done),
             100,
-            Some("Pane title"),
+            Some("First title"),
             &directory,
         );
-        let mut server = observation(
-            "server",
-            "http://127.0.0.1:4096",
+        let mut second = observation(
+            "reporter-b",
+            "instance-2",
             Some(AgentStatus::Waiting),
             200,
-            Some("Server title"),
+            Some("Second title"),
             &directory,
         );
-        server.context = Some("55.2K".to_owned());
+        second.context = Some("55.2K".to_owned());
 
         let views = reconcile_resolved_sessions(
-            vec![tui, server],
+            vec![first, second],
             &[pane_snapshot("%1", "@1", &directory, None)],
             "default",
         );
 
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, AgentStatus::Waiting);
-        assert_eq!(views[0].title.as_deref(), Some("Server title"));
+        assert_eq!(views[0].title.as_deref(), Some("Second title"));
         assert_eq!(views[0].context.as_deref(), Some("55.2K"));
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
@@ -995,14 +992,14 @@ mod tests {
         let (_root_temp, root) = git_repo_path();
         let (_feature_temp, feature) = git_repo_path();
         let observations = [
-            observation_for_session("ses_a", "tui", "default/%1", &root, "A"),
-            observation_for_session("ses_a", "server", "server", &root, "A server"),
-            observation_for_session("ses_b", "tui", "default/%1", &root, "B"),
-            observation_for_session("ses_b", "server", "server", &root, "B server"),
-            observation_for_session("ses_c", "tui", "default/%2", &feature, "C"),
-            observation_for_session("ses_c", "server", "server", &feature, "C server"),
-            observation_for_session("ses_d", "tui", "default/%2", &feature, "D"),
-            observation_for_session("ses_d", "server", "server", &feature, "D server"),
+            observation_for_session("ses_a", "reporter-a", "instance-1", &root, "A"),
+            observation_for_session("ses_a", "reporter-b", "instance-2", &root, "A second"),
+            observation_for_session("ses_b", "reporter-a", "instance-1", &root, "B"),
+            observation_for_session("ses_b", "reporter-b", "instance-2", &root, "B second"),
+            observation_for_session("ses_c", "reporter-a", "instance-1", &feature, "C"),
+            observation_for_session("ses_c", "reporter-b", "instance-2", &feature, "C second"),
+            observation_for_session("ses_d", "reporter-a", "instance-1", &feature, "D"),
+            observation_for_session("ses_d", "reporter-b", "instance-2", &feature, "D second"),
         ];
 
         let sessions = reconcile_resolved_sessions(
@@ -1059,104 +1056,26 @@ mod tests {
     }
 
     #[test]
-    fn workspace_activity_primary_prefers_waiting_status() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut done = observation_for_session("ses_done", "tui", "default/%1", &directory, "Done");
-        done.status = Some(AgentStatus::Done);
-        done.status_observed_at = Some(300);
-        done.status_changed_at = Some(300);
-        done.observed_at = 300;
-        let mut waiting =
-            observation_for_session("ses_waiting", "tui", "default/%1", &directory, "Waiting");
-        waiting.status = Some(AgentStatus::Waiting);
-        waiting.status_observed_at = Some(100);
-        waiting.status_changed_at = Some(100);
-
-        let sessions = reconcile_resolved_sessions(vec![done, waiting], &[], "default");
-        let views = workspace_activities_from_sessions(sessions);
-
-        assert_eq!(views.len(), 1);
-        assert_eq!(views[0].primary_session_key().session_id, "ses_waiting");
-        assert_eq!(views[0].status(), AgentStatus::Waiting);
-        assert_eq!(
-            views[0]
-                .member_session_keys()
-                .iter()
-                .map(|key| key.session_id.as_str())
-                .collect::<Vec<_>>(),
-            ["ses_done", "ses_waiting"]
-        );
-    }
-
-    #[test]
-    fn workspace_activity_members_survive_late_primary_replacement() {
-        let (_directory_temp, directory) = git_repo_path();
-        let mut first =
-            observation_for_session("ses_a_first", "server", "first", &directory, "First");
-        first.status = Some(AgentStatus::Working);
-        first.status_observed_at = Some(200);
-        first.status_changed_at = Some(200);
-        let mut accumulated = observation_for_session(
-            "ses_b_accumulated",
-            "server",
-            "accumulated",
-            &directory,
-            "Accumulated",
-        );
-        accumulated.status = Some(AgentStatus::Done);
-        accumulated.status_observed_at = Some(300);
-        accumulated.status_changed_at = Some(300);
-        let mut replacement = observation_for_session(
-            "ses_c_replacement",
-            "server",
-            "replacement",
-            &directory,
-            "Replacement",
-        );
-        replacement.status = Some(AgentStatus::Waiting);
-        replacement.status_observed_at = Some(100);
-        replacement.status_changed_at = Some(100);
-
-        let sessions =
-            reconcile_resolved_sessions(vec![first, accumulated, replacement], &[], "default");
-        let views = workspace_activities_from_sessions(sessions);
-
-        assert_eq!(views.len(), 1);
-        assert_eq!(
-            views[0].primary_session_key().session_id,
-            "ses_c_replacement"
-        );
-        assert_eq!(
-            views[0]
-                .member_session_keys()
-                .iter()
-                .map(|key| key.session_id.as_str())
-                .collect::<Vec<_>>(),
-            ["ses_a_first", "ses_b_accumulated", "ses_c_replacement"]
-        );
-    }
-
-    #[test]
     fn live_pane_precision_keeps_newer_directory_observation_fields() {
         let (_directory_temp, directory) = git_repo_path();
-        let tui = observation(
-            "tui",
-            "default/%1",
+        let first = observation(
+            "reporter-a",
+            "instance-1",
             Some(AgentStatus::Working),
             100,
-            Some("TUI"),
+            Some("First"),
             &directory,
         );
-        let server = observation(
-            "server",
-            "server",
+        let second = observation(
+            "reporter-b",
+            "instance-2",
             Some(AgentStatus::Working),
             200,
-            Some("Server"),
+            Some("Second"),
             &directory,
         );
         let views = reconcile_resolved_sessions(
-            vec![tui, server],
+            vec![first, second],
             &[pane_snapshot("%1", "@1", &directory, None)],
             "default",
         );
@@ -1168,7 +1087,7 @@ mod tests {
         ));
         assert_eq!(views[0].target.tmux_window_id.as_deref(), Some("@1"));
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
-        assert_eq!(views[0].title.as_deref(), Some("Server"));
+        assert_eq!(views[0].title.as_deref(), Some("Second"));
     }
 
     #[test]
@@ -1420,16 +1339,16 @@ mod tests {
     #[test]
     fn duplicate_unmarked_windows_choose_deterministic_live_target() {
         let (_directory_temp, directory) = git_repo_path();
-        let tui = observation(
-            "tui",
-            "default/%2",
+        let pane_report = observation(
+            "reporter-a",
+            "instance-1",
             Some(AgentStatus::Working),
             100,
-            Some("TUI"),
+            Some("Example report"),
             &directory,
         );
         let views = reconcile_resolved_sessions(
-            vec![tui],
+            vec![pane_report],
             &[
                 pane_snapshot("%1", "@1", &directory, None),
                 pane_snapshot("%2", "@2", &directory, None),
@@ -1613,16 +1532,16 @@ mod tests {
     fn latest_observation_must_resolve_to_live_window() {
         let (_directory_temp, directory) = git_repo_path();
         let old = observation(
-            "tui",
-            "default/%1",
+            "reporter-a",
+            "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Old"),
             &directory,
         );
         let newest = observation(
-            "server",
-            "http://127.0.0.1:4096",
+            "reporter-b",
+            "instance-2",
             Some(AgentStatus::Working),
             200,
             Some("Newest"),
@@ -1638,14 +1557,21 @@ mod tests {
     fn statusless_observations_can_update_title() {
         let (_directory_temp, directory) = git_repo_path();
         let status = observation(
-            "tui",
-            "default/%1",
+            "reporter-a",
+            "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Old"),
             &directory,
         );
-        let update = observation("server", "server", None, 200, Some("Renamed"), &directory);
+        let update = observation(
+            "reporter-b",
+            "instance-2",
+            None,
+            200,
+            Some("Renamed"),
+            &directory,
+        );
 
         let views = reconcile_resolved_sessions(vec![status, update], &[], "default");
 
@@ -1658,8 +1584,8 @@ mod tests {
     fn statusless_update_does_not_refresh_status_precedence() {
         let (_directory_temp, directory) = git_repo_path();
         let mut stale_working = observation(
-            "tui",
-            "default/%1",
+            "reporter-a",
+            "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Renamed"),
@@ -1667,8 +1593,8 @@ mod tests {
         );
         stale_working.observed_at = 300;
         let waiting = observation(
-            "server",
-            "server",
+            "reporter-b",
+            "instance-2",
             Some(AgentStatus::Waiting),
             200,
             Some("Waiting"),
@@ -1736,33 +1662,10 @@ mod tests {
         observation
     }
 
-    fn git_repo_path() -> (TempDir, String) {
-        let temp = tempdir().expect("temp directory should be created");
-        let repo = temp.path().join("project");
-        fs::create_dir(&repo).expect("repo directory should be created");
-        run_git(&repo, &["init", "--initial-branch", "main"]);
-        run_git(&repo, &["config", "user.email", "test@example.invalid"]);
-        run_git(&repo, &["config", "user.name", "Test User"]);
-        fs::write(repo.join("README.md"), "test\n").expect("readme should be written");
-        run_git(&repo, &["add", "README.md"]);
-        run_git(&repo, &["commit", "-m", "initial"]);
-        let path = repo.display().to_string();
-        (temp, path)
-    }
-
-    fn run_git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .expect("git command should run");
-        assert!(
-            output.status.success(),
-            "git {} failed\nstdout: {}\nstderr: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+    fn git_repo_path() -> (GitRepoFixture, String) {
+        let fixture = GitRepoFixture::new().expect("Git fixture should be created");
+        let path = fixture.path().display().to_string();
+        (fixture, path)
     }
 
     fn pane_snapshot(
@@ -1825,8 +1728,8 @@ mod tests {
 
     fn directory_only_observation(directory: &str) -> AgentObservationState {
         observation(
-            "server",
-            "server",
+            "reporter-b",
+            "instance-2",
             Some(AgentStatus::Working),
             100,
             Some("Workspace activity"),

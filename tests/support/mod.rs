@@ -1,6 +1,5 @@
-#![allow(dead_code)]
-
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt::Debug;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command as ProcessCommand;
@@ -10,6 +9,26 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, anyhow, bail};
 use assert_cmd::Command;
 use tempfile::TempDir;
+
+const WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const WAIT_INTERVAL: Duration = Duration::from_millis(25);
+
+#[derive(Debug)]
+struct SidebarTopology {
+    sidebar_counts: BTreeMap<String, usize>,
+}
+
+impl SidebarTopology {
+    fn has_one_sidebar_per_window(&self) -> bool {
+        !self.sidebar_counts.is_empty() && self.sidebar_counts.values().all(|count| *count == 1)
+    }
+}
+
+#[derive(Debug)]
+struct PathObservation {
+    exists: bool,
+    len: Option<u64>,
+}
 
 pub struct TmuxFixture {
     pub socket_name: String,
@@ -53,13 +72,7 @@ impl TmuxFixture {
             socket_dir,
             pane_id: String::from_utf8_lossy(&output.stdout).trim().to_owned(),
         };
-        if !fixture.wait_for_pane_current_path(&fixture.pane_id, cwd)? {
-            bail!(
-                "tmux pane '{}' did not report current path '{}'",
-                fixture.pane_id,
-                cwd.display()
-            );
-        }
+        fixture.wait_for_pane_current_path(&fixture.pane_id, cwd)?;
 
         Ok(Some(fixture))
     }
@@ -105,21 +118,31 @@ impl TmuxFixture {
             .collect())
     }
 
-    pub fn sidebar_panes_by_window(&self) -> Result<BTreeMap<String, usize>> {
+    fn sidebar_topology(&self) -> Result<SidebarTopology> {
         let output = self.tmux_output(&[
             "list-panes",
             "-a",
             "-F",
-            "#{window_id}\t#{pane_id}\t#{@kmux_role}",
+            "#{window_id}\t#{@kmux_role}\t#{pane_id}",
         ])?;
-        let mut panes = BTreeMap::new();
+        let mut sidebar_counts = BTreeMap::new();
+        let mut seen_panes = BTreeSet::new();
         for line in output.lines() {
-            let fields = line.split('\t').collect::<Vec<_>>();
-            if fields.len() == 3 && fields[2] == "sidebar" {
-                *panes.entry(fields[0].to_owned()).or_insert(0) += 1;
+            let mut fields = line.splitn(3, '\t');
+            let (Some(window_id), Some(role), Some(pane_id)) =
+                (fields.next(), fields.next(), fields.next())
+            else {
+                continue;
+            };
+            if !seen_panes.insert((window_id.to_owned(), pane_id.to_owned())) {
+                continue;
+            }
+            let count = sidebar_counts.entry(window_id.to_owned()).or_insert(0);
+            if role == "sidebar" {
+                *count += 1;
             }
         }
-        Ok(panes)
+        Ok(SidebarTopology { sidebar_counts })
     }
 
     pub fn sidebar_pane_for_window(&self, window_id: &str) -> Result<String> {
@@ -155,68 +178,52 @@ impl TmuxFixture {
         self.tmux_output(&["display-message", "-p", "-t", "project:", "#{window_id}"])
     }
 
+    pub fn resize_window_and_wait(
+        &self,
+        window_id: &str,
+        observed_pane_id: &str,
+        width: u16,
+    ) -> Result<()> {
+        let width = width.to_string();
+        self.tmux_output(&["resize-window", "-t", window_id, "-x", &width])?;
+        self.wait_for_pane_format(observed_pane_id, "#{window_width}", &width)
+    }
+
     pub fn has_one_sidebar_per_window(&self) -> Result<bool> {
-        let sidebar_panes = self.sidebar_panes_by_window()?;
-        Ok(sidebar_panes.len() == self.unique_window_count()?
-            && sidebar_panes.values().all(|count| *count == 1))
+        Ok(self.sidebar_topology()?.has_one_sidebar_per_window())
     }
 
-    pub fn wait_for_one_sidebar_per_window(&self) -> Result<bool> {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if self.has_one_sidebar_per_window()? {
-                return Ok(true);
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        Ok(false)
+    pub fn wait_for_one_sidebar_per_window(&self) -> Result<()> {
+        wait_until(
+            "one sidebar pane in every tmux window",
+            || self.sidebar_topology(),
+            SidebarTopology::has_one_sidebar_per_window,
+        )
     }
 
-    pub fn wait_for_sidebar_title(&self, title: &str) -> Result<bool> {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if self
-                .sidebar_pane_titles()?
-                .iter()
-                .any(|pane_title| pane_title == title)
-            {
-                return Ok(true);
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        Ok(false)
+    pub fn wait_for_sidebar_title(&self, title: &str) -> Result<()> {
+        wait_until(
+            &format!("a sidebar pane title equal to {title:?}"),
+            || self.sidebar_pane_titles(),
+            |titles| titles.iter().any(|pane_title| pane_title == title),
+        )
     }
 
-    pub fn wait_for_pane_command(&self, pane_id: &str, command: &str) -> Result<bool> {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if self.pane_format(pane_id, "#{pane_current_command}")? == command {
-                return Ok(true);
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        Ok(false)
+    pub fn wait_for_pane_command(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.wait_for_pane_format(pane_id, "#{pane_current_command}", command)
     }
 
-    pub fn wait_for_pane_current_path(&self, pane_id: &str, path: &Path) -> Result<bool> {
+    pub fn wait_for_pane_current_path(&self, pane_id: &str, path: &Path) -> Result<()> {
         let expected = path.display().to_string();
         self.wait_for_pane_format(pane_id, "#{pane_current_path}", &expected)
     }
 
-    pub fn wait_for_pane_format(
-        &self,
-        pane_id: &str,
-        format: &str,
-        expected: &str,
-    ) -> Result<bool> {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while Instant::now() < deadline {
-            if self.pane_format(pane_id, format)? == expected {
-                return Ok(true);
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        Ok(false)
+    pub fn wait_for_pane_format(&self, pane_id: &str, format: &str, expected: &str) -> Result<()> {
+        wait_until(
+            &format!("tmux pane {pane_id} format {format:?} to equal {expected:?}"),
+            || self.pane_format_if_present(pane_id, format),
+            |value| value.as_deref() == Some(expected),
+        )
     }
 
     pub fn global_option(&self, option_name: &str) -> Result<Option<String>> {
@@ -244,24 +251,23 @@ impl TmuxFixture {
         self.tmux_output(&["display-message", "-p", "-t", pane_id, format])
     }
 
+    fn pane_format_if_present(&self, pane_id: &str, format: &str) -> Result<Option<String>> {
+        let pane_format = format!("#{{pane_id}}\t{format}");
+        let output = self.tmux_output(&["list-panes", "-a", "-F", &pane_format])?;
+        Ok(output.lines().find_map(|line| {
+            let (observed_pane_id, value) = line.split_once('\t')?;
+            (observed_pane_id == pane_id).then(|| value.to_owned())
+        }))
+    }
+
     pub fn pane_count_for_window(&self, window_id: &str) -> Result<usize> {
         let output = self.tmux_output(&["list-panes", "-t", window_id, "-F", "#{pane_id}"])?;
         Ok(output.lines().count())
     }
 
-    pub fn set_pane_title(&self, pane_id: &str, title: &str) -> Result<()> {
-        self.tmux_output(&["select-pane", "-t", pane_id, "-T", title])?;
-        Ok(())
-    }
-
     pub fn window_option(&self, target: &str, option_name: &str) -> Result<Option<String>> {
         let output = self.tmux_output(&["show-option", "-wqv", "-t", target, option_name])?;
         Ok(Some(output).filter(|value| !value.is_empty()))
-    }
-
-    pub fn set_window_option(&self, target: &str, option_name: &str, value: &str) -> Result<()> {
-        self.tmux_output(&["set-option", "-wq", "-t", target, option_name, value])?;
-        Ok(())
     }
 
     fn apply_env_with_pane(&self, command: &mut Command, pane_id: &str) {
@@ -328,25 +334,6 @@ pub fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
 }
 
-pub fn kmux_workspace_state(repo: &Path) -> Result<serde_json::Value> {
-    let path = repo.join(".git/kmux/state.json");
-    serde_json::from_slice(&fs::read(&path)?)
-        .with_context(|| format!("failed to parse {}", path.display()))
-}
-
-pub fn kmux_parent_link(repo: &Path, branch: &str) -> Result<Option<serde_json::Value>> {
-    let state = kmux_workspace_state(repo)?;
-    Ok(state
-        .get("parents")
-        .and_then(serde_json::Value::as_array)
-        .and_then(|links| {
-            links
-                .iter()
-                .find(|link| link.get("branch").and_then(serde_json::Value::as_str) == Some(branch))
-                .cloned()
-        }))
-}
-
 pub fn kmux_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
     let assert = Command::cargo_bin("kmux")?
         .current_dir(cwd)
@@ -391,26 +378,20 @@ fn shell_quote(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-pub fn wait_for_path(path: &Path) -> Result<bool> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if path.exists() {
-            return Ok(true);
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    Ok(false)
+pub fn wait_for_path(path: &Path) -> Result<()> {
+    wait_until(
+        &format!("path {} to exist", path.display()),
+        || path_observation(path),
+        |observation| observation.exists,
+    )
 }
 
-pub fn wait_for_file_bytes(path: &Path) -> Result<bool> {
-    let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline {
-        if fs::read(path).is_ok_and(|bytes| !bytes.is_empty()) {
-            return Ok(true);
-        }
-        thread::sleep(Duration::from_millis(25));
-    }
-    Ok(false)
+pub fn wait_for_nonempty_file(path: &Path) -> Result<()> {
+    wait_until(
+        &format!("file {} to contain captured bytes", path.display()),
+        || path_observation(path),
+        |observation| observation.len.is_some_and(|len| len > 0),
+    )
 }
 
 pub fn kmux(repo: &Path, config_home: &Path, tmux: &TmuxFixture) -> Result<Command> {
@@ -432,7 +413,7 @@ pub fn kmux_with_pane(
     Ok(command)
 }
 
-pub fn set_agent_status_args(
+fn set_agent_status_args(
     agent_kind: &str,
     status: Option<&str>,
     session_id: &str,
@@ -489,83 +470,6 @@ pub fn delete_opencode_agent_observation_args(
     args
 }
 
-pub fn delete_opencode_agent_session_args(
-    session_id: &str,
-    reporter_kind: &str,
-    reporter_instance: &str,
-) -> Vec<String> {
-    let mut args =
-        set_opencode_status_args(None, session_id, reporter_kind, reporter_instance, &[]);
-    args.push("--delete-session".to_owned());
-    args
-}
-
-pub fn agent_observation_for_pane(config_home: &Path, pane_id: &str) -> Result<serde_json::Value> {
-    find_agent_observation(config_home, |value| {
-        value
-            .pointer("/target/tmux_pane_id")
-            .and_then(serde_json::Value::as_str)
-            == Some(pane_id)
-    })?
-    .ok_or_else(|| anyhow!("state for pane '{pane_id}' not found"))
-}
-
-pub fn agent_observation_for_key(
-    config_home: &Path,
-    agent_kind: &str,
-    session_id: &str,
-    reporter_kind: &str,
-    reporter_instance: &str,
-) -> Result<serde_json::Value> {
-    find_agent_observation(config_home, |value| {
-        value
-            .pointer("/key/session/agent_kind")
-            .and_then(serde_json::Value::as_str)
-            == Some(agent_kind)
-            && value
-                .pointer("/key/session/session_id")
-                .and_then(serde_json::Value::as_str)
-                == Some(session_id)
-            && value
-                .pointer("/key/reporter_kind")
-                .and_then(serde_json::Value::as_str)
-                == Some(reporter_kind)
-            && value
-                .pointer("/key/reporter_instance")
-                .and_then(serde_json::Value::as_str)
-                == Some(reporter_instance)
-    })?
-    .ok_or_else(|| {
-        anyhow!(
-            "state for observation '{agent_kind}/{session_id}/{reporter_kind}/{reporter_instance}' not found"
-        )
-    })
-}
-
-fn find_agent_observation(
-    config_home: &Path,
-    matches: impl Fn(&serde_json::Value) -> bool,
-) -> Result<Option<serde_json::Value>> {
-    let observations_dir = agent_observations_dir(config_home);
-    if !observations_dir.exists() {
-        return Ok(None);
-    }
-    for entry in fs::read_dir(&observations_dir).with_context(|| {
-        format!(
-            "failed to read state directory {}",
-            observations_dir.display()
-        )
-    })? {
-        let path = entry?.path();
-        let value: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)
-            .with_context(|| format!("failed to parse {}", path.display()))?;
-        if matches(&value) {
-            return Ok(Some(value));
-        }
-    }
-    Ok(None)
-}
-
 pub fn agent_observations_dir(config_home: &Path) -> PathBuf {
     config_home
         .with_file_name("state-home")
@@ -573,14 +477,42 @@ pub fn agent_observations_dir(config_home: &Path) -> PathBuf {
         .join("agent-observations")
 }
 
-pub fn state_timestamp(state: &serde_json::Value, field: &str) -> Result<u64> {
-    state_u64(state, field)
-        .with_context(|| format!("state timestamp '{field}' is missing or invalid"))
+fn wait_until<T>(
+    description: &str,
+    mut observe: impl FnMut() -> Result<T>,
+    ready: impl Fn(&T) -> bool,
+) -> Result<()>
+where
+    T: Debug,
+{
+    let started = Instant::now();
+    loop {
+        let observation =
+            observe().with_context(|| format!("failed while waiting for {description}"))?;
+        if ready(&observation) {
+            return Ok(());
+        }
+
+        let elapsed = started.elapsed();
+        if elapsed >= WAIT_TIMEOUT {
+            bail!(
+                "timed out after {elapsed:?} waiting for {description}; final observed state: {observation:#?}"
+            );
+        }
+        thread::sleep(WAIT_INTERVAL.min(WAIT_TIMEOUT.saturating_sub(elapsed)));
+    }
 }
 
-pub fn state_u64(state: &serde_json::Value, field: &str) -> Result<u64> {
-    state
-        .get(field)
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| anyhow!("state field '{field}' is missing or invalid"))
+fn path_observation(path: &Path) -> Result<PathObservation> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(PathObservation {
+            exists: true,
+            len: metadata.is_file().then_some(metadata.len()),
+        }),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(PathObservation {
+            exists: false,
+            len: None,
+        }),
+        Err(error) => Err(error).with_context(|| format!("failed to inspect {}", path.display())),
+    }
 }

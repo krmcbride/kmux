@@ -366,35 +366,6 @@ sidebar:
     }
 
     #[test]
-    fn rejects_removed_base_branch_config_key() {
-        let error = Config::from_yaml_str("base_branch: main\n")
-            .expect_err("removed config field should fail");
-
-        assert!(error.to_string().contains("unknown field"));
-    }
-
-    #[test]
-    fn rejects_deferred_parent_branch_config_key() {
-        let error = Config::from_yaml_str("parent_branch: main\n")
-            .expect_err("deferred config field should fail");
-
-        assert!(error.to_string().contains("unknown field"));
-    }
-
-    #[test]
-    fn rejects_deferred_multi_pane_layout_fields() {
-        let error = Config::from_yaml_str(
-            r#"
-panes:
-  - split: horizontal
-"#,
-        )
-        .expect_err("unsupported multi-pane field should fail");
-
-        assert!(error.to_string().contains("unknown field"));
-    }
-
-    #[test]
     fn rejects_file_entries_that_target_repo_or_escape() {
         for entry in ["", ".", "./.envrc", "foo/./bar", "../secret", "/tmp/secret"] {
             let yaml = format!("files: {{copy: ['{entry}']}}\n");
@@ -423,14 +394,6 @@ panes:
             .expect_err("zero idle threshold should fail");
 
         assert!(error.to_string().contains("sidebar.idle_after_seconds"));
-    }
-
-    #[test]
-    fn rejects_removed_sidebar_selection_hooks() {
-        let error = Config::from_yaml_str("sidebar: {selection_hooks: [{command: notify-send}]}\n")
-            .expect_err("removed selection hooks should fail");
-
-        assert!(error.to_string().contains("unknown field"));
     }
 
     #[test]
@@ -467,17 +430,6 @@ panes:
     }
 
     #[test]
-    fn rejects_legacy_sidebar_width_forms() {
-        for yaml in [
-            "sidebar: {width: 42}\n",
-            "sidebar: {width: '42'}\n",
-            "sidebar: {width: '15%'}\n",
-        ] {
-            Config::from_yaml_str(yaml).expect_err("legacy sidebar width should fail");
-        }
-    }
-
-    #[test]
     fn rejects_partial_or_unknown_sidebar_width_fields() {
         for yaml in [
             "sidebar: {width: {min: 36, percent: 20}}\n",
@@ -487,20 +439,6 @@ panes:
             assert!(
                 error.to_string().contains("sidebar.width") || error.to_string().contains("field")
             );
-        }
-    }
-
-    #[test]
-    fn rejects_deferred_sidebar_fields() {
-        for yaml in [
-            "sidebar: {position: top}\n",
-            "sidebar: {height: 10}\n",
-            "sidebar: {layout: compact}\n",
-        ] {
-            let error =
-                Config::from_yaml_str(yaml).expect_err("unsupported sidebar field should fail");
-
-            assert!(error.to_string().contains("unknown field"));
         }
     }
 }

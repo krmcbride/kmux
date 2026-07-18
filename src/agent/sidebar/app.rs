@@ -21,6 +21,9 @@ use crate::tmux::TmuxPaneVisibility;
 
 use crate::telemetry;
 
+#[cfg(test)]
+use super::test_support::TestSidebarApp;
+
 /// Mutable state for the sidebar terminal UI.
 pub(super) struct SidebarApp {
     rows_query: SidebarRowsQuery,
@@ -423,18 +426,21 @@ impl SidebarApp {
 #[cfg(test)]
 impl SidebarApp {
     /// Build a sidebar app with injected rows for unit tests.
-    pub(super) fn test(sidebar_window_id: Option<&str>, rows: Vec<SidebarRow>) -> Self {
+    pub(super) fn test(sidebar_window_id: Option<&str>, rows: Vec<SidebarRow>) -> TestSidebarApp {
         Self::test_with_tmux(Tmux::new(), None, sidebar_window_id, rows)
     }
 
-    pub(super) fn test_with_tmux(
+    fn test_with_tmux(
         tmux: Tmux,
         sidebar_session_name: Option<&str>,
         sidebar_window_id: Option<&str>,
         rows: Vec<SidebarRow>,
-    ) -> Self {
-        let store = crate::agent::sidebar::test_support::empty_state_store();
-        Self::test_with_store(tmux, store, sidebar_session_name, sidebar_window_id, rows)
+    ) -> TestSidebarApp {
+        let state = crate::state::test_support::StateStoreFixture::new()
+            .expect("test state store should be created");
+        let store = state.store().clone();
+        let app = Self::test_with_store(tmux, store, sidebar_session_name, sidebar_window_id, rows);
+        TestSidebarApp::new(app, state)
     }
 
     pub(super) fn set_last_error_for_test(&mut self, error: impl Into<String>) {
@@ -482,81 +488,15 @@ impl SidebarApp {
 mod tests {
     use super::*;
     use crate::agent::sessions::AgentTmuxTarget;
-    use crate::agent::sidebar::selection::{
-        SELECTED_TARGET_OPTION, decode_selected_target, encode_selected_target,
-    };
     use crate::agent::sidebar::test_support::{
-        TEST_SLEEPING_ICON, agent_state, report_state, row_from_view, set_workspace,
+        SidebarTmuxFixture, TEST_SLEEPING_ICON, report_state, row_from_view, set_workspace,
     };
     use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
     use crate::state::{AgentSessionKey, AgentStatus};
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
     use anyhow::Result;
     use std::fs;
-    use tempfile::{TempDir, tempdir};
-
-    struct SidebarTmuxFixture {
-        fixture: TmuxFixture,
-        _temp: TempDir,
-        window_id: String,
-    }
-
-    impl SidebarTmuxFixture {
-        fn new() -> Result<Option<Self>> {
-            let Some(fixture) = TmuxFixture::new()? else {
-                return Ok(None);
-            };
-            let temp = tempdir()?;
-            create_test_session(&fixture.tmux, "project", temp.path())?;
-            let pane_id = fixture.tmux.create_window_with_command(
-                "project",
-                "feature-sidebar",
-                temp.path(),
-                None,
-            )?;
-            let window_id = fixture
-                .tmux
-                .list_pane_snapshots()?
-                .into_iter()
-                .find(|pane| pane.pane_id == pane_id)
-                .map(|pane| pane.window_id)
-                .ok_or_else(|| anyhow::anyhow!("expected created pane in tmux snapshot"))?;
-
-            Ok(Some(Self {
-                fixture,
-                _temp: temp,
-                window_id,
-            }))
-        }
-
-        fn tmux(&self) -> Tmux {
-            self.fixture.tmux.clone()
-        }
-
-        fn set_selected_row(&self, row: &SidebarRow) -> Result<()> {
-            let encoded = encode_selected_target(&row.identity)?;
-            self.set_raw_selected_target(&encoded)
-        }
-
-        fn set_raw_selected_target(&self, value: &str) -> Result<()> {
-            self.fixture
-                .tmux
-                .set_window_option(&self.window_id, SELECTED_TARGET_OPTION, value)
-        }
-
-        fn raw_selected_target(&self) -> Result<Option<String>> {
-            self.fixture
-                .tmux
-                .show_window_option(&self.window_id, SELECTED_TARGET_OPTION)
-        }
-
-        fn selected_target(&self) -> Result<Option<SidebarRowIdentity>> {
-            Ok(self
-                .raw_selected_target()?
-                .as_deref()
-                .and_then(decode_selected_target))
-        }
-    }
+    use tempfile::tempdir;
 
     fn selected_index(app: &SidebarApp) -> Option<usize> {
         app.list_state.selected()
@@ -585,10 +525,10 @@ mod tests {
     #[test]
     fn spinner_tick_updates_only_active_working_rows() {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
             row_from_view(
-                &agent_state(AgentStatus::Done, 0, "@3", "%3"),
+                &report_state(AgentStatus::Done, 0, "@3", "%3"),
                 DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
             ),
         ];
@@ -607,7 +547,7 @@ mod tests {
     #[test]
     fn spinner_tick_is_noop_without_frames_or_working_rows() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Waiting, 100, "@1", "%1"),
+            &report_state(AgentStatus::Waiting, 100, "@1", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(None, rows);
@@ -625,7 +565,7 @@ mod tests {
     #[test]
     fn spinner_tick_is_noop_when_window_is_hidden() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            &report_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(None, rows);
@@ -674,14 +614,14 @@ mod tests {
     #[test]
     fn applying_rows_snapshot_syncs_focus_visibility_and_selection() {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
         let refreshed_rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 200, "@1", "%10"), 200),
-            row_from_view(&agent_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
+            row_from_view(&report_state(AgentStatus::Working, 200, "@1", "%10"), 200),
+            row_from_view(&report_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
         ];
 
         app.apply_rows_snapshot(rows_snapshot(
@@ -750,10 +690,10 @@ mod tests {
     fn hidden_idle_refresh_rebuilds_rows() {
         let rows = vec![
             row_from_view(
-                &agent_state(AgentStatus::Done, 0, "@1", "%1"),
+                &report_state(AgentStatus::Done, 0, "@1", "%1"),
                 DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS + 1,
             ),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
@@ -775,7 +715,7 @@ mod tests {
     #[test]
     fn hidden_missing_sidebar_context_refresh_rebuilds_rows() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Working, 100, "@other", "%1"),
+            &report_state(AgentStatus::Working, 100, "@other", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
@@ -795,7 +735,7 @@ mod tests {
     #[test]
     fn hidden_non_idle_model_refresh_rebuilds_rows() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            &report_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -815,8 +755,8 @@ mod tests {
     #[test]
     fn selection_follows_sidebar_window_then_manual_navigation_takes_over() {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@2"), rows);
 
@@ -856,7 +796,7 @@ mod tests {
     #[test]
     fn selection_clears_when_followed_sidebar_window_has_no_agent_row() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            &report_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(Some("@missing"), rows);
@@ -873,8 +813,8 @@ mod tests {
     #[test]
     fn manual_selection_survives_empty_refresh_and_pane_id_change() {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -884,8 +824,8 @@ mod tests {
         app.rows = Vec::new();
         app.sync_selection();
         app.rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 200, "@1", "%10"), 200),
-            row_from_view(&agent_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
+            row_from_view(&report_state(AgentStatus::Working, 200, "@1", "%10"), 200),
+            row_from_view(&report_state(AgentStatus::Waiting, 200, "@2", "%20"), 200),
         ];
         app.sync_selection();
 
@@ -918,8 +858,8 @@ mod tests {
     #[test]
     fn manual_selection_returns_to_sidebar_context_when_sidebar_loses_focus() {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
 
@@ -957,8 +897,8 @@ mod tests {
     #[test]
     fn successful_cross_window_jump_marks_source_sidebar_hidden() {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Working, 100, "@1", "%1"), 100),
-            row_from_view(&agent_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
+            row_from_view(&report_state(AgentStatus::Working, 100, "@1", "%1"), 100),
+            row_from_view(&report_state(AgentStatus::Waiting, 100, "@2", "%2"), 100),
         ];
         let mut app = SidebarApp::test(Some("@1"), rows);
         app.next();
@@ -975,7 +915,7 @@ mod tests {
     #[test]
     fn successful_same_window_jump_keeps_source_sidebar_visible() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Working, 100, "@1", "%1"),
+            &report_state(AgentStatus::Working, 100, "@1", "%1"),
             100,
         )];
         let mut app = SidebarApp::test(Some("@1"), rows);
@@ -1079,30 +1019,8 @@ mod tests {
         let Some(fixture) = SidebarTmuxFixture::new()? else {
             return Ok(());
         };
-        fixture
-            .set_raw_selected_target(r#"{"version":2,"target":{"key":"directory:/missing"}}"#)?;
-
-        let app = SidebarApp::test_with_tmux(
-            fixture.tmux(),
-            Some("project"),
-            Some(&fixture.window_id),
-            vec![
-                server_row_in_window("ses_a", "First", &fixture.window_id),
-                server_row_in_window("ses_b", "Second", &fixture.window_id),
-            ],
-        );
-
-        assert_eq!(selected_index(&app), Some(0));
-        assert_eq!(app.active_index(), Some(0));
-        Ok(())
-    }
-
-    #[test]
-    fn malformed_persisted_selection_falls_back_to_first_sidebar_window_row() -> Result<()> {
-        let Some(fixture) = SidebarTmuxFixture::new()? else {
-            return Ok(());
-        };
-        fixture.set_raw_selected_target("not json")?;
+        let stale = server_row_in_window("ses_stale", "Stale", &fixture.window_id);
+        fixture.set_selected_row(&stale)?;
 
         let app = SidebarApp::test_with_tmux(
             fixture.tmux(),
@@ -1231,7 +1149,7 @@ mod tests {
     #[test]
     fn jump_failure_is_reported_without_panicking_or_quitting() {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
+            &report_state(AgentStatus::Waiting, 100, "not-a-window", "%missing"),
             100,
         )];
         let mut app = SidebarApp::test(Some("not-a-window"), rows);

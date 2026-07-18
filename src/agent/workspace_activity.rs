@@ -328,16 +328,16 @@ fn compact_session_id(session_id: &str) -> &str {
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::process::Command;
 
     use anyhow::Result;
-    use tempfile::tempdir;
 
     use super::*;
     use crate::agent::sessions::{
-        AgentTmuxTarget, AgentTmuxUnavailableReason, ResolvedAgentTarget, ResolvedAgentWorkspace,
+        AgentTmuxTarget, AgentTmuxUnavailableReason, AgentTmuxWindowCandidate,
     };
-    use crate::state::{AgentLocationHints, AgentObservationKey, AgentObservationState};
+    use crate::agent::test_support::resolved_agent_session;
+    use crate::git::test_support::GitRepoFixture;
+    use crate::state::test_support::{StateStoreFixture, observation_state};
 
     #[test]
     fn workspace_activity_uses_repo_branch_title_and_context_labels() {
@@ -436,42 +436,20 @@ mod tests {
 
     #[test]
     fn tmux_snapshot_failure_keeps_workspace_activity_visible() -> Result<()> {
-        let temp = tempdir()?;
-        let repo = temp.path().join("project-alpha");
-        fs::create_dir(&repo)?;
-        run_git(&repo, &["init", "--initial-branch", "main"]);
-        let store = crate::state::test_support::store_with_path(temp.path().join("state"))?;
-        let repo_path = repo.to_string_lossy().into_owned();
-        store.upsert_observation(&AgentObservationState {
-            key: AgentObservationKey {
-                session: AgentSessionKey {
-                    agent_kind: "example-agent".to_owned(),
-                    session_id: "ses_project_alpha".to_owned(),
-                },
-                reporter_kind: "example-reporter".to_owned(),
-                reporter_instance: "instance-1".to_owned(),
-            },
-            created_at: 100,
-            status: Some(AgentStatus::Working),
-            status_observed_at: Some(100),
-            status_changed_at: Some(100),
-            working_elapsed_secs: 0,
-            observed_at: 100,
-            title: Some("Example task".to_owned()),
-            context: None,
-            target: AgentLocationHints {
-                directory: Some(repo_path),
-                ..AgentLocationHints::default()
-            },
-        })?;
+        let repo = GitRepoFixture::new()?;
+        let state = StateStoreFixture::new()?;
+        let store = state.store();
+        let mut observation = observation_state();
+        observation.target.directory = Some(repo.path().display().to_string());
+        store.upsert_observation(&observation)?;
         let tmux = crate::tmux::test_support::disconnected_adapter();
 
-        let activities = workspace_activities(&store, &tmux)?;
+        let activities = workspace_activities(store, &tmux)?;
 
         assert_eq!(activities.len(), 1);
         assert_eq!(
             activities[0].workspace_key(),
-            fs::canonicalize(&repo)?.to_string_lossy()
+            fs::canonicalize(repo.path())?.to_string_lossy()
         );
         assert!(matches!(
             activities[0].tmux_target(),
@@ -481,58 +459,32 @@ mod tests {
     }
 
     fn session_view() -> ResolvedAgentSession {
-        let key = AgentSessionKey {
+        let mut session = resolved_agent_session();
+        session.key = AgentSessionKey {
             agent_kind: "opencode".to_owned(),
             session_id: "ses_feature_sidebar".to_owned(),
         };
-        ResolvedAgentSession {
-            key,
-            workspace: ResolvedAgentWorkspace::from_canonical_root(
-                "/repo/project-alpha".into(),
-                "/repo/project-alpha".to_owned(),
-            )
-            .expect("test workspace should be valid"),
-            tmux_target: AgentTmuxTarget::Windows {
-                session_name: "project-alpha".to_owned(),
-                candidates: vec![crate::agent::sessions::AgentTmuxWindowCandidate {
-                    window_id: "@1".to_owned(),
-                    pane_ids: vec!["%1".to_owned()],
-                }],
-            },
-            created_at: 120,
-            status: AgentStatus::Working,
-            status_observed_at: 120,
-            status_changed_at: 120,
-            working_elapsed_secs: 0,
-            observed_at: 120,
-            title: Some("Implement shared rows".to_owned()),
-            context: Some("55.2K".to_owned()),
-            target: ResolvedAgentTarget {
-                git_repo_name: Some("kmux".to_owned()),
-                git_repo_path: Some("/repo/kmux".to_owned()),
-                git_branch: Some("feature/sidebar".to_owned()),
-                tmux_session_name: Some("project-alpha".to_owned()),
-                tmux_window_id: Some("@1".to_owned()),
-                tmux_window_name: Some("kmux-feature-sidebar".to_owned()),
-                tmux_pane_id: Some("%1".to_owned()),
-                tmux_pane_title: Some("Implement sidebar".to_owned()),
-                ..ResolvedAgentTarget::default()
-            },
-        }
-    }
-
-    fn run_git(cwd: &Path, args: &[&str]) {
-        let output = Command::new("git")
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .expect("git command should run");
-        assert!(
-            output.status.success(),
-            "git {} failed\nstdout: {}\nstderr: {}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
+        session.tmux_target = AgentTmuxTarget::Windows {
+            session_name: "project-alpha".to_owned(),
+            candidates: vec![AgentTmuxWindowCandidate {
+                window_id: "@1".to_owned(),
+                pane_ids: vec!["%1".to_owned()],
+            }],
+        };
+        session.created_at = 120;
+        session.status_observed_at = 120;
+        session.status_changed_at = 120;
+        session.observed_at = 120;
+        session.title = Some("Implement shared rows".to_owned());
+        session.context = Some("55.2K".to_owned());
+        session.target.git_repo_name = Some("kmux".to_owned());
+        session.target.git_repo_path = Some("/repo/kmux".to_owned());
+        session.target.git_branch = Some("feature/sidebar".to_owned());
+        session.target.tmux_session_name = Some("project-alpha".to_owned());
+        session.target.tmux_window_id = Some("@1".to_owned());
+        session.target.tmux_window_name = Some("kmux-feature-sidebar".to_owned());
+        session.target.tmux_pane_id = Some("%1".to_owned());
+        session.target.tmux_pane_title = Some("Implement sidebar".to_owned());
+        session
     }
 }

@@ -84,3 +84,37 @@ pub struct AgentObservationState {
     #[serde(default)]
     pub target: AgentLocationHints,
 }
+
+#[cfg(test)]
+pub(super) mod test_support {
+    use super::{
+        AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
+        AgentStatus,
+    };
+
+    /// Build a current-schema observation baseline for state and application unit tests.
+    pub fn observation_state() -> AgentObservationState {
+        AgentObservationState {
+            key: AgentObservationKey {
+                session: AgentSessionKey {
+                    agent_kind: "example-agent".to_owned(),
+                    session_id: "ses_project_alpha".to_owned(),
+                },
+                reporter_kind: "example-reporter".to_owned(),
+                reporter_instance: "instance-1".to_owned(),
+            },
+            created_at: 100,
+            status: Some(AgentStatus::Working),
+            status_observed_at: Some(100),
+            status_changed_at: Some(100),
+            working_elapsed_secs: 0,
+            observed_at: 100,
+            title: Some("Example task".to_owned()),
+            context: Some("Example context".to_owned()),
+            target: AgentLocationHints {
+                directory: Some("/repo/project-alpha".to_owned()),
+                ..AgentLocationHints::default()
+            },
+        }
+    }
+}

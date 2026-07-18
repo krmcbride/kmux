@@ -236,7 +236,9 @@ mod tests {
         assert_eq!(decode_selected_target(""), None);
         assert_eq!(decode_selected_target("not json"), None);
         assert_eq!(
-            decode_selected_target(r#"{"version":999,"target":{"key":"directory:/repo"}}"#),
+            decode_selected_target(
+                r#"{"version":999,"target":{"key":"workspace:/repo/project-alpha"}}"#
+            ),
             None
         );
         assert_eq!(
@@ -244,7 +246,7 @@ mod tests {
             None
         );
         assert_eq!(
-            decode_selected_target(r#"{"version":2,"target":{"key":"window:@1"}}"#),
+            decode_selected_target(r#"{"version":2,"target":{"key":"unscoped-key"}}"#),
             None
         );
     }

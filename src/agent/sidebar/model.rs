@@ -225,7 +225,6 @@ mod tests {
     use crate::agent::sidebar::test_support::{
         TEST_SLEEPING_ICON, report_state, set_session_key, set_workspace, test_icons,
     };
-    use crate::agent::status;
     use crate::agent::workspace_activity::workspace_activities_from_sessions;
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
 
@@ -412,52 +411,6 @@ mod tests {
         assert_eq!(
             rows[0].selection.member_session_keys[1].agent_kind,
             "opencode"
-        );
-    }
-
-    #[test]
-    fn sidebar_and_status_consume_the_same_primary_session() {
-        let mut working = report_state(AgentStatus::Working, 300, "@1", "%1");
-        set_session_key(
-            &mut working,
-            AgentSessionKey {
-                agent_kind: "opencode".to_owned(),
-                session_id: "ses_a_working".to_owned(),
-            },
-        );
-        let mut waiting = report_state(AgentStatus::Waiting, 100, "@1", "%2");
-        set_session_key(
-            &mut waiting,
-            AgentSessionKey {
-                agent_kind: "codex".to_owned(),
-                session_id: "ses_z_waiting".to_owned(),
-            },
-        );
-        let activities = workspace_activities_from_sessions(vec![working, waiting]);
-
-        let sidebar_rows =
-            build_rows_with_working_icon(&activities, 300, &test_icons(), None, 1_800);
-        let status_entries =
-            status::status_entries(&activities, 300, false, &StatusIcons::default());
-        let status_json = serde_json::to_value(status_entries)
-            .expect("status entries should serialize for consistency test");
-
-        assert_eq!(sidebar_rows[0].state, SidebarRowState::Waiting);
-        assert_eq!(
-            status_json
-                .pointer("/0/agent_kind")
-                .and_then(|v| v.as_str()),
-            Some("codex")
-        );
-        assert_eq!(
-            status_json
-                .pointer("/0/session_id")
-                .and_then(|v| v.as_str()),
-            Some("ses_z_waiting")
-        );
-        assert_eq!(
-            status_json.pointer("/0/status").and_then(|v| v.as_str()),
-            Some("waiting")
         );
     }
 

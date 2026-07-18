@@ -5,6 +5,8 @@
 
 mod sessions;
 mod status_badges;
+#[cfg(test)]
+mod test_support;
 mod workspace;
 
 pub mod observations;

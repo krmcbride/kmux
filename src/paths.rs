@@ -169,44 +169,7 @@ fn normalize_existing(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use std::process::Command;
-
-    use tempfile::TempDir;
-
-    fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(cwd)
-            .output()
-            .with_context(|| format!("failed to run {} {}", program, args.join(" ")))?;
-        assert!(
-            output.status.success(),
-            "{} {} failed\nstdout: {}\nstderr: {}",
-            program,
-            args.join(" "),
-            String::from_utf8_lossy(&output.stdout),
-            String::from_utf8_lossy(&output.stderr)
-        );
-        Ok(())
-    }
-
-    fn git(cwd: &Path, args: &[&str]) -> Result<()> {
-        run(cwd, "git", args)
-    }
-
-    fn init_repo() -> Result<(TempDir, PathBuf)> {
-        let temp = TempDir::new()?;
-        let repo = temp.path().join("project");
-        fs::create_dir(&repo)?;
-        git(&repo, &["init", "--initial-branch", "main"])?;
-        git(&repo, &["config", "user.email", "test@example.invalid"])?;
-        git(&repo, &["config", "user.name", "Test User"])?;
-        fs::write(repo.join("README.md"), "test\n")?;
-        git(&repo, &["add", "README.md"])?;
-        git(&repo, &["commit", "-m", "initial"])?;
-        Ok((temp, repo))
-    }
+    use crate::git::test_support::GitRepoFixture;
 
     #[test]
     fn default_worktree_base_is_sibling_project_worktrees_dir() -> Result<()> {
@@ -220,8 +183,9 @@ mod tests {
 
     #[test]
     fn discovers_paths_from_primary_worktree() -> Result<()> {
-        let (_temp, repo) = init_repo()?;
-        let paths = RepoPaths::discover(&repo)?;
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let paths = RepoPaths::discover(repo)?;
         let parent = paths
             .current_worktree
             .parent()
@@ -229,7 +193,10 @@ mod tests {
 
         assert_eq!(paths.current_worktree, repo);
         assert_eq!(paths.main_worktree, paths.current_worktree);
-        assert_eq!(paths.worktree_base_dir, parent.join("project__worktrees"));
+        assert_eq!(
+            paths.worktree_base_dir,
+            parent.join("project-alpha__worktrees")
+        );
         assert_eq!(
             paths.workspace_path("feature-auth"),
             paths.worktree_base_dir.join("feature-auth")
@@ -239,17 +206,15 @@ mod tests {
 
     #[test]
     fn discovers_main_worktree_from_linked_worktree() -> Result<()> {
-        let (temp, repo) = init_repo()?;
-        let worktree_base = temp.path().join("project__worktrees");
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let worktree_base = fixture.root().join("project-alpha__worktrees");
         let linked = worktree_base.join("feature-auth");
-        fs::create_dir(&worktree_base)?;
+        std::fs::create_dir(&worktree_base)?;
         let linked_str = linked
             .to_str()
             .ok_or_else(|| anyhow::anyhow!("linked worktree path is not valid UTF-8"))?;
-        git(
-            &repo,
-            &["worktree", "add", "-b", "feature/auth", linked_str],
-        )?;
+        fixture.git(&["worktree", "add", "-b", "feature/auth", linked_str])?;
 
         let paths = RepoPaths::discover(&linked)?;
 

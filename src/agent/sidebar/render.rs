@@ -473,7 +473,7 @@ fn display_width(value: &str) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::sidebar::test_support::{agent_state, row_from_view};
+    use crate::agent::sidebar::test_support::{report_state, row_from_view};
     use crate::config::DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS;
     use crate::state::AgentStatus;
     use ratatui::Terminal;
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn ratatui_renderer_draws_active_tile_with_expected_text() -> anyhow::Result<()> {
-        let mut agent = agent_state(AgentStatus::Waiting, 120, "@1", "%1");
+        let mut agent = report_state(AgentStatus::Waiting, 120, "@1", "%1");
         agent.title = Some("Implement richer sidebar".to_owned());
         agent.context = Some("163.2K (41%)".to_owned());
         let rows = vec![row_from_view(&agent, 300)];
@@ -505,8 +505,8 @@ mod tests {
     #[test]
     fn ratatui_renderer_draws_cursor_over_active_tile() -> anyhow::Result<()> {
         let rows = vec![
-            row_from_view(&agent_state(AgentStatus::Waiting, 120, "@1", "%1"), 300),
-            row_from_view(&agent_state(AgentStatus::Working, 120, "@2", "%2"), 300),
+            row_from_view(&report_state(AgentStatus::Waiting, 120, "@1", "%1"), 300),
+            row_from_view(&report_state(AgentStatus::Working, 120, "@2", "%2"), 300),
         ];
         let backend = TestBackend::new(42, 8);
         let mut terminal = Terminal::new(backend)?;
@@ -524,7 +524,7 @@ mod tests {
     #[test]
     fn ratatui_renderer_draws_final_separator() -> anyhow::Result<()> {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
+            &report_state(AgentStatus::Waiting, 120, "@1", "%1"),
             300,
         )];
         let backend = TestBackend::new(42, 4);
@@ -542,7 +542,7 @@ mod tests {
     #[test]
     fn ratatui_renderer_draws_error_feedback_at_bottom() -> anyhow::Result<()> {
         let rows = vec![row_from_view(
-            &agent_state(AgentStatus::Waiting, 120, "@1", "%1"),
+            &report_state(AgentStatus::Waiting, 120, "@1", "%1"),
             300,
         )];
         let width = 48;
@@ -550,7 +550,7 @@ mod tests {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend)?;
         let mut app = SidebarApp::test(Some("@1"), rows);
-        let error = "cannot jump to project-alpha: no unambiguous tmux target; check for this workspace open in multiple sessions or stale pane cwd";
+        let error = "sidebar action failed while updating the selected workspace; retry after refreshing the current rows";
         app.set_last_error_for_test(error);
 
         terminal.draw(|frame| render_sidebar_tui(frame, &mut app))?;
@@ -560,8 +560,8 @@ mod tests {
         let (_, toast_area) = error_toast_layout(&message, Rect::new(0, 0, width, height))
             .expect("error toast layout should fit");
         let text = buffer_text(buffer, width, height);
-        assert!(text.contains("Error: cannot jump to project-alpha"));
-        assert!(text.contains("multiple sessions"));
+        assert!(text.contains("Error: sidebar action failed"));
+        assert!(text.contains("refreshing the current rows"));
         assert!(buffer_line_text(buffer, width, 0).contains("kmux"));
         assert_eq!(toast_area.x, 1);
         assert!(toast_area.y > 0);
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn ratatui_renderer_truncates_narrow_tiles() -> anyhow::Result<()> {
-        let mut agent = agent_state(AgentStatus::Done, 120, "@1", "%1");
+        let mut agent = report_state(AgentStatus::Done, 120, "@1", "%1");
         agent.target.git_repo_name = Some("very-long-sidebar-repo-name".to_owned());
         let rows = vec![row_from_view(&agent, 300)];
         let backend = TestBackend::new(18, 4);
@@ -608,7 +608,7 @@ mod tests {
 
     #[test]
     fn narrow_tile_lines_do_not_exceed_requested_width() {
-        let row = row_from_view(&agent_state(AgentStatus::Done, 120, "@1", "%1"), 300);
+        let row = row_from_view(&report_state(AgentStatus::Done, 120, "@1", "%1"), 300);
 
         for width in 0..6 {
             for kind in [LineKind::Primary, LineKind::Secondary, LineKind::Title] {
@@ -668,7 +668,7 @@ mod tests {
         elapsed: &str,
     ) -> anyhow::Result<Color> {
         let rows = vec![row_from_view(
-            &agent_state(status, status_changed_at, "@1", "%1"),
+            &report_state(status, status_changed_at, "@1", "%1"),
             now,
         )];
         let backend = TestBackend::new(42, 4);
