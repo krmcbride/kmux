@@ -6,16 +6,6 @@ use anyhow::{Context, Result, bail};
 
 use crate::config::{Config, file_entry_relative_path};
 
-/// Return the startup command for a new workspace window, preferring the focused pane.
-pub(super) fn startup_command(config: &Config) -> Option<&str> {
-    let panes = config.panes.as_deref()?;
-    panes
-        .iter()
-        .find(|pane| pane.focus && pane.command.is_some())
-        .or_else(|| panes.iter().find(|pane| pane.command.is_some()))
-        .and_then(|pane| pane.command.as_deref())
-}
-
 /// Copy or symlink configured repo-relative files into a new worktree.
 pub(super) fn apply_file_operations(
     config: &Config,

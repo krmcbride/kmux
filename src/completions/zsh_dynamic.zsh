@@ -23,12 +23,29 @@ _kmux_git_branches() {
     (( ${#branches} )) && compadd -a branches
 }
 
+# Configured launcher names.
+_kmux_launchers() {
+    local -a launchers
+    launchers=("${(@f)$(kmux _complete-launchers 2>/dev/null)}")
+    launchers=(${launchers:#})
+    (( ${#launchers} )) && compadd -a launchers
+}
+
 _kmux() {
     emulate -L zsh
     setopt extended_glob
     setopt no_nomatch
 
     local cmd="${words[2]}"
+
+    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--launch" ]]; then
+        _kmux_launchers
+        return
+    fi
+
+    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--input" ]]; then
+        return
+    fi
 
     if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--parent" ]]; then
         _kmux_git_branches

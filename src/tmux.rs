@@ -385,13 +385,12 @@ impl Tmux {
         self.query_context(None).map(Some)
     }
 
-    /// Create a detached window in `session_name`, optionally sending a startup command.
-    pub fn create_window_with_command(
+    /// Create a detached shell-hosted window in `session_name` and return its pane id.
+    pub fn create_window(
         &self,
         session_name: &str,
         window_name: &str,
         cwd: &Path,
-        command: Option<&str>,
     ) -> Result<String> {
         let target = format!("{session_name}:");
         let args = vec![
@@ -416,10 +415,17 @@ impl Tmux {
             "automatic-rename",
             "off",
         ])?;
-        if let Some(command) = command.filter(|command| !command.trim().is_empty()) {
-            self.send_keys(&pane_id, command)?;
-        }
         Ok(pane_id)
+    }
+
+    /// Send controlled literal command text to a shell-hosted pane, followed by Enter.
+    ///
+    /// Launcher callers must pass only the hidden kmux ingress and its opaque
+    /// capability path. Launcher argv and input do not belong in tmux arguments.
+    pub fn send_literal_command(&self, pane_id: &str, command: &str) -> Result<()> {
+        self.stdout(["send-keys", "-t", pane_id, "-l", command])?;
+        self.stdout(["send-keys", "-t", pane_id, "Enter"])?;
+        Ok(())
     }
 
     /// Send one tmux key token to a pane.
@@ -666,13 +672,6 @@ impl Tmux {
     /// Return session/window/pane context for a specific pane id.
     fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
         self.query_context(Some(pane_id))
-    }
-
-    /// Send literal command text to a pane followed by Enter.
-    fn send_keys(&self, pane_id: &str, command: &str) -> Result<()> {
-        self.stdout(["send-keys", "-t", pane_id, "-l", command])?;
-        self.stdout(["send-keys", "-t", pane_id, "Enter"])?;
-        Ok(())
     }
 
     // Use tmux format expansion so callers get IDs from tmux itself rather than
@@ -1116,8 +1115,7 @@ mod tests {
                 .success()
         );
 
-        let pane_id =
-            tmux.create_window_with_command("project", "feature-auth", temp.path(), None)?;
+        let pane_id = tmux.create_window("project", "feature-auth", temp.path())?;
         let context = tmux.pane_context(&pane_id)?;
 
         assert_eq!(context.session_name, "project");
@@ -1163,7 +1161,7 @@ mod tests {
     }
 
     #[test]
-    fn startup_command_runs_inside_shell_and_window_survives_exit() -> Result<()> {
+    fn literal_command_runs_inside_shell_and_window_survives_exit() -> Result<()> {
         let Some(fixture) = TmuxFixture::new()? else {
             return Ok(());
         };
@@ -1172,12 +1170,8 @@ mod tests {
         let marker = temp.path().join("startup-ran");
 
         create_test_session(tmux, "project", temp.path())?;
-        tmux.create_window_with_command(
-            "project",
-            "feature-auth",
-            temp.path(),
-            Some("touch startup-ran"),
-        )?;
+        let pane_id = tmux.create_window("project", "feature-auth", temp.path())?;
+        tmux.send_literal_command(&pane_id, "touch startup-ran")?;
 
         assert!(wait_for_path(&marker));
         assert!(tmux.window_exists_by_name("project", "feature-auth")?);

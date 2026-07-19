@@ -14,6 +14,11 @@ _kmux_git_branches() {
     kmux _complete-git-branches 2>/dev/null
 }
 
+# Configured launcher names.
+_kmux_launchers() {
+    kmux _complete-launchers 2>/dev/null
+}
+
 _kmux_dynamic() {
     local cur prev words cword
 
@@ -40,6 +45,14 @@ _kmux_dynamic() {
                 case "$prev" in
                     --parent)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
+                        return
+                        ;;
+                    --launch)
+                        COMPREPLY=($(compgen -W "$(_kmux_launchers)" -- "$cur"))
+                        return
+                        ;;
+                    --input)
+                        COMPREPLY=()
                         return
                         ;;
                 esac

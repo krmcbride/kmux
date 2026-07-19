@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{Args, Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
@@ -44,6 +46,12 @@ pub enum Command {
     /// Output local git branch refs for shell completion.
     #[command(name = "_complete-git-branches", hide = true)]
     CompleteGitBranches,
+    /// Output configured launcher names for shell completion.
+    #[command(name = "_complete-launchers", hide = true)]
+    CompleteLaunchers,
+    /// Consume one private transient launcher request inside a workspace pane.
+    #[command(name = "_launch", hide = true)]
+    Launch(LaunchArgs),
     /// Record agent session state from an external integration.
     #[command(
         name = "set-agent-status",
@@ -64,6 +72,20 @@ pub struct AddArgs {
     /// Create the tmux window without switching to it.
     #[arg(short, long)]
     pub background: bool,
+
+    /// Use a named launcher for this initial window only.
+    #[arg(long)]
+    pub launch: Option<String>,
+
+    /// Append opaque input to the explicit launcher's argv; '-' reads caller stdin.
+    #[arg(long, requires = "launch", allow_hyphen_values = true)]
+    pub input: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct LaunchArgs {
+    /// Opaque path to a private, one-shot launcher request.
+    pub request: PathBuf,
 }
 
 #[derive(Debug, Args)]
@@ -194,4 +216,88 @@ pub enum AgentStatus {
     Working,
     Waiting,
     Done,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn parse_add(arguments: &[&str]) -> AddArgs {
+        let cli = Cli::try_parse_from(["kmux", "add"].into_iter().chain(arguments.iter().copied()))
+            .expect("add arguments should parse");
+        match cli.command {
+            Command::Add(args) => Some(args),
+            _ => None,
+        }
+        .expect("expected add command")
+    }
+
+    #[test]
+    fn add_parses_launcher_and_literal_input_shapes() {
+        for (arguments, expected) in [
+            (
+                ["feature/sidebar", "--launch", "agent", "--input", "prompt"].as_slice(),
+                "prompt",
+            ),
+            (
+                [
+                    "feature/sidebar",
+                    "--launch",
+                    "agent",
+                    "--input",
+                    "--leading-dash",
+                ]
+                .as_slice(),
+                "--leading-dash",
+            ),
+            (
+                [
+                    "feature/sidebar",
+                    "--launch",
+                    "agent",
+                    "--input=--leading-dash",
+                ]
+                .as_slice(),
+                "--leading-dash",
+            ),
+            (
+                ["feature/sidebar", "--launch", "agent", "--input", "-"].as_slice(),
+                "-",
+            ),
+            (
+                ["feature/sidebar", "--launch", "agent", "--input="].as_slice(),
+                "",
+            ),
+        ] {
+            let args = parse_add(arguments);
+            assert_eq!(args.launch.as_deref(), Some("agent"));
+            assert_eq!(args.input.as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn add_distinguishes_absent_input_and_requires_explicit_launcher() {
+        let args = parse_add(&["feature/sidebar", "--launch", "agent"]);
+        assert_eq!(args.launch.as_deref(), Some("agent"));
+        assert!(args.input.is_none());
+
+        let error = Cli::try_parse_from(["kmux", "add", "feature/sidebar", "--input", "prompt"])
+            .expect_err("input without launch should fail parsing");
+        assert!(error.to_string().contains("--launch"));
+    }
+
+    #[test]
+    fn hidden_launcher_ingress_parses_only_its_request_path() {
+        let cli = Cli::try_parse_from(["kmux", "_launch", "/tmp/request"])
+            .expect("hidden ingress should parse");
+        let args = match cli.command {
+            Command::Launch(args) => Some(args),
+            _ => None,
+        }
+        .expect("expected launcher ingress");
+        assert_eq!(args.request, PathBuf::from("/tmp/request"));
+
+        Cli::try_parse_from(["kmux", "_launch", "/tmp/request", "extra"])
+            .expect_err("hidden ingress should reject extra arguments");
+    }
 }

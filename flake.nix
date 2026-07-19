@@ -22,7 +22,10 @@
             version = self.shortRev or self.dirtyShortRev or "dev";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
-            nativeBuildInputs = [ pkgs.installShellFiles ];
+            nativeBuildInputs = [
+              pkgs.installShellFiles
+              pkgs.makeWrapper
+            ];
             nativeCheckInputs = [ pkgs.git ];
             postInstall = ''
               export HOME=$TMPDIR
@@ -41,6 +44,16 @@
                 $out/share/kmux/integrations/opencode/kmux-command-queue.ts
               install -Dm0644 integrations/opencode/kmux-child-process.ts \
                 $out/share/kmux/integrations/opencode/kmux-child-process.ts
+              install -Dm0644 integrations/opencode/kmux-opencode-launcher.ts \
+                $out/share/kmux/integrations/opencode/kmux-opencode-launcher.ts
+
+              makeWrapper ${pkgs.bun}/bin/bun $out/bin/kmux-opencode-launcher \
+                --add-flag --no-install \
+                --add-flag --no-env-file \
+                --add-flag $out/share/kmux/integrations/opencode/kmux-opencode-launcher.ts
+
+              install -Dm0644 skills/delegating-with-kmux/SKILL.md \
+                $out/share/kmux/skills/delegating-with-kmux/SKILL.md
             '';
           };
         }

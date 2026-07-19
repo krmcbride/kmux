@@ -9,8 +9,9 @@ before the first stable release.
 
 ## Requirements and installation
 
-kmux expects `git` and `tmux` on `PATH`. The bundled OpenCode integration also
-requires `bun`.
+kmux expects `git` and `tmux` on `PATH`. The optional OpenCode launcher also
+expects `opencode` on the launcher pane's `PATH`; its Nix wrapper carries its own
+Bun runtime.
 
 Install from a checkout with Nix:
 
@@ -18,8 +19,9 @@ Install from a checkout with Nix:
 nix profile install .
 ```
 
-The Nix package includes shell completions and the OpenCode integration files.
-To install only the binary with Cargo instead:
+The Nix package includes shell completions, the OpenCode integration and launcher,
+and the reference delegation skill. To install only the Rust binary with Cargo
+instead:
 
 ```sh
 cargo install --path .
@@ -62,6 +64,29 @@ kmux add feature/sidebar
 default the current branch is recorded as the parent and the new window receives
 focus. Use `--parent <BRANCH>` or `--background` to override those choices.
 
+When a default launcher is configured, kmux starts it as the foreground program
+in the new window after file operations, `post_create`, and parent metadata are
+complete. Override it for one add without changing the default:
+
+```sh
+kmux add feature/review --launch editor
+kmux add feature/delegated --background --launch agent \
+  --input "Implement Phase 2 from .agents/plans/example.md"
+```
+
+`--input` requires an explicit `--launch`. It appends one literal final argument
+after the launcher's configured arguments. Omitted input adds no argument; an
+explicit empty value adds one empty argument. Exactly `--input -` reads all caller
+stdin as UTF-8 without trimming, which is preferable for multiline text or when
+the input should not appear in the original kmux process argv.
+
+Kmux considers the add successful once the launcher process spawns. It does not
+wait for launcher-specific readiness or completion. A spawn failure or bounded
+ingress timeout returns an error but deliberately leaves the created branch,
+worktree, setup effects, parent metadata, and usable shell window in place for
+manual recovery. A later launcher failure is visible in that shell and does not
+retroactively fail `kmux add`.
+
 Inspect workspace state as a table or JSON:
 
 ```sh
@@ -82,6 +107,12 @@ expected windows:
 ```sh
 kmux restore
 ```
+
+Restore affects only missing expected windows. It uses the current configured
+default launcher with no dynamic input, never a previous one-shot override. An
+existing shell window is left untouched, including after an earlier launcher
+failure. Without a default launcher, add and restore create ordinary shell
+windows.
 
 Remove a workspace by branch, slug, or window name. From inside a kmux worktree,
 the name may be omitted:
@@ -160,7 +191,35 @@ than trusting reporter-supplied tmux identities.
 
 The bundled reference integration reports OpenCode session activity. See
 [`integrations/opencode/README.md`](integrations/opencode/README.md) for
-installation, behavior, diagnostics, and pre-release state reset guidance.
+launcher/server setup, behavior, diagnostics, and pre-release state reset guidance.
+
+The Nix package also installs the generic `delegating-with-kmux` skill under
+`$out/share/kmux/skills/delegating-with-kmux/`. Package share directories are not
+agent discovery roots. Copy or symlink that directory into a supported location,
+such as `~/.agents/skills/delegating-with-kmux/`, then restart or refresh the agent
+runtime. The skill acts only after an explicit delegation request and requires a
+user-configured launcher named `agent`; that name has no built-in kmux semantics.
+
+After `nix profile install .`, the packaged source is normally available at
+`~/.nix-profile/share/kmux/skills/delegating-with-kmux/`. Install it without
+overwriting an existing skill:
+
+```sh
+test ! -e ~/.agents/skills/delegating-with-kmux
+mkdir -p ~/.agents/skills
+ln -s ~/.nix-profile/share/kmux/skills/delegating-with-kmux \
+  ~/.agents/skills/delegating-with-kmux
+```
+
+For a build without profile installation, use the exact output path:
+
+```sh
+out=$(nix build --no-link --print-out-paths)
+test ! -e ~/.agents/skills/delegating-with-kmux
+mkdir -p ~/.agents/skills
+ln -s "$out/share/kmux/skills/delegating-with-kmux" \
+  ~/.agents/skills/delegating-with-kmux
+```
 
 ## Configuration
 
@@ -170,6 +229,19 @@ defaults. For example:
 
 ```yaml
 window_prefix: kmux-
+
+window:
+  default_launcher: editor
+
+launchers:
+  editor:
+    command: nvim
+
+  agent:
+    command: example-agent-launcher
+    args:
+      - --existing-server
+      - http://127.0.0.1:4096
 
 status_icons:
   working: "🤖"
@@ -185,9 +257,23 @@ sidebar:
     max: 52
 ```
 
-Configuration also supports a startup pane command, post-create commands, and
-repo-relative files to copy or symlink into new worktrees. Unknown fields and
-invalid paths are rejected rather than ignored.
+Launcher names must match `^[a-z0-9]+(?:[-_][a-z0-9]+)*$`. Each launcher has one
+nonblank executable in `command` and an optional ordered `args` list. These are
+exact argv values, not shell fragments: quotes, whitespace, wildcards,
+redirections, and metacharacters remain literal. Put complex shell behavior in an
+explicit script or configure a shell executable and arguments yourself.
+
+Launchers run with the new worktree as cwd and inherit the pane shell's
+environment and TTY streams. Bare commands resolve through that environment's
+`PATH`; absolute paths remain absolute; relative paths containing separators are
+resolved from the worktree. The optional final input also appears in the launcher
+adapter's argv for that process's lifetime, so same-user process inspection is an
+explicit exposure boundary even when `--input -` protects the original kmux argv.
+
+`post_create` remains a separate ordered list of shell commands. Configuration
+also supports repo-relative files to copy or symlink before launcher startup.
+Unknown fields, invalid paths, invalid launcher references, NUL values, and blank
+commands are rejected rather than ignored.
 
 ## Shell completions
 
@@ -197,8 +283,9 @@ Generate completion scripts for Bash, Elvish, Fish, PowerShell, or Zsh:
 kmux completions <SHELL>
 ```
 
-Bash, Fish, and Zsh completions include dynamic branch and workspace candidates.
-The Nix package installs those three completion scripts automatically.
+Bash, Fish, and Zsh completions include dynamic branch, workspace, and configured
+launcher candidates. The Nix package installs those three completion scripts
+automatically.
 
 ## Recovery and stale activity
 

@@ -8,6 +8,7 @@ use clap::{Command, CommandFactory};
 use clap_complete::{Shell, generate as generate_for_shell};
 
 use crate::cli;
+use crate::config::Config;
 use crate::git::Git;
 use crate::paths::RepoPaths;
 use crate::workspace::strict_kmux_workspace_records;
@@ -106,6 +107,17 @@ pub fn complete_add_branches() -> Result<()> {
 pub fn complete_git_branches() -> Result<()> {
     for branch in local_branches() {
         println!("{branch}");
+    }
+    Ok(())
+}
+
+/// Print configured launcher names for shell completion, failing closed on invalid config.
+pub fn complete_launchers() -> Result<()> {
+    let Ok(config) = Config::load() else {
+        return Ok(());
+    };
+    for launcher in config.launcher_names() {
+        println!("{launcher}");
     }
     Ok(())
 }
@@ -243,6 +255,38 @@ mod tests {
         assert!(fish.contains("parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'"));
         assert!(fish.contains("parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'"));
         assert!(!fish.contains("parent_completed_arg_count) -ge 1'"));
+    }
+
+    #[test]
+    fn launcher_dynamic_completion_uses_only_launcher_value_positions() {
+        let bash = include_str!("bash_dynamic.bash");
+        assert!(bash.contains("kmux _complete-launchers 2>/dev/null"));
+        assert!(bash.contains(concat!(
+            "--launch)\n",
+            "                        COMPREPLY=($(compgen -W \"$(_kmux_launchers)\""
+        )));
+        assert!(bash.contains(concat!(
+            "--input)\n",
+            "                        COMPREPLY=()\n",
+            "                        return"
+        )));
+
+        let fish = include_str!("fish_dynamic.fish");
+        assert!(fish.contains("__fish_prev_arg_in --launch' -f -a '(__kmux_launchers)'"));
+        assert!(fish.contains("not __fish_prev_arg_in --parent --launch --input"));
+
+        let zsh = include_str!("zsh_dynamic.zsh");
+        assert!(zsh.contains("kmux _complete-launchers 2>/dev/null"));
+        assert!(zsh.contains(concat!(
+            "[[ \"$cmd\" == \"add\" && \"${words[CURRENT-1]}\" == \"--launch\" ]]",
+            "; then\n",
+            "        _kmux_launchers"
+        )));
+        assert!(zsh.contains(concat!(
+            "[[ \"$cmd\" == \"add\" && \"${words[CURRENT-1]}\" == \"--input\" ]]",
+            "; then\n",
+            "        return"
+        )));
     }
 
     #[test]

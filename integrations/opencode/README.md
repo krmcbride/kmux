@@ -1,14 +1,19 @@
 # OpenCode integration
 
 This directory contains the reference OpenCode server plugin for reporting session
-state through `kmux set-agent-status`. It is integration code rather than part of
-the Rust core and targets the pinned OpenCode `1.17.11` plugin and SDK contracts.
+state through `kmux set-agent-status` and an optional existing-server launcher. It
+is integration code rather than part of the Rust core and targets the pinned
+OpenCode `1.17.11` plugin and SDK contracts.
 
 The server plugin is the only required status integration. OpenCode session-family
 topology, status, title, context usage, directory, and deletion are reported by
 `kmux-status-server.ts`. kmux resolves that directory to a canonical Git worktree,
 matches the worktree to live tmux state, and displays one primary agent row per
 worktree. No reporter-supplied pane identity is required.
+
+`kmux-opencode-launcher.ts` is independent of the status plugin. It bootstraps an
+optional prompt against an already-running server and then attaches the OpenCode
+TUI. It never starts, owns, restarts, or stops an OpenCode server.
 
 ## Installation
 
@@ -22,11 +27,23 @@ kmux-command-queue.ts
 kmux-child-process.ts
 ```
 
+The launcher source is also installed beside those files but does not import them.
+
 When kmux is installed from the Nix package, integration files are installed under:
 
 ```text
 $out/share/kmux/integrations/opencode/
 ```
+
+The same package exposes a runnable wrapper at:
+
+```text
+$out/bin/kmux-opencode-launcher
+```
+
+That wrapper uses Bun from the Nix store with environment-file loading and runtime
+package installation disabled. `opencode` intentionally remains an external
+runtime and must be available on the launcher pane's `PATH`.
 
 From a checkout, print the exact package output path with:
 
@@ -47,11 +64,76 @@ can reference either a checkout or the packaged Nix store path:
 }
 ```
 
-Keep the four files above adjacent because the entrypoint imports the other three.
+Keep the four status files above adjacent because the entrypoint imports the other three.
 Using an explicit path also avoids placing helper modules in OpenCode's auto-loaded
 plugin directory. The runtime requires `bun` and `kmux` on `PATH`. Restart OpenCode
 after changing its plugin configuration, then use `kmux status` to confirm reports
 are arriving.
+
+## Existing-server launcher
+
+Define a kmux launcher with an explicit server URL. The name `agent` is only a
+convention used by the packaged delegation skill:
+
+```yaml
+launchers:
+  agent:
+    command: kmux-opencode-launcher
+    args:
+      - --server-url
+      - http://127.0.0.1:4096
+```
+
+The URL must be an HTTP or HTTPS origin only, without user information, a non-root
+path, a query, or a fragment. Set `OPENCODE_SERVER_PASSWORD` to use Basic
+authentication and optionally override the default `opencode` username with
+`OPENCODE_SERVER_USERNAME`. Credentials remain in the inherited environment and
+are never added to the attach command. Basic authentication is cleartext over
+unencrypted HTTP; use HTTPS for non-loopback servers. A tmux server keeps the
+environment from when it was started; restart it or deliberately update its
+environment before launching if those variables were added later.
+
+With a prompt, the adapter resolves the canonical worktree directory, creates one
+directory-scoped session with `POST /session`, submits one asynchronous request to
+`POST /session/:id/prompt_async`, and runs:
+
+```text
+opencode attach <URL> --dir <WORKTREE> --session <SESSION_ID>
+```
+
+Without a prompt, it does not create or choose a session and runs
+`opencode attach <URL> --dir <WORKTREE>`. The TUI opens in that directory without
+arbitrarily resuming an earlier session.
+
+The adapter uses the server contracts present in OpenCode `1.17.11` and verified
+with the `1.18.3` CLI. It expects session creation to return HTTP 200 with a
+nonblank ID and the exact canonical directory, and asynchronous prompt acceptance
+to return HTTP 204. It uses built-in `fetch`; it does not use `createOpencode`,
+which would start another server. There is no local-server fallback.
+
+API redirects are rejected so an HTTP 307/308 cannot replay a prompt to another
+origin. While waiting for `opencode attach`, the adapter forwards catchable
+`SIGINT`, `SIGHUP`, and `SIGTERM` signals and reaps the child before returning.
+Terminal Ctrl-C, pane closure, and direct adapter termination therefore retain one
+foreground process owner; `SIGKILL` remains uncatchable by definition.
+
+Kmux reports add/restore success after the adapter process spawns, before server
+health, session creation, prompt execution, or TUI attachment completes. Later
+errors remain visible in the workspace shell. If session creation succeeds but
+prompt submission fails, the session is left intact. If prompt submission succeeds
+but attach cannot start, headless work can continue on the server. The adapter does
+not delete or abort either partial state automatically.
+
+OpenCode can request permissions or ask questions before attachment. Delayed
+question recovery is supported by the tested server topology; permission behavior
+still depends on the server's configured policy. Do not hide a request with fixed
+attachment sleeps. Attach to the exact session to answer pending interaction.
+
+The prompt is excluded from HTTP errors, logs, the `opencode attach` argv, and kmux
+state, but it is the launcher adapter's final argv element for that process's
+lifetime. Use `kmux add ... --input -` to avoid placing it in the original kmux
+caller argv; same-user process inspection of the adapter remains an explicit
+exposure boundary.
 
 ## Behavior and diagnostics
 

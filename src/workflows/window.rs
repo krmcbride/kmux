@@ -1,16 +1,44 @@
+//! Shell-hosted workspace-window orchestration.
+//!
+//! A kmux window is created detached without a tmux start command, so tmux starts
+//! its configured shell as the pane's long-lived process. An optional launcher is
+//! then handed to that shell as the controlled hidden command
+//! `kmux _launch <capability>`. The hidden ingress reads the real argv from private
+//! transient storage, starts the launcher as the shell's foreground job with the
+//! pane TTY, acknowledges spawn to the original add/restore process, and waits for
+//! the launcher. When ingress exits, the original pane shell naturally resumes.
+//!
+//! This module owns workflow ordering around that mechanism: duplicate checks,
+//! detached shell creation, optional launcher handoff, and later focus. Tmux
+//! command syntax remains in `tmux`, while request transport and process lifetime
+//! remain in `launcher`.
+
+use std::path::Path;
+
 use anyhow::{Result, bail};
 
 use super::context::{RepoContext, TmuxContext};
-use super::files::startup_command;
+use crate::launcher::{PendingLaunch, ResolvedLauncher};
 use crate::workspace::WorkspaceRecord;
 
-/// Create a tmux window for a resolved workspace.
-pub(super) fn create_resolved(
+/// A newly-created detached shell window that can receive one hidden ingress.
+pub(super) struct CreatedWindow {
+    window_name: String,
+    pane_id: String,
+}
+
+/// Whether restore found an existing window or created a missing shell window.
+pub(super) enum RestoreWindow {
+    Existing,
+    Created(CreatedWindow),
+}
+
+/// Create a detached shell window for a resolved workspace.
+pub(super) fn create_shell(
     repo: &RepoContext,
     tmux: &TmuxContext,
     resolved: &WorkspaceRecord,
-    focus: bool,
-) -> Result<()> {
+) -> Result<CreatedWindow> {
     let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     if tmux
         .tmux
@@ -23,25 +51,21 @@ pub(super) fn create_resolved(
         );
     }
 
-    let command = startup_command(&repo.config);
-    tmux.tmux.create_window_with_command(
-        &tmux.session_name,
-        &window_name,
-        resolved.path(),
-        command,
-    )?;
-    if focus {
-        tmux.tmux.select_window(&tmux.session_name, &window_name)?;
-    }
-    Ok(())
+    let pane_id = tmux
+        .tmux
+        .create_window(&tmux.session_name, &window_name, resolved.path())?;
+    Ok(CreatedWindow {
+        window_name,
+        pane_id,
+    })
 }
 
-/// Ensure a resolved workspace has its expected tmux window.
-pub(super) fn restore_resolved(
+/// Return an existing expected window unchanged or create its missing shell window.
+pub(super) fn restore_shell(
     repo: &RepoContext,
     tmux: &TmuxContext,
     resolved: &WorkspaceRecord,
-) -> Result<()> {
+) -> Result<RestoreWindow> {
     let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     let expected_windows = tmux
         .tmux
@@ -57,17 +81,29 @@ pub(super) fn restore_resolved(
             resolved.workspace_slug()
         );
     }
-
     if expected_windows == 1 {
-        return Ok(());
+        return Ok(RestoreWindow::Existing);
     }
 
-    let command = startup_command(&repo.config);
-    tmux.tmux.create_window_with_command(
-        &tmux.session_name,
-        &window_name,
-        resolved.path(),
-        command,
-    )?;
-    Ok(())
+    create_shell(repo, tmux, resolved).map(RestoreWindow::Created)
+}
+
+/// Materialize, deliver, and await one launcher's spawn acknowledgment.
+pub(super) fn start_launcher(
+    tmux: &TmuxContext,
+    window: &CreatedWindow,
+    launcher: &ResolvedLauncher,
+    cwd: &Path,
+) -> Result<()> {
+    let pending = PendingLaunch::create(launcher, cwd)?;
+    let ingress_command = pending.ingress_command()?;
+    tmux.tmux
+        .send_literal_command(&window.pane_id, &ingress_command)?;
+    pending.wait_for_spawn()
+}
+
+/// Select a newly-created window only after its optional launcher handoff.
+pub(super) fn select_created(tmux: &TmuxContext, window: &CreatedWindow) -> Result<()> {
+    tmux.tmux
+        .select_window(&tmux.session_name, &window.window_name)
 }

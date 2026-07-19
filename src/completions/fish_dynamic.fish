@@ -14,6 +14,11 @@ function __kmux_git_branches
     kmux _complete-git-branches 2>/dev/null
 end
 
+# Configured launcher names.
+function __kmux_launchers
+    kmux _complete-launchers 2>/dev/null
+end
+
 function __kmux_parent_completed_arg_count
     set -l tokens (commandline -opc)
     set -l current (commandline -ct)
@@ -39,6 +44,7 @@ end
 
 complete -c kmux -n '__fish_seen_subcommand_from remove rm status' -f -a '(__kmux_workspaces)'
 complete -c kmux -n '__fish_seen_subcommand_from add; and __fish_prev_arg_in --parent' -f -a '(__kmux_git_branches)'
-complete -c kmux -n '__fish_seen_subcommand_from add; and not __fish_prev_arg_in --parent' -f -a '(__kmux_add_branches)'
+complete -c kmux -n '__fish_seen_subcommand_from add; and __fish_prev_arg_in --launch' -f -a '(__kmux_launchers)'
+complete -c kmux -n '__fish_seen_subcommand_from add; and not __fish_prev_arg_in --parent --launch --input' -f -a '(__kmux_add_branches)'
 complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
 complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'

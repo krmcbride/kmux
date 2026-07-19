@@ -11,6 +11,7 @@ use crate::cli;
 mod add;
 mod context;
 mod files;
+mod launch;
 mod list;
 mod parent;
 mod remove;

@@ -1,11 +1,35 @@
 pub mod support;
 
 use std::fs;
+use std::path::Path;
 
 use anyhow::Result;
 use predicates::prelude::*;
 
-use support::{TmuxFixture, git, git_stdout, init_repo, kmux, kmux_with_pane, run, write_config};
+use support::{
+    TmuxFixture, git, git_stdout, init_repo, kmux, kmux_with_pane, run, wait_for_nonempty_file,
+    wait_for_path, write_config,
+};
+
+fn nul_delimited_arguments(path: &Path) -> Result<Vec<String>> {
+    let bytes = fs::read(path)?;
+    let mut arguments = bytes
+        .split(|byte| *byte == 0)
+        .map(|argument| String::from_utf8(argument.to_vec()))
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    if arguments.last().is_some_and(String::is_empty) {
+        arguments.pop();
+    }
+    Ok(arguments)
+}
+
+#[cfg(unix)]
+fn process_exists(pid: i32) -> bool {
+    if unsafe { libc::kill(pid, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
 
 #[test]
 fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
@@ -92,6 +116,682 @@ files:
             .is_symlink()
     );
 
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn add_launcher_preserves_argv_tty_ordering_and_shell_survival() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    fs::create_dir_all(repo.join(".agents/plans"))?;
+    fs::write(repo.join(".agents/plans/sidebar.md"), "plan\n")?;
+    let output = temp.path().join("launcher-argv");
+    let cwd_output = temp.path().join("launcher-cwd");
+    let ordering = temp.path().join("launcher-ordering");
+    let tty = temp.path().join("launcher-tty");
+    let shell_returned = temp.path().join("shell-returned");
+    let side_effect = temp.path().join("must-not-exist");
+    let telemetry = temp.path().join("telemetry.jsonl");
+    let runtime = temp.path().join("runtime");
+    fs::create_dir(&runtime)?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+    let config_home = write_config(
+        temp.path(),
+        &format!(
+            r#"
+window_prefix: kmux-
+post_create:
+  - touch hook-ran
+files:
+  copy: [.agents]
+launchers:
+  example-launcher:
+    command: sh
+    args:
+      - -c
+      - |
+          output=$1
+          cwd_output=$2
+          ordering=$3
+          tty=$4
+          shift 4
+          printf '%s' "$PWD" > "$cwd_output"
+          test -f .agents/plans/sidebar.md
+          test -f hook-ran
+          common_dir=$(git rev-parse --path-format=absolute --git-common-dir)
+          test -s "$common_dir/kmux/state.json"
+          touch "$ordering"
+          test -t 0 && test -t 1 && test -t 2 && touch "$tty"
+          printf '%s\0' "$@" > "$output"
+          exit 17
+      - launcher
+      - {}
+      - {}
+      - {}
+      - {}
+      - "static two words"
+      - ""
+      - "--static"
+"#,
+            output.display(),
+            cwd_output.display(),
+            ordering.display(),
+            tty.display(),
+        ),
+    )?;
+    let worktree = temp.path().join("project__worktrees/feature-launcher");
+    let input = format!(
+        "--leading input with 'quotes' λ\nand metacharacters ; touch {}",
+        side_effect.display()
+    );
+    let initial_window = tmux.current_window_id()?;
+    let shell_command = tmux.pane_format(&tmux.pane_id, "#{pane_current_command}")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("KMUX_TELEMETRY", "1")
+        .env("KMUX_TELEMETRY_PATH", &telemetry)
+        .args([
+            "add",
+            "feature/launcher",
+            "--background",
+            "--launch",
+            "example-launcher",
+            "--input",
+            &input,
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created feature-launcher"));
+
+    wait_for_nonempty_file(&output)?;
+    assert_eq!(
+        fs::read_to_string(&cwd_output)?,
+        worktree.display().to_string()
+    );
+    assert!(ordering.exists());
+    assert!(tty.exists());
+    assert!(!side_effect.exists());
+    assert_eq!(
+        nul_delimited_arguments(&output)?,
+        ["static two words", "", "--static", input.as_str()]
+    );
+    assert_eq!(tmux.current_window_id()?, initial_window);
+
+    let pane = tmux.pane_for_window("kmux-feature-launcher")?;
+    tmux.wait_for_pane_command(&pane, &shell_command)?;
+    assert!(tmux.window_exists("kmux-feature-launcher")?);
+    assert!(
+        !tmux
+            .pane_format(&pane, "#{pane_start_command}")?
+            .contains(&input)
+    );
+    assert!(
+        !tmux
+            .tmux_output(&["capture-pane", "-p", "-t", &pane])?
+            .contains(&input)
+    );
+    let shell_command_text = format!("touch {}", shell_returned.display());
+    tmux.tmux_output(&["send-keys", "-t", &pane, "-l", &shell_command_text])?;
+    tmux.tmux_output(&["send-keys", "-t", &pane, "Enter"])?;
+    wait_for_path(&shell_returned)?;
+    assert_eq!(fs::read_dir(&runtime)?.count(), 0);
+    assert!(!fs::read_to_string(telemetry)?.contains(&input));
+    Ok(())
+}
+
+#[test]
+fn add_stdin_input_preserves_bytes_and_rejects_invalid_data_preflight() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let output = temp.path().join("stdin-input");
+    let count = temp.path().join("stdin-count");
+    let config_home = write_config(
+        temp.path(),
+        &format!(
+            r#"
+window_prefix: kmux-
+launchers:
+  stdin-launcher:
+    command: sh
+    args:
+      - -c
+      - |
+          printf '%s' "$#" > "$1"
+          test "$#" -eq 2 && printf '%s' "$2" > "$1.input"
+      - launcher
+      - {}
+"#,
+            count.display()
+        ),
+    )?;
+    let stdin_text = "first line\nsecond line\n";
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/stdin",
+            "--background",
+            "--launch",
+            "stdin-launcher",
+            "--input",
+            "-",
+        ])
+        .write_stdin(stdin_text)
+        .assert()
+        .success();
+    wait_for_nonempty_file(&count)?;
+    assert_eq!(fs::read_to_string(&count)?, "2");
+    fs::rename(count.with_extension("input"), &output)?;
+    assert_eq!(fs::read_to_string(&output)?, stdin_text);
+
+    fs::remove_file(&count)?;
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/empty-input",
+            "--background",
+            "--launch",
+            "stdin-launcher",
+            "--input",
+            "-",
+        ])
+        .write_stdin("")
+        .assert()
+        .success();
+    wait_for_nonempty_file(&count)?;
+    wait_for_path(&count.with_extension("input"))?;
+    assert_eq!(fs::read_to_string(&count)?, "2");
+    assert_eq!(fs::read(count.with_extension("input"))?, b"");
+
+    fs::remove_file(&count)?;
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/no-input",
+            "--background",
+            "--launch",
+            "stdin-launcher",
+        ])
+        .assert()
+        .success();
+    wait_for_nonempty_file(&count)?;
+    assert_eq!(fs::read_to_string(&count)?, "1");
+
+    for (branch, bytes, diagnostic) in [
+        ("feature/invalid-utf8", vec![0xff], "valid UTF-8"),
+        (
+            "feature/nul-input",
+            b"before\0after".to_vec(),
+            "must not contain NUL",
+        ),
+    ] {
+        kmux(&repo, &config_home, &tmux)?
+            .args([
+                "add",
+                branch,
+                "--background",
+                "--launch",
+                "stdin-launcher",
+                "--input",
+                "-",
+            ])
+            .write_stdin(bytes)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains(diagnostic));
+        let slug = branch.replace('/', "-");
+        assert!(!temp.path().join("project__worktrees").join(&slug).exists());
+        assert!(!tmux.window_exists(&format!("kmux-{slug}"))?);
+        assert!(git_stdout(&repo, &["show-ref", "--heads", branch]).is_err());
+    }
+    Ok(())
+}
+
+#[test]
+fn default_launcher_selects_after_spawn_and_unknown_override_is_preflight() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let marker = temp.path().join("default-launcher-ran");
+    let config_home = write_config(
+        temp.path(),
+        &format!(
+            r#"
+window_prefix: kmux-
+window: {{default_launcher: editor}}
+launchers:
+  editor:
+    command: sh
+    args: [-c, 'touch "$1"', launcher, {}]
+"#,
+            marker.display()
+        ),
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/unknown-launcher",
+            "--launch",
+            "missing",
+            "--input",
+            "preflight-sentinel",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("unknown launcher \"missing\""))
+        .stderr(predicate::str::contains("preflight-sentinel").not());
+    assert!(
+        !temp
+            .path()
+            .join("project__worktrees/feature-unknown-launcher")
+            .exists()
+    );
+    assert!(!tmux.window_exists("kmux-feature-unknown-launcher")?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/unknown-launcher"]).is_err());
+
+    let initial_window = tmux.current_window_id()?;
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/default-launcher"])
+        .assert()
+        .success();
+    wait_for_path(&marker)?;
+    let pane = tmux.pane_for_window("kmux-feature-default-launcher")?;
+    let selected_window = tmux.pane_format(&pane, "#{window_id}")?;
+    assert_ne!(selected_window, initial_window);
+    assert_eq!(tmux.current_window_id()?, selected_window);
+    Ok(())
+}
+
+#[test]
+fn restore_uses_only_the_current_default_launcher_without_input() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let agent_output = temp.path().join("agent-output");
+    let editor_output = temp.path().join("editor-output");
+    let changed_output = temp.path().join("changed-output");
+    let config = |default: &str| {
+        format!(
+            r#"
+window_prefix: kmux-
+window:
+  default_launcher: {default}
+launchers:
+  agent:
+    command: sh
+    args: [-c, 'printf "%s" "$2" > "$1"', launcher, {}]
+  editor:
+    command: sh
+    args: [-c, 'printf "%s" "$#" > "$1"', launcher, {}]
+  changed:
+    command: sh
+    args: [-c, 'printf "%s" "$#" > "$1"', launcher, {}]
+"#,
+            agent_output.display(),
+            editor_output.display(),
+            changed_output.display(),
+        )
+    };
+    let config_home = write_config(temp.path(), &config("editor"))?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/restore-launcher",
+            "--background",
+            "--launch",
+            "agent",
+            "--input",
+            "one-shot-context",
+        ])
+        .assert()
+        .success();
+    wait_for_nonempty_file(&agent_output)?;
+    assert_eq!(fs::read_to_string(&agent_output)?, "one-shot-context");
+    assert!(!editor_output.exists());
+
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-restore-launcher"])?;
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success();
+    wait_for_nonempty_file(&editor_output)?;
+    assert_eq!(fs::read_to_string(&editor_output)?, "1");
+
+    write_config(temp.path(), &config("changed"))?;
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-restore-launcher"])?;
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success();
+    wait_for_nonempty_file(&changed_output)?;
+    assert_eq!(fs::read_to_string(&changed_output)?, "1");
+
+    fs::remove_file(&changed_output)?;
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success();
+    assert!(!changed_output.exists());
+    let state = fs::read_to_string(repo.join(".git/kmux/state.json"))?;
+    let state_json: serde_json::Value = serde_json::from_str(&state)?;
+    let state_object = state_json.as_object().expect("workspace state object");
+    assert_eq!(
+        state_object.keys().collect::<Vec<_>>(),
+        ["parents", "version"]
+    );
+    for parent in state_object["parents"].as_array().expect("parent links") {
+        let fields = parent.as_object().expect("parent link object");
+        assert_eq!(
+            fields.keys().collect::<Vec<_>>(),
+            ["anchor", "branch", "parent"]
+        );
+    }
+    assert!(!state.contains("one-shot-context"));
+    Ok(())
+}
+
+#[test]
+fn launcher_spawn_failure_keeps_workspace_and_existing_window_is_not_relaunched() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let marker = temp.path().join("must-not-launch-on-existing-window");
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+launchers:
+  broken-launcher:
+    command: kmux-definitely-missing-launcher
+"#,
+    )?;
+    let worktree = temp
+        .path()
+        .join("project__worktrees/feature-broken-launcher");
+    let input = "failure-input-sentinel";
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/broken-launcher",
+            "--background",
+            "--launch",
+            "broken-launcher",
+            "--input",
+            input,
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("handoff failed"))
+        .stderr(predicate::str::contains(
+            "launcher process could not be started",
+        ))
+        .stderr(predicate::str::contains(
+            "inspect the window before manual recovery",
+        ))
+        .stderr(predicate::str::contains(input).not())
+        .stderr(predicate::str::contains("kmux-definitely-missing-launcher").not());
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists("kmux-feature-broken-launcher")?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/broken-launcher"]).is_ok());
+    assert!(repo.join(".git/kmux/state.json").is_file());
+
+    write_config(
+        temp.path(),
+        &format!(
+            r#"
+window_prefix: kmux-
+window: {{default_launcher: editor}}
+launchers:
+  editor:
+    command: sh
+    args: [-c, 'touch "$1"', launcher, {}]
+"#,
+            marker.display()
+        ),
+    )?;
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success();
+    assert!(!marker.exists());
+    Ok(())
+}
+
+#[test]
+fn restore_timeout_keeps_first_window_and_stops_before_later_workspaces() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    for branch in ["feature/alpha", "feature/beta"] {
+        kmux(&repo, &config_home, &tmux)?
+            .args(["add", branch, "--background"])
+            .assert()
+            .success();
+    }
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-alpha"])?;
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-beta"])?;
+    tmux.tmux_output(&["set-option", "-g", "default-command", "sleep 30"])?;
+    write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+window: {default_launcher: editor}
+launchers:
+  editor: {command: /bin/true}
+"#,
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("timed out after 3s"))
+        .stderr(predicate::str::contains("may already be running"))
+        .stderr(predicate::str::contains("shell window remains available"));
+    assert!(tmux.window_exists("kmux-feature-alpha")?);
+    assert!(!tmux.window_exists("kmux-feature-beta")?);
+    Ok(())
+}
+
+#[test]
+fn restore_spawn_failure_keeps_shell_window_and_stops() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    for branch in ["feature/alpha-spawn", "feature/beta-spawn"] {
+        kmux(&repo, &config_home, &tmux)?
+            .args(["add", branch, "--background"])
+            .assert()
+            .success();
+    }
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-alpha-spawn"])?;
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-beta-spawn"])?;
+    write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+window: {default_launcher: broken}
+launchers:
+  broken: {command: kmux-definitely-missing-launcher}
+"#,
+    )?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "launcher process could not be started",
+        ))
+        .stderr(predicate::str::contains("shell window remains available"))
+        .stderr(predicate::str::contains("kmux-definitely-missing-launcher").not());
+    assert!(tmux.window_exists("kmux-feature-alpha-spawn")?);
+    assert!(!tmux.window_exists("kmux-feature-beta-spawn")?);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn launcher_ctrl_c_and_window_close_follow_tmux_job_control() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let interrupt_ready = temp.path().join("interrupt-ready");
+    let interrupted = temp.path().join("interrupted");
+    let close_ready = temp.path().join("close-ready");
+    let closed = temp.path().join("closed");
+    let config_home = write_config(
+        temp.path(),
+        &format!(
+            r#"
+window_prefix: kmux-
+launchers:
+  interrupt:
+    command: sh
+    args:
+      - -c
+      - |
+          trap 'touch "$2"; exit 130' INT
+          touch "$1"
+          while :; do sleep 1; done
+      - launcher
+      - {}
+      - {}
+  close:
+    command: sh
+    args:
+      - -c
+      - |
+          trap 'touch "$2"; exit 129' HUP TERM
+          touch "$1"
+          while :; do sleep 1; done
+      - launcher
+      - {}
+      - {}
+"#,
+            interrupt_ready.display(),
+            interrupted.display(),
+            close_ready.display(),
+            closed.display(),
+        ),
+    )?;
+    let shell_command = tmux.pane_format(&tmux.pane_id, "#{pane_current_command}")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/interrupt",
+            "--background",
+            "--launch",
+            "interrupt",
+        ])
+        .assert()
+        .success();
+    wait_for_path(&interrupt_ready)?;
+    let interrupt_pane = tmux.pane_for_window("kmux-feature-interrupt")?;
+    tmux.tmux_output(&["send-keys", "-t", &interrupt_pane, "C-c"])?;
+    wait_for_path(&interrupted)?;
+    tmux.wait_for_pane_command(&interrupt_pane, &shell_command)?;
+    assert!(tmux.window_exists("kmux-feature-interrupt")?);
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/close", "--background", "--launch", "close"])
+        .assert()
+        .success();
+    wait_for_path(&close_ready)?;
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-close"])?;
+    wait_for_path(&closed)?;
+    assert!(!tmux.window_exists("kmux-feature-close")?);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn launcher_that_handles_ctrl_c_keeps_ingress_as_foreground_owner() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let child_pid_path = temp.path().join("child-pid");
+    let ingress_pid_path = temp.path().join("ingress-pid");
+    let interrupted = temp.path().join("interrupted-once");
+    let release = temp.path().join("release-launcher");
+    let config_home = write_config(
+        temp.path(),
+        &format!(
+            r#"
+window_prefix: kmux-
+launchers:
+  resilient:
+    command: sh
+    args:
+      - -c
+      - |
+          trap 'touch "$3"' INT
+          printf '%s' "$$" > "$1"
+          printf '%s' "$PPID" > "$2"
+          while test ! -e "$4"; do sleep 0.05; done
+      - launcher
+      - {}
+      - {}
+      - {}
+      - {}
+"#,
+            child_pid_path.display(),
+            ingress_pid_path.display(),
+            interrupted.display(),
+            release.display(),
+        ),
+    )?;
+    let shell_command = tmux.pane_format(&tmux.pane_id, "#{pane_current_command}")?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args([
+            "add",
+            "feature/resilient-interrupt",
+            "--background",
+            "--launch",
+            "resilient",
+        ])
+        .assert()
+        .success();
+    wait_for_nonempty_file(&child_pid_path)?;
+    wait_for_nonempty_file(&ingress_pid_path)?;
+    let pane = tmux.pane_for_window("kmux-feature-resilient-interrupt")?;
+
+    tmux.tmux_output(&["send-keys", "-t", &pane, "C-c"])?;
+    wait_for_path(&interrupted)?;
+    let child_pid = fs::read_to_string(&child_pid_path)?.parse::<i32>()?;
+    let ingress_pid = fs::read_to_string(&ingress_pid_path)?.parse::<i32>()?;
+    assert!(process_exists(child_pid));
+    assert!(process_exists(ingress_pid));
+    assert_ne!(
+        tmux.pane_format(&pane, "#{pane_current_command}")?,
+        shell_command
+    );
+
+    fs::write(&release, "release\n")?;
+    tmux.wait_for_pane_command(&pane, &shell_command)?;
+    assert!(tmux.window_exists("kmux-feature-resilient-interrupt")?);
     Ok(())
 }
 

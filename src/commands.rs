@@ -1,10 +1,11 @@
 use anyhow::Result;
 
-use crate::{agent, cli, completions, workflows};
+use crate::{agent, cli, completions, launcher, workflows};
 
 /// Route a parsed CLI command to the workflow, agent, or completion handler that owns it.
-pub fn dispatch(command: cli::Command) -> Result<()> {
+pub fn dispatch(command: cli::Command) -> Result<i32> {
     match command {
+        cli::Command::Launch(args) => return launcher::run_ingress(&args.request),
         cli::Command::Add(args) => workflows::run_add(args),
         cli::Command::Parent(args) => workflows::run_parent(args),
         cli::Command::Restore => workflows::run_restore(),
@@ -19,5 +20,7 @@ pub fn dispatch(command: cli::Command) -> Result<()> {
         cli::Command::CompleteWorkspaces => completions::complete_workspaces(),
         cli::Command::CompleteAddBranches => completions::complete_add_branches(),
         cli::Command::CompleteGitBranches => completions::complete_git_branches(),
-    }
+        cli::Command::CompleteLaunchers => completions::complete_launchers(),
+    }?;
+    Ok(0)
 }

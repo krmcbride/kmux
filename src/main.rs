@@ -1,6 +1,10 @@
 fn main() {
-    if let Err(error) = kmux::run() {
-        eprintln!("kmux: {error:#}");
-        std::process::exit(1);
+    match kmux::run() {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("kmux: {error:#}");
+            std::process::exit(1);
+        }
     }
 }

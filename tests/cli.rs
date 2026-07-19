@@ -6,7 +6,7 @@ use anyhow::Result;
 use assert_cmd::Command;
 use predicates::prelude::*;
 
-use support::{git, init_repo, kmux_stdout, run};
+use support::{git, init_repo, kmux_stdout, run, write_config};
 
 #[test]
 fn help_shows_current_commands() {
@@ -52,6 +52,25 @@ fn parent_help_uses_stable_parent_then_child_order() {
         .stdout(predicate::str::contains(
             "Defaults to the current kmux workspace",
         ));
+}
+
+#[test]
+fn add_help_documents_public_launcher_contract_without_hidden_ingress() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["add", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--launch <LAUNCH>"))
+        .stdout(predicate::str::contains("--input <INPUT>"))
+        .stdout(predicate::str::contains("'-' reads caller stdin"));
+
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("_launch").not());
 }
 
 #[test]
@@ -157,7 +176,48 @@ fn completions_command_emits_shell_completion() {
         .stdout(predicate::str::contains("_complete-workspaces"))
         .stdout(predicate::str::contains("_complete-add-branches"))
         .stdout(predicate::str::contains("--parent"))
-        .stdout(predicate::str::contains("_complete-git-branches"));
+        .stdout(predicate::str::contains("_complete-git-branches"))
+        .stdout(predicate::str::contains("_complete-launchers"))
+        .stdout(predicate::str::contains("--launch"))
+        .stdout(predicate::str::contains("--input"));
+}
+
+#[test]
+fn launcher_completion_is_sorted_and_fails_closed_for_invalid_config() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let config_home = write_config(
+        temp.path(),
+        r#"
+launchers:
+  zebra: {command: example-zebra}
+  alpha: {command: example-alpha}
+"#,
+    )?;
+
+    let output = Command::cargo_bin("kmux")?
+        .current_dir(temp.path())
+        .env("XDG_CONFIG_HOME", &config_home)
+        .arg("_complete-launchers")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    assert_eq!(String::from_utf8(output)?, "alpha\nzebra\n");
+
+    fs::write(
+        config_home.join("kmux/config.yaml"),
+        "launchers: [invalid]\n",
+    )?;
+    Command::cargo_bin("kmux")?
+        .current_dir(temp.path())
+        .env("XDG_CONFIG_HOME", &config_home)
+        .arg("_complete-launchers")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty());
+
+    Ok(())
 }
 
 #[test]

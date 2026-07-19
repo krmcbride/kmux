@@ -1,21 +1,23 @@
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::cli;
 use crate::slug::workspace_slug_from_branch;
 
 use super::context::{load_repo_context, load_tmux_context};
 use super::files::{apply_file_operations, run_post_create};
+use super::launch::resolve_add;
 use super::parent::{record_parent, validate_no_cycle};
 use super::resolve::{
     find_kmux_workspace_by_name, find_kmux_workspace_by_slug, resolved_from_kmux_worktree,
 };
-use super::window::create_resolved;
+use super::window::{create_shell, select_created, start_launcher};
 use crate::state::workspace::WorkspaceStateStore;
 use crate::workspace::WorkspaceRecord;
 
 /// Create a new branch workspace, tmux window, and parent metadata link.
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let repo = load_repo_context()?;
+    let launcher = resolve_add(&repo.config, &args)?;
     let tmux = load_tmux_context()?;
     let target = AddTarget::resolve(&repo, &args)?;
     let workspace_slug = workspace_slug_from_branch(&target.branch)?;
@@ -101,8 +103,19 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
         worktree_path,
         target.branch.clone(),
     )?;
-    create_resolved(&repo, &tmux, &resolved, !args.background)?;
+    let window = create_shell(&repo, &tmux, &resolved)?;
     record_parent(&repo, &target.branch, &target.parent)?;
+    if let Some(launcher) = &launcher {
+        start_launcher(&tmux, &window, launcher, resolved.path()).with_context(|| {
+            format!(
+                "launcher {:?} handoff failed; its process may already be running if spawn acknowledgment timed out; workspace files, parent metadata, and its shell window remain available; inspect the window before manual recovery",
+                launcher.name()
+            )
+        })?;
+    }
+    if !args.background {
+        select_created(&tmux, &window)?;
+    }
     println!(
         "created {}\t{}",
         resolved.workspace_slug(),
