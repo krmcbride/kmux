@@ -6,7 +6,7 @@
 //! external agent observations in XDG state.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs;
+use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -37,6 +37,11 @@ pub struct WorkspaceParentLink {
 /// Store for workspace graph metadata scoped to one Git repository.
 pub struct WorkspaceStateStore {
     path: PathBuf,
+}
+
+/// Process-owned exclusive lock for one repository's workspace lifecycle.
+pub struct WorkspaceLifecycleLock {
+    file: File,
 }
 
 impl WorkspaceState {
@@ -134,6 +139,36 @@ impl WorkspaceStateStore {
         }
     }
 
+    /// Serialize workspace lifecycle mutations for this Git common repository.
+    ///
+    /// The operating system releases this advisory file lock if the process
+    /// exits unexpectedly. The stable sibling lock file must not be removed,
+    /// because replacing its inode would let concurrent processes bypass it.
+    pub fn lock_lifecycle(&self) -> Result<WorkspaceLifecycleLock> {
+        let path = self.path.with_file_name("lifecycle.lock");
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "failed to create lifecycle lock directory {}",
+                    parent.display()
+                )
+            })?;
+        }
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options
+            .open(&path)
+            .with_context(|| format!("failed to open lifecycle lock {}", path.display()))?;
+        file.lock()
+            .with_context(|| format!("failed to lock workspace lifecycle {}", path.display()))?;
+        Ok(WorkspaceLifecycleLock { file })
+    }
+
     /// Load workspace graph state, returning an empty current-version state when absent.
     pub fn load(&self) -> Result<WorkspaceState> {
         let content = match fs::read_to_string(&self.path) {
@@ -167,6 +202,12 @@ impl WorkspaceStateStore {
         state.normalize();
         let content = serde_json::to_vec_pretty(&state)?;
         write_atomic(&self.path, &content)
+    }
+}
+
+impl Drop for WorkspaceLifecycleLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 
@@ -237,6 +278,26 @@ mod tests {
 
         assert_eq!(loaded.parents[0].branch, "feature/a");
         assert_eq!(loaded.parents[1].branch, "feature/z");
+        Ok(())
+    }
+
+    #[test]
+    fn lifecycle_lock_serializes_processes_and_releases_on_drop() -> Result<()> {
+        let temp = TempDir::new()?;
+        let store = WorkspaceStateStore::new(temp.path());
+        let lock = store.lock_lifecycle()?;
+        let competing = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(temp.path().join("kmux/lifecycle.lock"))?;
+
+        assert!(matches!(
+            competing.try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+        drop(lock);
+        competing.try_lock()?;
+        competing.unlock()?;
         Ok(())
     }
 

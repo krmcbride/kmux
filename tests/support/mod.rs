@@ -276,6 +276,14 @@ impl TmuxFixture {
             .env("KMUX_TMUX_TMPDIR", self.socket_dir.path())
             .env("TMUX_PANE", pane_id);
     }
+
+    fn apply_env_without_pane(&self, command: &mut Command) {
+        command
+            .env("KMUX_TMUX_SOCKET_NAME", &self.socket_name)
+            .env("KMUX_TMUX_TMPDIR", self.socket_dir.path())
+            .env_remove("TMUX")
+            .env_remove("TMUX_PANE");
+    }
 }
 
 impl Drop for TmuxFixture {
@@ -411,6 +419,50 @@ pub fn kmux_with_pane(
         .env("XDG_STATE_HOME", config_home.with_file_name("state-home"));
     tmux.apply_env_with_pane(&mut command, pane_id);
     Ok(command)
+}
+
+pub fn kmux_detached(repo: &Path, config_home: &Path, tmux: &TmuxFixture) -> Result<Command> {
+    let mut command = Command::cargo_bin("kmux")?;
+    command
+        .current_dir(repo)
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"));
+    tmux.apply_env_without_pane(&mut command);
+    Ok(command)
+}
+
+pub fn kmux_process_with_pane(
+    repo: &Path,
+    config_home: &Path,
+    tmux: &TmuxFixture,
+    pane_id: &str,
+) -> ProcessCommand {
+    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_kmux"));
+    command
+        .current_dir(repo)
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("KMUX_TMUX_SOCKET_NAME", &tmux.socket_name)
+        .env("KMUX_TMUX_TMPDIR", tmux.socket_dir.path())
+        .env("TMUX_PANE", pane_id);
+    command
+}
+
+pub fn kmux_process_detached(
+    repo: &Path,
+    config_home: &Path,
+    tmux: &TmuxFixture,
+) -> ProcessCommand {
+    let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_kmux"));
+    command
+        .current_dir(repo)
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("KMUX_TMUX_SOCKET_NAME", &tmux.socket_name)
+        .env("KMUX_TMUX_TMPDIR", tmux.socket_dir.path())
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE");
+    command
 }
 
 fn set_agent_status_args(

@@ -11,7 +11,6 @@ pub use agent::{
     AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey, AgentStatus,
     StateStore, next_observation_timing, now_unix_seconds,
 };
-
 #[cfg(test)]
 pub mod test_support {
     pub use super::agent::test_support::observation_state;

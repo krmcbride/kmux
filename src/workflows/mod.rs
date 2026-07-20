@@ -14,6 +14,7 @@ mod files;
 mod launch;
 mod list;
 mod parent;
+mod project_session;
 mod remove;
 mod resolve;
 mod restore;

@@ -17,7 +17,8 @@ use std::path::Path;
 
 use anyhow::{Result, bail};
 
-use super::context::{RepoContext, TmuxContext};
+use super::context::RepoContext;
+use super::project_session::TmuxContext;
 use crate::launcher::{PendingLaunch, ResolvedLauncher};
 use crate::workspace::WorkspaceRecord;
 
@@ -42,7 +43,7 @@ pub(super) fn create_shell(
     let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     if tmux
         .tmux
-        .window_exists_by_name(&tmux.session_name, &window_name)?
+        .window_exists_by_name_by_id(&tmux.session_id, &window_name)?
     {
         bail!(
             "tmux window '{}' already exists for workspace '{}'; remove it before creating the workspace",
@@ -53,7 +54,7 @@ pub(super) fn create_shell(
 
     let pane_id = tmux
         .tmux
-        .create_window(&tmux.session_name, &window_name, resolved.path())?;
+        .create_window_by_id(&tmux.session_id, &window_name, resolved.path())?;
     Ok(CreatedWindow {
         window_name,
         pane_id,
@@ -69,7 +70,7 @@ pub(super) fn restore_shell(
     let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
     let expected_windows = tmux
         .tmux
-        .list_windows(Some(&tmux.session_name))?
+        .list_windows_by_id(&tmux.session_id)?
         .iter()
         .filter(|window| window.window_name == window_name)
         .count();
@@ -105,5 +106,5 @@ pub(super) fn start_launcher(
 /// Select a newly-created window only after its optional launcher handoff.
 pub(super) fn select_created(tmux: &TmuxContext, window: &CreatedWindow) -> Result<()> {
     tmux.tmux
-        .select_window(&tmux.session_name, &window.window_name)
+        .select_window_by_id(&tmux.session_id, &window.window_name)
 }

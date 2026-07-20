@@ -63,6 +63,7 @@ fn add_help_documents_public_launcher_contract_without_hidden_ingress() {
         .success()
         .stdout(predicate::str::contains("--launch <LAUNCH>"))
         .stdout(predicate::str::contains("--input <INPUT>"))
+        .stdout(predicate::str::contains("--tmux-session").not())
         .stdout(predicate::str::contains("'-' reads caller stdin"));
 
     Command::cargo_bin("kmux")
@@ -71,6 +72,22 @@ fn add_help_documents_public_launcher_contract_without_hidden_ingress() {
         .assert()
         .success()
         .stdout(predicate::str::contains("_launch").not());
+}
+
+#[test]
+fn lifecycle_help_omits_project_session_override() {
+    for args in [
+        ["add", "--help"].as_slice(),
+        ["restore", "--help"].as_slice(),
+        ["remove", "--help"].as_slice(),
+    ] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .args(args)
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--tmux-session").not());
+    }
 }
 
 #[test]
@@ -179,7 +196,8 @@ fn completions_command_emits_shell_completion() {
         .stdout(predicate::str::contains("_complete-git-branches"))
         .stdout(predicate::str::contains("_complete-launchers"))
         .stdout(predicate::str::contains("--launch"))
-        .stdout(predicate::str::contains("--input"));
+        .stdout(predicate::str::contains("--input"))
+        .stdout(predicate::str::contains("--tmux-session").not());
 }
 
 #[test]

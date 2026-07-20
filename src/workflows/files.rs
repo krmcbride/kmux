@@ -4,6 +4,7 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 
+use crate::LIFECYCLE_ACTIVE_ENV;
 use crate::config::{Config, file_entry_relative_path};
 
 /// Copy or symlink configured repo-relative files into a new worktree.
@@ -54,6 +55,7 @@ pub(super) fn run_post_create(
             .env("KMUX_WORKSPACE_SLUG", workspace_slug)
             .env("KMUX_WORKSPACE_PATH", worktree_path)
             .env("KMUX_PROJECT_ROOT", repo_root)
+            .env(LIFECYCLE_ACTIVE_ENV, "1")
             .status()
             .with_context(|| format!("failed to run post_create command: {command}"))?;
 

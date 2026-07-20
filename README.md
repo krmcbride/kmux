@@ -27,7 +27,9 @@ instead:
 cargo install --path .
 ```
 
-Run workspace lifecycle commands from a Git repository inside tmux.
+Run workspace lifecycle commands from a Git repository with an existing tmux
+server. Running inside that project's tmux session remains the normal interactive
+path. Detached callers resolve the same session from its live Git pane paths.
 
 ## Workspace model
 
@@ -36,19 +38,27 @@ checkout at `/repo/project-alpha`, kmux places linked worktrees under the siblin
 directory `/repo/project-alpha__worktrees/` and derives filesystem/tmux slugs
 from branch names.
 
-The release model is intentionally worktree-centered:
+The release model distinguishes one Git project from its worktree workspaces:
 
-- One canonical Git root identifies one workspace.
-- A workspace expects zero or one kmux-managed tmux window.
-- Temporary windows in the same tmux session may also contain panes rooted in
-  that workspace.
-- A workspace may have zero or more agent sessions, each with multiple
-  reporters.
-- Agent activity collapses to at most one displayed row per workspace.
+```text
+Git project (one canonical Git common repository)
+├── project tmux session (0..1)
+│   ├── kmux-managed workspace windows (0..1 per workspace)
+│   └── temporary windows and panes
+└── workspaces (one per canonical Git worktree root)
+    └── agent sessions (0..*)
+        └── reporters (1..*)
+```
 
-Use separate worktrees for parallel agent work. Concurrent sessions in one
-worktree are supported, but kmux chooses one primary session for display using
-status, recency, and deterministic tie-breakers.
+Agent activity collapses to at most one displayed row per workspace.
+
+Kmux treats each tmux session as one Git project bucket. Non-Git scratch panes
+are neutral, but a project split across sessions or a session containing multiple
+Git projects is an error that must be repaired before workspace mutation.
+
+Use separate worktrees for parallel agent work. Concurrent agent sessions in one
+worktree are supported, but kmux chooses one primary agent session for display
+using status, recency, and deterministic tie-breakers.
 
 ## Workspace lifecycle
 
@@ -63,6 +73,8 @@ kmux add feature/sidebar
 `kmux add` creates a new local branch, a linked worktree, and a tmux window. By
 default the current branch is recorded as the parent and the new window receives
 focus. Use `--parent <BRANCH>` or `--background` to override those choices.
+Detached callers must use `--background`; they otherwise fail before creating
+the branch or worktree.
 
 When a default launcher is configured, kmux starts it as the foreground program
 in the new window after file operations, `post_create`, and parent metadata are
@@ -272,6 +284,11 @@ explicit exposure boundary even when `--input -` protects the original kmux argv
 
 `post_create` remains a separate ordered list of shell commands. Configuration
 also supports repo-relative files to copy or symlink before launcher startup.
+Post-create hooks run while kmux owns the project's lifecycle transaction;
+recursive `kmux add`, `restore`, `remove`, or `parent` calls fail immediately
+instead of waiting on their parent process. The same guard applies to synchronous
+Git hooks and checkout filters invoked by kmux. Run nested lifecycle operations
+after the original command returns.
 Unknown fields, invalid paths, invalid launcher references, NUL values, and blank
 commands are rejected rather than ignored.
 

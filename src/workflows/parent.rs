@@ -4,12 +4,14 @@ use crate::cli;
 use crate::state::workspace::{WorkspaceParentLink, WorkspaceState, WorkspaceStateStore};
 
 use super::context::{RepoContext, load_repo_context};
+use super::project_session;
 use super::resolve::{resolve_current_kmux_workspace, resolve_workspace};
 use crate::workspace::WorkspaceRecord;
 
 /// Set or replace a workspace parent link without changing branches, worktrees, or tmux windows.
 pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
     let repo = load_repo_context()?;
+    let _lifecycle_lock = project_session::lock_project_lifecycle(&repo.paths)?;
     let (resolved, parent) = resolve_target(&repo, args)?;
     let child = resolved.branch().ok_or_else(|| {
         anyhow::anyhow!(
@@ -26,7 +28,10 @@ pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
     Ok(())
 }
 
-/// Validate and persist a parent link, returning the merge-base anchor that was recorded.
+/// Validate and persist a parent link while the caller holds the project lifecycle lock.
+///
+/// Add already holds the lock through its resolved tmux context; the standalone
+/// parent command acquires it before target and state resolution.
 pub(super) fn record_parent(repo: &RepoContext, child: &str, parent: &str) -> Result<String> {
     if child == parent {
         bail!("workspace branch '{child}' cannot be its own parent");

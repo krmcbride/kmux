@@ -45,6 +45,10 @@ Before delegation:
 6. Confirm that the selected parent relationship matches the plan and current
    branch topology.
 7. Confirm a launcher named `agent` is present in the validated kmux config.
+8. Confirm the selected tmux server has exactly one session containing live
+   non-sidebar panes for the Git project and that session contains no panes from
+   another Git project. Neutral non-Git panes do not affect the project bucket.
+   Stop when the project is split across sessions or its session mixes projects.
 
 Do not mutate or commit source-workspace changes merely to make delegation
 possible unless the user separately requests that work.
@@ -88,7 +92,14 @@ user separately requests that later action.
   launcher; do not substitute another profile silently.
 - Missing child plan: stop and resolve tracked or configured copy/symlink
   transport before creating the workspace.
-- Outside tmux: report kmux's tmux requirement and do not invent another runtime.
+- No matching project session: report that delegation requires an existing tmux
+  session for the Git project. Do not create a session or invent a headless
+  runtime.
+- Split project: report every session containing panes for the project. Ask the
+  user to move, unlink, or close windows until the project appears in one session;
+  do not choose a candidate.
+- Mixed project session: report the conflicting project roots and ask the user to
+  move or close windows until the session contains one Git project.
 - Sandbox denial: report the denied sibling-worktree or tmux path and let the user
   adjust their runtime policy.
 - Existing branch/worktree/workspace: report the exact conflict; do not remove or

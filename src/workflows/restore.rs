@@ -1,7 +1,8 @@
 use anyhow::{Context, Result, bail};
 
-use super::context::{load_repo_context, load_tmux_context};
+use super::context::load_repo_context;
 use super::launch::resolve_default;
+use super::project_session;
 use super::resolve::strict_kmux_workspaces;
 use super::window::{RestoreWindow, restore_shell, start_launcher};
 
@@ -11,7 +12,7 @@ pub(super) fn run() -> Result<()> {
     // Restore intentionally ignores any one-shot launcher used by `add`: only
     // the current configured default applies to newly recreated windows.
     let launcher = resolve_default(&repo.config);
-    let tmux = load_tmux_context()?;
+    let tmux = project_session::resolve(&repo.paths)?.require("kmux restore")?;
     let workspaces = strict_kmux_workspaces(&repo)?;
 
     if workspaces.is_empty() {

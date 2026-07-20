@@ -66,9 +66,17 @@ impl SidebarTmuxFixture {
         };
         let temp = tempdir()?;
         create_test_session(&fixture.tmux, "project", temp.path())?;
-        let pane_id = fixture
+        let session_id = fixture
             .tmux
-            .create_window("project", "feature-sidebar", temp.path())?;
+            .list_session_snapshots()?
+            .into_iter()
+            .find(|session| session.session_name == "project")
+            .map(|session| session.session_id)
+            .ok_or_else(|| anyhow::anyhow!("expected project test session"))?;
+        let pane_id =
+            fixture
+                .tmux
+                .create_window_by_id(&session_id, "feature-sidebar", temp.path())?;
         let window_id = fixture
             .tmux
             .list_pane_snapshots()?

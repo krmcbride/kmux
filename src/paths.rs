@@ -10,6 +10,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result, anyhow};
 
 use crate::git::Git;
+use crate::project::ProjectIdentity;
 use crate::telemetry;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -47,6 +48,19 @@ impl RepoPaths {
     pub fn workspace_path(&self, workspace_slug: &str) -> PathBuf {
         self.worktree_base_dir.join(workspace_slug)
     }
+
+    /// Return the repository-level identity shared by every one of its worktrees.
+    pub fn project_identity(&self) -> Result<ProjectIdentity> {
+        ProjectIdentity::from_canonical_paths(
+            self.main_worktree.clone(),
+            self.git_common_dir.clone(),
+        )
+    }
+}
+
+/// Resolve a filesystem path to its containing canonical Git project identity.
+pub fn discover_project_identity(path: impl AsRef<Path>) -> Result<ProjectIdentity> {
+    RepoPaths::discover(path)?.project_identity()
 }
 
 /// Compare paths after canonicalization when possible, falling back to literal comparison.
@@ -221,6 +235,24 @@ mod tests {
         assert_eq!(paths.current_worktree, linked);
         assert_eq!(paths.main_worktree, repo);
         assert_eq!(paths.worktree_base_dir, worktree_base);
+        assert_eq!(
+            paths.project_identity()?,
+            RepoPaths::discover(repo)?.project_identity()?
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn project_identity_matches_subdirectories_but_not_other_repositories() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let nested = fixture.path().join("src");
+        std::fs::create_dir(&nested)?;
+        let other = GitRepoFixture::new()?;
+        let project = RepoPaths::discover(fixture.path())?.project_identity()?;
+
+        assert_eq!(project.main_worktree(), fixture.path());
+        assert_eq!(discover_project_identity(&nested)?, project);
+        assert_ne!(discover_project_identity(other.path())?, project);
         Ok(())
     }
 }

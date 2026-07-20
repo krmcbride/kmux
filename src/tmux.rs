@@ -14,6 +14,7 @@
 //! list all sessions can therefore report the same window and pane IDs more than
 //! once; callers that operate on physical windows must deduplicate by ID.
 
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
@@ -46,6 +47,24 @@ pub struct TmuxContext {
     pub window_name: String,
     pub window_id: String,
     pub pane_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// One tmux session and the pane paths used to observe project topology.
+pub struct TmuxSessionSnapshot {
+    pub session_name: String,
+    pub session_id: String,
+    pub panes: Vec<TmuxSessionPaneSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Minimal pane identity and cwd evidence for project-session resolution.
+pub struct TmuxSessionPaneSnapshot {
+    pub window_id: String,
+    pub window_name: String,
+    pub pane_id: String,
+    pub current_path: Option<String>,
+    pub kmux_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,37 +404,50 @@ impl Tmux {
         self.query_context(None).map(Some)
     }
 
-    /// Create a detached shell-hosted window in `session_name` and return its pane id.
-    pub fn create_window(
+    /// Return current pane context for lifecycle targeting, tolerating stale pane state.
+    ///
+    /// `TMUX_PANE` is the only reliable evidence that this process belongs to a
+    /// client pane. A stale or missing pane/server is treated as detached, while
+    /// permission failures and malformed successful output remain errors.
+    pub fn current_context_for_session_resolution(&self) -> Result<Option<TmuxContext>> {
+        let Some(pane_id) = std::env::var("TMUX_PANE")
+            .ok()
+            .filter(|pane_id| !pane_id.is_empty())
+        else {
+            return Ok(None);
+        };
+        if !is_tmux_pane_id(&pane_id) {
+            return Ok(None);
+        }
+        let format = "#{session_name}\t#{session_id}\t#{window_name}\t#{window_id}\t#{pane_id}";
+        let output = self.output(["display-message", "-p", "-t", &pane_id, format])?;
+        if !output.status.success() {
+            if tmux_server_is_absent(&output.stderr) || tmux_pane_is_absent(&output.stderr) {
+                return Ok(None);
+            }
+            return bail_tmux(output);
+        }
+        // Some tmux versions return a successful record of empty fields for a
+        // stale pane id instead of reporting a target error.
+        if output
+            .stdout
+            .trim_matches(|ch| matches!(ch, '\t' | '\r' | '\n'))
+            .is_empty()
+        {
+            return Ok(None);
+        }
+        parse_context(&output.stdout).map(Some)
+    }
+
+    /// Create a detached shell-hosted window in an opaque session id.
+    pub fn create_window_by_id(
         &self,
-        session_name: &str,
+        session_id: &str,
         window_name: &str,
         cwd: &Path,
     ) -> Result<String> {
-        let target = format!("{session_name}:");
-        let args = vec![
-            OsString::from("new-window"),
-            OsString::from("-d"),
-            OsString::from("-t"),
-            OsString::from(target),
-            OsString::from("-n"),
-            OsString::from(window_name),
-            OsString::from("-c"),
-            cwd.as_os_str().to_os_string(),
-            OsString::from("-P"),
-            OsString::from("-F"),
-            OsString::from("#{pane_id}"),
-        ];
-        let pane_id = self.stdout(args)?;
-        self.stdout([
-            "set-option",
-            "-w",
-            "-t",
-            &pane_id,
-            "automatic-rename",
-            "off",
-        ])?;
-        Ok(pane_id)
+        validate_session_id(session_id)?;
+        self.create_window_for_target(session_id, window_name, cwd)
     }
 
     /// Send controlled literal command text to a shell-hosted pane, followed by Enter.
@@ -434,16 +466,17 @@ impl Tmux {
         Ok(())
     }
 
-    /// Select a window by session and exact window name.
-    pub fn select_window(&self, session_name: &str, window_name: &str) -> Result<()> {
-        let target = window_target(session_name, window_name);
+    /// Select a window by opaque session id and exact window name.
+    pub fn select_window_by_id(&self, session_id: &str, window_name: &str) -> Result<()> {
+        validate_session_id(session_id)?;
+        let target = format!("{session_id}:={window_name}");
         self.stdout(["select-window", "-t", &target])?;
         Ok(())
     }
 
     /// Select a physical window by id within one exact tmux session.
-    pub fn select_window_id_in_session(&self, session_name: &str, window_id: &str) -> Result<()> {
-        let target = format!("={session_name}:{window_id}");
+    pub fn select_window_id_in_session(&self, session_target: &str, window_id: &str) -> Result<()> {
+        let target = format!("{}:{window_id}", exact_session_target(session_target));
         self.stdout(["select-window", "-t", &target])?;
         Ok(())
     }
@@ -474,19 +507,16 @@ impl Tmux {
 
     /// Switch the attached tmux client to a session.
     pub fn switch_client_to_session(&self, session_name: &str) -> Result<()> {
-        let target = format!("={session_name}");
+        let target = exact_session_target(session_name);
         self.stdout(["switch-client", "-t", &target])?;
         Ok(())
     }
 
-    /// Kill a tmux window by exact name within a session.
-    pub fn kill_window(&self, session_name: &str, window_name: &str) -> Result<()> {
-        if !self.window_exists_by_name(session_name, window_name)? {
-            bail!("tmux window '{window_name}' does not exist in session '{session_name}'");
-        }
-
-        let target = window_target(session_name, window_name);
-        self.stdout(["kill-window", "-t", &target])?;
+    /// Kill one physical window by opaque session and window IDs.
+    pub fn kill_window_id_in_session(&self, session_id: &str, window_id: &str) -> Result<()> {
+        validate_session_id(session_id)?;
+        validate_window_id(window_id)?;
+        self.stdout(["kill-window", "-t", &format!("{session_id}:{window_id}")])?;
         Ok(())
     }
 
@@ -494,11 +524,20 @@ impl Tmux {
     pub fn list_windows(&self, session_name: Option<&str>) -> Result<Vec<TmuxWindow>> {
         let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
         let output = if let Some(session_name) = session_name {
-            let target = format!("={session_name}:");
+            let target = format!("{}:", exact_session_target(session_name));
             self.stdout(["list-windows", "-t", &target, "-F", format])?
         } else {
             self.stdout(["list-windows", "-a", "-F", format])?
         };
+        parse_windows(&output)
+    }
+
+    /// List windows in one opaque session id.
+    pub fn list_windows_by_id(&self, session_id: &str) -> Result<Vec<TmuxWindow>> {
+        validate_session_id(session_id)?;
+        let target = format!("{session_id}:");
+        let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
+        let output = self.stdout(["list-windows", "-t", &target, "-F", format])?;
         parse_windows(&output)
     }
 
@@ -519,10 +558,38 @@ impl Tmux {
         parse_pane_snapshots(&output)
     }
 
+    /// List tmux sessions with live pane cwd evidence.
+    ///
+    /// A missing tmux server is represented as an empty snapshot. Other tmux
+    /// failures remain errors so callers do not mistake permission or protocol
+    /// failures for proof that no workspace window is live.
+    pub fn list_session_snapshots(&self) -> Result<Vec<TmuxSessionSnapshot>> {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let format = format!(
+            "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_current_path}}{separator}#{{@kmux_role}}"
+        );
+        let output = self.output(["list-panes", "-a", "-F", &format])?;
+        if !output.status.success() {
+            if tmux_server_is_absent(&output.stderr) {
+                return Ok(Vec::new());
+            }
+            return bail_tmux(output);
+        }
+        parse_session_snapshots(&output.stdout)
+    }
+
     /// Return whether a session contains a window with an exact name match.
     pub fn window_exists_by_name(&self, session_name: &str, window_name: &str) -> Result<bool> {
         Ok(self
             .list_windows(Some(session_name))?
+            .iter()
+            .any(|window| window.window_name == window_name))
+    }
+
+    /// Return whether an opaque session id contains a window with an exact name match.
+    pub fn window_exists_by_name_by_id(&self, session_id: &str, window_name: &str) -> Result<bool> {
+        Ok(self
+            .list_windows_by_id(session_id)?
             .iter()
             .any(|window| window.window_name == window_name))
     }
@@ -651,6 +718,38 @@ impl Tmux {
         Ok(())
     }
 
+    fn create_window_for_target(
+        &self,
+        session_target: &str,
+        window_name: &str,
+        cwd: &Path,
+    ) -> Result<String> {
+        let target = format!("{session_target}:");
+        let args = vec![
+            OsString::from("new-window"),
+            OsString::from("-d"),
+            OsString::from("-t"),
+            OsString::from(target),
+            OsString::from("-n"),
+            OsString::from(window_name),
+            OsString::from("-c"),
+            cwd.as_os_str().to_os_string(),
+            OsString::from("-P"),
+            OsString::from("-F"),
+            OsString::from("#{pane_id}"),
+        ];
+        let pane_id = self.stdout(args)?;
+        self.stdout([
+            "set-option",
+            "-w",
+            "-t",
+            &pane_id,
+            "automatic-rename",
+            "off",
+        ])?;
+        Ok(pane_id)
+    }
+
     /// Create an adapter pinned to a named tmux socket.
     ///
     /// The ambient `TMUX` variables are cleared so commands target that socket rather
@@ -684,32 +783,58 @@ impl Tmux {
         } else {
             self.stdout(["display-message", "-p", format])?
         };
-        let fields = output.trim_end().split('\t').collect::<Vec<_>>();
-        if fields.len() != 5 {
-            bail!("unexpected tmux context format: {output:?}");
-        }
-
-        Ok(TmuxContext {
-            session_name: fields[0].to_owned(),
-            session_id: fields[1].to_owned(),
-            window_name: fields[2].to_owned(),
-            window_id: fields[3].to_owned(),
-            pane_id: fields[4].to_owned(),
-        })
+        parse_context(&output)
     }
 }
 
-/// Build a tmux command target for a window with this exact name inside a session.
-///
-/// tmux target strings identify where a command should apply. The `session:=window`
-/// form scopes the lookup to one session and uses `=` so tmux matches the full
-/// window name instead of accepting a prefix or fuzzy match.
-pub fn window_target(session_name: &str, window_name: &str) -> String {
-    format!("{session_name}:={window_name}")
+fn exact_session_target(session_target: &str) -> String {
+    format!("={session_target}")
+}
+
+fn validate_session_id(session_id: &str) -> Result<()> {
+    if !session_id
+        .strip_prefix('$')
+        .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        bail!("invalid tmux session id {session_id:?}");
+    }
+    Ok(())
+}
+
+fn validate_window_id(window_id: &str) -> Result<()> {
+    if !window_id
+        .strip_prefix('@')
+        .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
+    {
+        bail!("invalid tmux window id {window_id:?}");
+    }
+    Ok(())
+}
+
+fn is_tmux_pane_id(pane_id: &str) -> bool {
+    pane_id
+        .strip_prefix('%')
+        .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
 }
 
 fn parse_windows(output: &str) -> Result<Vec<TmuxWindow>> {
     output.lines().map(parse_window).collect()
+}
+
+fn parse_context(output: &str) -> Result<TmuxContext> {
+    let fields = output.trim_end().split('\t').collect::<Vec<_>>();
+    if fields.len() != 5 {
+        bail!("unexpected tmux context format: {output:?}");
+    }
+    validate_session_id(fields[1])?;
+
+    Ok(TmuxContext {
+        session_name: fields[0].to_owned(),
+        session_id: fields[1].to_owned(),
+        window_name: fields[2].to_owned(),
+        window_id: fields[3].to_owned(),
+        pane_id: fields[4].to_owned(),
+    })
 }
 
 fn parse_panes(output: &str) -> Result<Vec<TmuxPane>> {
@@ -718,6 +843,46 @@ fn parse_panes(output: &str) -> Result<Vec<TmuxPane>> {
 
 fn parse_pane_snapshots(output: &str) -> Result<Vec<TmuxPaneSnapshot>> {
     output.lines().map(parse_pane_snapshot).collect()
+}
+
+fn parse_session_snapshots(output: &str) -> Result<Vec<TmuxSessionSnapshot>> {
+    // This map only groups repeated pane rows by opaque session ID. The explicit
+    // sort below defines the stable output order.
+    let mut sessions = HashMap::<String, TmuxSessionSnapshot>::new();
+    for line in output.lines().filter(|line| !line.is_empty()) {
+        let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
+        if fields.len() != 7 {
+            bail!("unexpected tmux project session format: {line:?}");
+        }
+        validate_session_id(fields[0])?;
+        let session_id = fields[0].to_owned();
+        let session_name = fields[1].to_owned();
+        let session = sessions
+            .entry(session_id.clone())
+            .or_insert_with(|| TmuxSessionSnapshot {
+                session_name: session_name.clone(),
+                session_id,
+                panes: Vec::new(),
+            });
+        if session.session_name != session_name {
+            bail!("inconsistent tmux project session records for {session_name:?}");
+        }
+        session.panes.push(TmuxSessionPaneSnapshot {
+            window_id: fields[2].to_owned(),
+            window_name: fields[3].to_owned(),
+            pane_id: fields[4].to_owned(),
+            current_path: non_empty_string(fields[5]),
+            kmux_role: non_empty_string(fields[6]),
+        });
+    }
+
+    let mut sessions = sessions.into_values().collect::<Vec<_>>();
+    sessions.sort_by(|left, right| {
+        left.session_name
+            .cmp(&right.session_name)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    Ok(sessions)
 }
 
 fn parse_window(line: &str) -> Result<TmuxWindow> {
@@ -819,6 +984,19 @@ fn tmux_attached(value: &str) -> bool {
 
 fn non_empty_string(value: &str) -> Option<String> {
     Some(value.to_owned()).filter(|value| !value.is_empty())
+}
+
+fn tmux_server_is_absent(stderr: &str) -> bool {
+    let stderr = stderr.trim();
+    stderr.starts_with("no server running on ")
+        || (stderr.starts_with("error connecting to ")
+            && (stderr.contains("No such file or directory")
+                || stderr.contains("Connection refused")))
+}
+
+fn tmux_pane_is_absent(stderr: &str) -> bool {
+    let stderr = stderr.trim();
+    stderr.starts_with("can't find pane:") || stderr.starts_with("no such pane:")
 }
 
 // Restrict user options to kmux-owned names so generic tmux options cannot be
@@ -962,11 +1140,36 @@ mod tests {
     }
 
     #[test]
-    fn builds_exact_window_targets() {
-        assert_eq!(
-            window_target("project", "feature-auth"),
-            "project:=feature-auth"
+    fn validates_opaque_tmux_ids() -> Result<()> {
+        assert!(validate_session_id("$3").is_ok());
+        assert!(validate_session_id("$project").is_err());
+        assert!(validate_window_id("@42").is_ok());
+        assert!(validate_window_id("feature-auth").is_err());
+        assert!(is_tmux_pane_id("%42"));
+        assert!(!is_tmux_pane_id("project:main"));
+        assert!(!is_tmux_pane_id("%pane"));
+        Ok(())
+    }
+
+    #[test]
+    fn parses_project_session_snapshots() -> Result<()> {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let output = format!(
+            "$1{separator}project:alpha{separator}@1{separator}main{separator}%1{separator}/repo/project alpha{separator}\n$1{separator}project:alpha{separator}@2{separator}feature{separator}%2{separator}/repo/project alpha/worktree{separator}sidebar\n$2{separator}other{separator}@3{separator}main{separator}%3{separator}/repo/other{separator}"
         );
+
+        let sessions = parse_session_snapshots(&output)?;
+
+        assert_eq!(sessions.len(), 2);
+        assert_eq!(sessions[0].session_name, "other");
+        assert_eq!(sessions[0].session_id, "$2");
+        assert_eq!(sessions[1].session_name, "project:alpha");
+        assert_eq!(sessions[1].session_id, "$1");
+        assert_eq!(sessions[1].panes.len(), 2);
+        assert_eq!(sessions[1].panes[0].pane_id, "%1");
+        assert_eq!(sessions[1].panes[0].window_name, "main");
+        assert_eq!(sessions[1].panes[1].kmux_role.as_deref(), Some("sidebar"));
+        Ok(())
     }
 
     #[test]
@@ -1115,13 +1318,19 @@ mod tests {
                 .success()
         );
 
-        let pane_id = tmux.create_window("project", "feature-auth", temp.path())?;
+        let project_session_id = tmux
+            .list_session_snapshots()?
+            .into_iter()
+            .find(|session| session.session_name == "project")
+            .map(|session| session.session_id)
+            .ok_or_else(|| anyhow::anyhow!("expected project session"))?;
+        let pane_id = tmux.create_window_by_id(&project_session_id, "feature-auth", temp.path())?;
         let context = tmux.pane_context(&pane_id)?;
 
         assert_eq!(context.session_name, "project");
         assert_eq!(context.window_name, "feature-auth");
         assert_eq!(context.pane_id, pane_id);
-        assert!(tmux.window_exists_by_name("project", "feature-auth")?);
+        assert!(tmux.window_exists_by_name_by_id(&project_session_id, "feature-auth")?);
         assert!(
             tmux.list_windows(Some("project"))?
                 .iter()
@@ -1147,7 +1356,7 @@ mod tests {
         assert_eq!(updated_snapshot.title.as_deref(), Some("kmux"));
         assert!(!tmux.pane_visibility(&pane_id)?.pane_has_focus);
 
-        tmux.select_window("project", "feature-auth")?;
+        tmux.select_window_by_id(&project_session_id, "feature-auth")?;
         let selected = tmux
             .list_windows(Some("project"))?
             .into_iter()
@@ -1155,8 +1364,67 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("expected feature-auth window"))?;
         assert!(selected.active);
 
-        tmux.kill_window("project", "feature-auth")?;
-        assert!(!tmux.window_exists_by_name("project", "feature-auth")?);
+        tmux.kill_window_id_in_session(&project_session_id, &selected.window_id)?;
+        assert!(!tmux.window_exists_by_name_by_id(&project_session_id, "feature-auth")?);
+        Ok(())
+    }
+
+    #[test]
+    fn project_session_window_commands_use_opaque_session_ids() -> Result<()> {
+        let Some(fixture) = TmuxFixture::new()? else {
+            return Ok(());
+        };
+        let temp = TempDir::new()?;
+        let tmux = &fixture.tmux;
+
+        create_test_session(tmux, "project alpha", temp.path())?;
+        let snapshots = tmux.list_session_snapshots()?;
+        let session = snapshots
+            .iter()
+            .find(|session| session.session_name == "project alpha")
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("expected hostile-name test session: {snapshots:?}"))?;
+
+        let pane_id = tmux.create_window_by_id(&session.session_id, "feature-auth", temp.path())?;
+        assert!(tmux.window_exists_by_name_by_id(&session.session_id, "feature-auth")?);
+        let window_id = tmux.pane_context(&pane_id)?.window_id;
+        tmux.kill_window_id_in_session(&session.session_id, &window_id)?;
+        Ok(())
+    }
+
+    #[test]
+    fn physical_window_id_disambiguates_duplicate_names() -> Result<()> {
+        let Some(fixture) = TmuxFixture::new()? else {
+            return Ok(());
+        };
+        let temp = TempDir::new()?;
+        let tmux = &fixture.tmux;
+
+        create_test_session(tmux, "project", temp.path())?;
+        let session_id = tmux
+            .list_session_snapshots()?
+            .into_iter()
+            .find(|session| session.session_name == "project")
+            .map(|session| session.session_id)
+            .ok_or_else(|| anyhow::anyhow!("expected project session"))?;
+        let first_pane = tmux.create_window_by_id(&session_id, "duplicate", temp.path())?;
+        let second_pane = tmux.create_window_by_id(&session_id, "duplicate", temp.path())?;
+        let first_window = tmux.pane_context(&first_pane)?.window_id;
+        let second_window = tmux.pane_context(&second_pane)?.window_id;
+
+        tmux.kill_window_id_in_session(&session_id, &first_window)?;
+
+        let remaining = tmux.list_windows_by_id(&session_id)?;
+        assert!(
+            !remaining
+                .iter()
+                .any(|window| window.window_id == first_window)
+        );
+        assert!(
+            remaining
+                .iter()
+                .any(|window| window.window_id == second_window)
+        );
         Ok(())
     }
 
@@ -1170,11 +1438,17 @@ mod tests {
         let marker = temp.path().join("startup-ran");
 
         create_test_session(tmux, "project", temp.path())?;
-        let pane_id = tmux.create_window("project", "feature-auth", temp.path())?;
+        let session_id = tmux
+            .list_session_snapshots()?
+            .into_iter()
+            .find(|session| session.session_name == "project")
+            .map(|session| session.session_id)
+            .ok_or_else(|| anyhow::anyhow!("expected project session"))?;
+        let pane_id = tmux.create_window_by_id(&session_id, "feature-auth", temp.path())?;
         tmux.send_literal_command(&pane_id, "touch startup-ran")?;
 
         assert!(wait_for_path(&marker));
-        assert!(tmux.window_exists_by_name("project", "feature-auth")?);
+        assert!(tmux.window_exists_by_name_by_id(&session_id, "feature-auth")?);
         Ok(())
     }
 

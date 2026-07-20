@@ -2,14 +2,44 @@ pub mod support;
 
 use std::fs;
 use std::path::Path;
+use std::process::Stdio;
+use std::sync::{Arc, Barrier};
+use std::thread;
 
 use anyhow::Result;
 use predicates::prelude::*;
 
 use support::{
-    TmuxFixture, git, git_stdout, init_repo, kmux, kmux_with_pane, run, wait_for_nonempty_file,
-    wait_for_path, write_config,
+    TmuxFixture, git, git_stdout, init_repo, kmux, kmux_detached, kmux_process_detached,
+    kmux_process_with_pane, kmux_with_pane, run, wait_for_nonempty_file, wait_for_path,
+    write_config,
 };
+
+fn run_concurrently(
+    mut first: std::process::Command,
+    mut second: std::process::Command,
+) -> Result<(std::process::Output, std::process::Output)> {
+    let barrier = Arc::new(Barrier::new(3));
+    let first_barrier = Arc::clone(&barrier);
+    let first_thread = thread::spawn(move || {
+        first_barrier.wait();
+        first.output()
+    });
+    let second_barrier = Arc::clone(&barrier);
+    let second_thread = thread::spawn(move || {
+        second_barrier.wait();
+        second.output()
+    });
+    barrier.wait();
+
+    let first = first_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("first concurrent kmux process panicked"))??;
+    let second = second_thread
+        .join()
+        .map_err(|_| anyhow::anyhow!("second concurrent kmux process panicked"))??;
+    Ok((first, second))
+}
 
 fn nul_delimited_arguments(path: &Path) -> Result<Vec<String>> {
     let bytes = fs::read(path)?;
@@ -68,6 +98,486 @@ fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
 }
 
 #[test]
+fn detached_lifecycle_resolves_and_reuses_unique_project_session() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-detached");
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .env("TMUX", "stale-client-state")
+        .args(["add", "feature/detached", "--background"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created feature-detached"));
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists("kmux-feature-detached")?);
+
+    tmux.tmux_output(&["kill-window", "-t", "kmux-feature-detached"])?;
+    kmux_detached(&worktree, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("restored feature-detached"));
+    assert!(tmux.window_exists("kmux-feature-detached")?);
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-detached", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed feature-detached"));
+    assert!(!worktree.exists());
+    assert!(!tmux.window_exists("kmux-feature-detached")?);
+    Ok(())
+}
+
+#[test]
+fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let repo_path = repo.display().to_string();
+    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["add", "feature/ambiguous", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "live panes in multiple tmux sessions",
+        ))
+        .stderr(predicate::str::contains("\"project\", \"project-copy\""))
+        .stderr(predicate::str::contains("--tmux-session").not());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/ambiguous"]).is_err());
+
+    tmux.tmux_output(&["kill-session", "-t", "project-copy"])?;
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .env("TMUX", "stale-client-state")
+        .env("TMUX_PANE", "%999999")
+        .args(["add", "feature/focus-refused"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("caller is not attached"))
+        .stderr(predicate::str::contains("--background"));
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/focus-refused"]).is_err());
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .env("TMUX_PANE", "project:")
+        .args(["add", "feature/malformed-context"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("caller is not attached"));
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/malformed-context"]).is_err());
+
+    let neutral = tempfile::tempdir()?;
+    let neutral_path = neutral.path().display().to_string();
+    let neutral_pane = tmux.tmux_output(&[
+        "new-session",
+        "-d",
+        "-s",
+        "neutral",
+        "-c",
+        &neutral_path,
+        "-P",
+        "-F",
+        "#{pane_id}",
+    ])?;
+    kmux_with_pane(&repo, &config_home, &tmux, &neutral_pane)?
+        .args(["add", "feature/wrong-session"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("caller is not attached"));
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/wrong-session"]).is_err());
+    Ok(())
+}
+
+#[test]
+fn detached_add_rejects_mixed_project_session_before_mutation() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let (_other_temp, other_repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let other_path = other_repo.display().to_string();
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "other-project",
+        "-c",
+        &other_path,
+    ])?;
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["add", "feature/mixed", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "contains panes from multiple Git projects",
+        ));
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/mixed"]).is_err());
+    Ok(())
+}
+
+#[test]
+fn detached_add_rejects_project_window_linked_across_sessions() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let neutral = tempfile::tempdir()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let neutral_path = neutral.path().display().to_string();
+    tmux.tmux_output(&[
+        "new-session",
+        "-d",
+        "-s",
+        "project-copy",
+        "-c",
+        &neutral_path,
+    ])?;
+    let project_window = tmux.current_window_id()?;
+    tmux.tmux_output(&["link-window", "-s", &project_window, "-t", "project-copy:"])?;
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["add", "feature/linked", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "live panes in multiple tmux sessions",
+        ));
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/linked"]).is_err());
+    Ok(())
+}
+
+#[test]
+fn detached_add_ignores_sidebar_only_and_other_project_sessions() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    tmux.tmux_output(&[
+        "set-option",
+        "-p",
+        "-t",
+        &tmux.pane_id,
+        "@kmux_role",
+        "sidebar",
+    ])?;
+
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["add", "feature/sidebar-only", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires an existing tmux session containing a live pane for project",
+        ));
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/sidebar-only"]).is_err());
+    kmux_detached(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires an existing tmux session containing a live pane for project",
+        ));
+
+    let (other_temp, other_repo) = init_repo()?;
+    let other_config = write_config(other_temp.path(), "window_prefix: kmux-\n")?;
+    kmux_detached(&other_repo, &other_config, &tmux)?
+        .args(["add", "feature/other-project", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "requires an existing tmux session containing a live pane for project",
+        ));
+    assert!(
+        git_stdout(
+            &other_repo,
+            &["show-ref", "--heads", "feature/other-project"]
+        )
+        .is_err()
+    );
+    Ok(())
+}
+
+#[test]
+fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let (_other_temp, other_repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-restore-guard");
+    let window_name = "kmux-feature-restore-guard";
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/restore-guard", "--background"])
+        .assert()
+        .success();
+    tmux.tmux_output(&["kill-window", "-t", window_name])?;
+
+    let other_path = other_repo.display().to_string();
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "other-project",
+        "-c",
+        &other_path,
+    ])?;
+    kmux_detached(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "contains panes from multiple Git projects",
+        ));
+    assert!(!tmux.window_exists(window_name)?);
+    tmux.tmux_output(&["kill-window", "-t", "other-project"])?;
+
+    let repo_path = repo.display().to_string();
+    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+    kmux_detached(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "live panes in multiple tmux sessions",
+        ));
+    assert!(!tmux.window_exists(window_name)?);
+    tmux.tmux_output(&["kill-session", "-t", "project-copy"])?;
+
+    tmux.tmux_output(&[
+        "set-option",
+        "-p",
+        "-t",
+        &tmux.pane_id,
+        "@kmux_role",
+        "sidebar",
+    ])?;
+    kmux_detached(&repo, &config_home, &tmux)?
+        .arg("restore")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "containing a live pane for project",
+        ));
+    assert!(!tmux.window_exists(window_name)?);
+    assert!(worktree.is_dir());
+    Ok(())
+}
+
+#[test]
+fn remove_rejects_mixed_and_split_topology_before_git_mutation() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let (_other_temp, other_repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-remove-guard");
+    let window_name = "kmux-feature-remove-guard";
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/remove-guard", "--background"])
+        .assert()
+        .success();
+
+    let other_path = other_repo.display().to_string();
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "other-project",
+        "-c",
+        &other_path,
+    ])?;
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-remove-guard", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "contains panes from multiple Git projects",
+        ));
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists(window_name)?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/remove-guard"]).is_ok());
+    tmux.tmux_output(&["kill-window", "-t", "other-project"])?;
+
+    let repo_path = repo.display().to_string();
+    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-remove-guard", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "live panes in multiple tmux sessions",
+        ));
+    assert!(worktree.is_dir());
+    assert!(tmux.window_exists(window_name)?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/remove-guard"]).is_ok());
+    Ok(())
+}
+
+#[test]
+fn detached_remove_blocks_scratch_panes_and_is_safe_without_a_session() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp.path().join("project__worktrees/feature-remove-live");
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/remove-live", "--background"])
+        .assert()
+        .success();
+    let worktree_text = worktree.display().to_string();
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        "scratch-remove-live",
+        "-c",
+        &worktree_text,
+    ])?;
+    kmux_detached(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-remove-live", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "still has a live tmux pane outside its managed window",
+        ));
+    assert!(worktree.is_dir());
+
+    tmux.tmux_output(&["kill-server"])?;
+    kmux_detached(&worktree, &config_home, &tmux)?
+        .env("TMUX", "stale-client-state")
+        .env("TMUX_PANE", "%999999")
+        .args(["remove", "--force"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("removed feature-remove-live"));
+    assert!(!worktree.exists());
+    Ok(())
+}
+
+#[test]
+fn concurrent_waiter_resnapshots_topology_after_project_lock() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let hook_ready = temp.path().join("topology-hook-ready");
+    let hook_release = temp.path().join("topology-hook-release");
+    let second_telemetry = temp.path().join("second-telemetry.jsonl");
+    let config_home = write_config(
+        temp.path(),
+        &format!(
+            "window_prefix: kmux-\npost_create:\n  - 'touch \"{}\"; while [ ! -e \"{}\" ]; do sleep 0.01; done'\n",
+            hook_ready.display(),
+            hook_release.display()
+        ),
+    )?;
+
+    let mut first = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
+    first
+        .args(["add", "feature/concurrent-a", "--background"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let first = first.spawn()?;
+    wait_for_path(&hook_ready)?;
+
+    let mut second = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
+    second
+        .env("KMUX_TELEMETRY", "1")
+        .env("KMUX_TELEMETRY_PATH", &second_telemetry)
+        .args(["add", "feature/concurrent-b", "--background"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut second = second.spawn()?;
+    wait_for_nonempty_file(&second_telemetry)?;
+    assert!(
+        second.try_wait()?.is_none(),
+        "second add should wait while the first owns the project lifecycle lock"
+    );
+
+    let repo_path = repo.display().to_string();
+    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+    fs::write(&hook_release, "release\n")?;
+
+    let first = first.wait_with_output()?;
+    let second = second.wait_with_output()?;
+
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&second.stderr).contains("live panes in multiple tmux sessions"),
+        "waiting add should re-snapshot strict topology: {}",
+        String::from_utf8_lossy(&second.stderr)
+    );
+    assert!(!second.status.success());
+    assert!(
+        temp.path()
+            .join("project__worktrees/feature-concurrent-a")
+            .is_dir()
+    );
+    assert!(
+        !temp
+            .path()
+            .join("project__worktrees/feature-concurrent-b")
+            .exists()
+    );
+    assert!(tmux.window_exists("kmux-feature-concurrent-a")?);
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/concurrent-b"]).is_err());
+    Ok(())
+}
+
+#[test]
+fn concurrent_projects_cannot_claim_a_neutral_session() -> Result<()> {
+    let (first_temp, first_repo) = init_repo()?;
+    let (second_temp, second_repo) = init_repo()?;
+    let neutral = tempfile::tempdir()?;
+    let Some(tmux) = TmuxFixture::new(neutral.path())? else {
+        return Ok(());
+    };
+    let first_config = write_config(first_temp.path(), "window_prefix: kmux-\n")?;
+    let second_config = write_config(second_temp.path(), "window_prefix: kmux-\n")?;
+    let mut first = kmux_process_detached(&first_repo, &first_config, &tmux);
+    first.args(["add", "feature/project-a", "--background"]);
+    let mut second = kmux_process_detached(&second_repo, &second_config, &tmux);
+    second.args(["add", "feature/project-b", "--background"]);
+    let (first, second) = run_concurrently(first, second)?;
+
+    assert!(!first.status.success());
+    assert!(!second.status.success());
+    assert!(String::from_utf8_lossy(&first.stderr).contains("containing a live pane for project"));
+    assert!(String::from_utf8_lossy(&second.stderr).contains("containing a live pane for project"));
+    assert!(git_stdout(&first_repo, &["show-ref", "--heads", "feature/project-a"]).is_err());
+    assert!(git_stdout(&second_repo, &["show-ref", "--heads", "feature/project-b"]).is_err());
+    Ok(())
+}
+
+#[test]
 fn add_runs_configured_file_ops_and_post_create() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
@@ -116,6 +626,125 @@ files:
             .is_symlink()
     );
 
+    Ok(())
+}
+
+#[test]
+fn recursive_lifecycle_from_post_create_fails_instead_of_deadlocking() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        "window_prefix: kmux-\npost_create:\n  - '\"$KMUX_RECURSIVE_BIN\" restore'\n",
+    )?;
+    let worktree = temp.path().join("project__worktrees/feature-recursive");
+
+    kmux(&repo, &config_home, &tmux)?
+        .env("KMUX_RECURSIVE_BIN", env!("CARGO_BIN_EXE_kmux"))
+        .args(["add", "feature/recursive", "--background"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "lifecycle commands cannot run recursively from post_create",
+        ));
+
+    assert!(worktree.is_dir());
+    assert!(!tmux.window_exists("kmux-feature-recursive")?);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn recursive_lifecycle_from_git_hook_fails_instead_of_deadlocking() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let hook_output = temp.path().join("hook-output");
+    let hook = repo.join(".git/hooks/post-checkout");
+    fs::write(
+        &hook,
+        "#!/bin/sh\n\"$KMUX_RECURSIVE_BIN\" restore > \"$KMUX_HOOK_OUTPUT\" 2>&1\n",
+    )?;
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
+    let hooks_path = repo.join(".git/hooks").display().to_string();
+    git(&repo, &["config", "core.hooksPath", &hooks_path])?;
+
+    let _assert = kmux(&repo, &config_home, &tmux)?
+        .env("KMUX_RECURSIVE_BIN", env!("CARGO_BIN_EXE_kmux"))
+        .env("KMUX_HOOK_OUTPUT", &hook_output)
+        .args(["add", "feature/hook-recursion", "--background"])
+        .assert();
+
+    wait_for_nonempty_file(&hook_output)?;
+    assert!(
+        fs::read_to_string(&hook_output)?.contains("lifecycle commands cannot run recursively")
+    );
+    Ok(())
+}
+
+#[test]
+fn parent_waits_for_add_before_updating_shared_workspace_state() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/child", "--background"])
+        .assert()
+        .success();
+
+    let hook_ready = temp.path().join("hook-ready");
+    write_config(
+        temp.path(),
+        &format!(
+            "window_prefix: kmux-\npost_create:\n  - 'touch \"{}\"; sleep 0.2'\n",
+            hook_ready.display()
+        ),
+    )?;
+    let mut add = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
+    add.args(["add", "feature/sibling", "--background"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let add = add.spawn()?;
+    wait_for_path(&hook_ready)?;
+
+    let mut parent = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
+    let parent = parent
+        .args(["parent", "feature/sibling", "feature/child"])
+        .output()?;
+    let add = add.wait_with_output()?;
+    assert!(
+        add.status.success(),
+        "concurrent add failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+    assert!(
+        parent.status.success(),
+        "concurrent parent failed: {}",
+        String::from_utf8_lossy(&parent.stderr)
+    );
+
+    let state: serde_json::Value =
+        serde_json::from_slice(&fs::read(repo.join(".git/kmux/state.json"))?)?;
+    let parents = state
+        .get("parents")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("workspace state should contain parent links"))?;
+    assert!(parents.iter().any(|link| {
+        link.get("branch").and_then(serde_json::Value::as_str) == Some("feature/child")
+            && link.get("parent").and_then(serde_json::Value::as_str) == Some("feature/sibling")
+    }));
+    assert!(parents.iter().any(|link| {
+        link.get("branch").and_then(serde_json::Value::as_str) == Some("feature/sibling")
+            && link.get("parent").and_then(serde_json::Value::as_str) == Some("main")
+    }));
     Ok(())
 }
 
@@ -912,6 +1541,7 @@ fn add_rejects_window_only_partial_workspace() -> Result<()> {
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
     let worktree = temp.path().join("project__worktrees/feature-window-only");
+    let repo_path = repo.display().to_string();
     tmux.tmux_output(&[
         "new-window",
         "-d",
@@ -919,6 +1549,8 @@ fn add_rejects_window_only_partial_workspace() -> Result<()> {
         "project:",
         "-n",
         "kmux-feature-window-only",
+        "-c",
+        &repo_path,
     ])?;
 
     kmux(&repo, &config_home, &tmux)?
@@ -996,6 +1628,47 @@ fn restore_rejects_duplicate_expected_window_names() -> Result<()> {
         .stderr(predicate::str::contains(
             "multiple tmux windows are named 'kmux-feature-duplicate'",
         ));
+    Ok(())
+}
+
+#[test]
+fn remove_rejects_duplicate_expected_windows_before_git_mutation() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
+    let worktree = temp
+        .path()
+        .join("project__worktrees/feature-remove-duplicate");
+    let worktree_path = worktree.display().to_string();
+    let window_name = "kmux-feature-remove-duplicate";
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/remove-duplicate", "--background"])
+        .assert()
+        .success();
+    tmux.tmux_output(&[
+        "new-window",
+        "-d",
+        "-t",
+        "project:",
+        "-n",
+        window_name,
+        "-c",
+        &worktree_path,
+    ])?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["remove", "feature-remove-duplicate", "--force"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("has multiple windows named"));
+
+    assert!(worktree.is_dir());
+    assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/remove-duplicate"]).is_ok());
+    let names = tmux.tmux_output(&["list-windows", "-t", "project:", "-F", "#{window_name}"])?;
+    assert_eq!(names.lines().filter(|name| *name == window_name).count(), 2);
     Ok(())
 }
 

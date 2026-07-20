@@ -3,10 +3,11 @@ use anyhow::{Context, Result, bail};
 use crate::cli;
 use crate::slug::workspace_slug_from_branch;
 
-use super::context::{load_repo_context, load_tmux_context};
+use super::context::load_repo_context;
 use super::files::{apply_file_operations, run_post_create};
 use super::launch::resolve_add;
 use super::parent::{record_parent, validate_no_cycle};
+use super::project_session;
 use super::resolve::{
     find_kmux_workspace_by_name, find_kmux_workspace_by_slug, resolved_from_kmux_worktree,
 };
@@ -18,7 +19,13 @@ use crate::workspace::WorkspaceRecord;
 pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let launcher = resolve_add(&repo.config, &args)?;
-    let tmux = load_tmux_context()?;
+    let tmux = project_session::resolve(&repo.paths)?.require("kmux add")?;
+    if !args.background && !tmux.is_ambient {
+        bail!(
+            "kmux add cannot focus resolved tmux session '{}' because the caller is not attached to it; pass --background",
+            tmux.session_name
+        );
+    }
     let target = AddTarget::resolve(&repo, &args)?;
     let workspace_slug = workspace_slug_from_branch(&target.branch)?;
     let worktree_path = repo.paths.workspace_path(&workspace_slug);
@@ -43,7 +50,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     }
     if tmux
         .tmux
-        .window_exists_by_name(&tmux.session_name, &window_name)?
+        .window_exists_by_name_by_id(&tmux.session_id, &window_name)?
     {
         bail!(
             "tmux window '{}' already exists for workspace '{}'; remove it before creating the workspace",

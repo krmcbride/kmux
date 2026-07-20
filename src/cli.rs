@@ -287,6 +287,35 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_commands_reject_removed_tmux_session_selector() {
+        for arguments in [
+            vec![
+                "kmux",
+                "add",
+                "feature/sidebar",
+                "--tmux-session",
+                "project-alpha",
+            ],
+            vec!["kmux", "restore", "--tmux-session", "project-alpha"],
+            vec![
+                "kmux",
+                "remove",
+                "feature/sidebar",
+                "--tmux-session",
+                "project-alpha",
+            ],
+        ] {
+            let error = Cli::try_parse_from(arguments)
+                .expect_err("project-session ambiguity is no longer a CLI choice");
+            assert!(error.to_string().contains("--tmux-session"));
+        }
+
+        let restore =
+            Cli::try_parse_from(["kmux", "restore"]).expect("argument-free restore should parse");
+        assert!(matches!(restore.command, Command::Restore));
+    }
+
+    #[test]
     fn hidden_launcher_ingress_parses_only_its_request_path() {
         let cli = Cli::try_parse_from(["kmux", "_launch", "/tmp/request"])
             .expect("hidden ingress should parse");

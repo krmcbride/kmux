@@ -12,7 +12,7 @@ use std::process::{Command, ExitStatus};
 
 use anyhow::{Context, Result, anyhow, bail};
 
-use crate::telemetry;
+use crate::{LIFECYCLE_ACTIVE_ENV, telemetry};
 
 #[derive(Debug, Clone)]
 /// Thin adapter for running Git commands from a fixed working directory.
@@ -375,6 +375,10 @@ impl Git {
                 Command::new("git")
                     .args(&args)
                     .current_dir(&self.cwd)
+                    // Git hooks and checkout filters run synchronously inside
+                    // this child. Prevent them from recursively waiting on a
+                    // lifecycle lock held by their parent kmux process.
+                    .env(LIFECYCLE_ACTIVE_ENV, "1")
                     .output()
                     .with_context(|| format!("failed to run git {display_args}"))
             },

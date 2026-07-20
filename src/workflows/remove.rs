@@ -5,7 +5,8 @@ use anyhow::{Context, Result, bail};
 use crate::cli;
 use crate::state::workspace::WorkspaceStateStore;
 
-use super::context::{load_repo_context, load_tmux_context};
+use super::context::load_repo_context;
+use super::project_session;
 use super::resolve::{resolve_current_kmux_workspace, resolve_workspace};
 use crate::paths::same_path;
 use crate::workspace::WorkspaceRecord;
@@ -13,8 +14,8 @@ use crate::workspace::WorkspaceRecord;
 /// Remove a kmux workspace, its worktree, local branch, tmux window, and owned parent link.
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let repo = load_repo_context()?;
-    let tmux = load_tmux_context()?;
     let resolved = resolve_remove_target(&repo, args.name.as_deref())?;
+    let tmux_resolution = project_session::resolve(&repo.paths)?;
 
     if same_path(resolved.path(), &repo.paths.main_worktree) {
         bail!(
@@ -41,6 +42,11 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let remaining_children = state.children_of(branch);
 
     leave_worktree_before_removal(&repo.paths.main_worktree)?;
+    // Refresh live tmux evidence at the last responsible moment. The held
+    // project lifecycle lock prevents another kmux lifecycle command from
+    // changing project windows between this check and Git removal.
+    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
+    let window_id = tmux_resolution.prepare_workspace_removal(resolved.path(), &window_name)?;
     repo.git.remove_worktree(resolved.path(), args.force)?;
     repo.git.delete_local_branch(branch, true)?;
     if state.remove_parent(branch) {
@@ -54,12 +60,8 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         );
     }
 
-    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
-    if tmux
-        .tmux
-        .window_exists_by_name(&tmux.session_name, &window_name)?
-    {
-        tmux.tmux.kill_window(&tmux.session_name, &window_name)?;
+    if let Some(window_id) = window_id {
+        tmux_resolution.kill_prepared_window(&window_id)?;
     }
 
     println!("removed {}", resolved.workspace_slug());
