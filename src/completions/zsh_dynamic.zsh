@@ -8,9 +8,9 @@ _kmux_workspaces() {
 }
 
 # Branch refs that are not already checked out in a worktree.
-_kmux_add_branches() {
+_kmux_create_branches() {
     local -a branches
-    branches=("${(@f)$(kmux _complete-add-branches 2>/dev/null)}")
+    branches=("${(@f)$(kmux _complete-create-branches 2>/dev/null)}")
     branches=(${branches:#})
     (( ${#branches} )) && compadd -a branches
 }
@@ -36,18 +36,24 @@ _kmux() {
     setopt extended_glob
     setopt no_nomatch
 
-    local cmd="${words[2]}"
+    local namespace="${words[2]}"
+    local cmd="${words[3]}"
 
-    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--launch" ]]; then
+    if [[ "$namespace" != "workspace" ]]; then
+        _kmux_base "$@"
+        return
+    fi
+
+    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--launcher" ]]; then
         _kmux_launchers
         return
     fi
 
-    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--input" ]]; then
+    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--launcher-input" ]]; then
         return
     fi
 
-    if [[ "$cmd" == "add" && "${words[CURRENT-1]}" == "--parent" ]]; then
+    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--parent" ]]; then
         _kmux_git_branches
         return
     fi
@@ -61,16 +67,16 @@ _kmux() {
     fi
 
     case "$cmd" in
-        remove|rm|status)
+        remove)
             _kmux_workspaces
             ;;
-        add)
-            _kmux_add_branches
+        create)
+            _kmux_create_branches
             ;;
-        parent)
+        set-parent)
             local positional_before=0
             local index
-            for ((index = 3; index < CURRENT; index++)); do
+            for ((index = 4; index < CURRENT; index++)); do
                 [[ "${words[index]}" != -* ]] && ((positional_before++))
             done
             if (( positional_before == 1 )); then

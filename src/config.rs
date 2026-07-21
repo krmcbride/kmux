@@ -64,6 +64,13 @@ impl Config {
         self.launchers.keys().map(String::as_str)
     }
 
+    /// Iterate configured launcher names and records in deterministic order.
+    pub fn launchers(&self) -> impl Iterator<Item = (&str, &LauncherConfig)> {
+        self.launchers
+            .iter()
+            .map(|(name, launcher)| (name.as_str(), launcher))
+    }
+
     /// Return the XDG config-file path used for the global kmux YAML config.
     fn global_path() -> Result<PathBuf> {
         let base_dirs = BaseDirs::new().context("could not determine config directory")?;
@@ -151,12 +158,19 @@ impl WindowConfig {
 #[serde(deny_unknown_fields)]
 /// Exact executable and static arguments for one named workspace launcher.
 pub struct LauncherConfig {
+    #[serde(default)]
+    description: Option<String>,
     command: String,
     #[serde(default)]
     args: Vec<String>,
 }
 
 impl LauncherConfig {
+    /// Return the optional user-facing purpose of this launcher.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
     /// Return the launcher executable exactly as configured.
     pub fn command(&self) -> &str {
         &self.command
@@ -168,6 +182,14 @@ impl LauncherConfig {
     }
 
     fn validate(&self, name: &str) -> Result<()> {
+        if let Some(description) = &self.description {
+            if description.trim().is_empty() {
+                bail!("launchers.{name}.description must not be blank");
+            }
+            if description.contains('\0') {
+                bail!("launchers.{name}.description must not contain NUL");
+            }
+        }
         if self.command.trim().is_empty() {
             bail!("launchers.{name}.command must not be blank");
         }
@@ -415,6 +437,7 @@ window:
   default_launcher: editor
 launchers:
   editor:
+    description: Open the workspace in a text editor
     command: nvim
     args: ["--clean", ""]
 status_icons:
@@ -441,6 +464,10 @@ sidebar:
         assert_eq!(config.window_prefix(), "git-");
         let (name, launcher) = config.default_launcher().expect("default launcher");
         assert_eq!(name, "editor");
+        assert_eq!(
+            launcher.description(),
+            Some("Open the workspace in a text editor")
+        );
         assert_eq!(launcher.command(), "nvim");
         assert_eq!(launcher.args(), ["--clean", ""]);
         assert_eq!(config.status_icons.working(), "spin");
@@ -477,6 +504,7 @@ sidebar:
             r#"
 launchers:
   example-launcher:
+    description: Run the example launcher
     command: "  executable with spaces  "
     args: ["", " two words ", "'quoted'", "--leading", "*.rs", ">file"]
   agent_2:
@@ -486,6 +514,7 @@ launchers:
         .expect("valid launchers should parse");
 
         let launcher = config.launcher("example-launcher").expect("launcher");
+        assert_eq!(launcher.description(), Some("Run the example launcher"));
         assert_eq!(launcher.command(), "  executable with spaces  ");
         assert_eq!(
             launcher.args(),
@@ -497,6 +526,10 @@ launchers:
                 .expect("launcher")
                 .args()
                 .is_empty()
+        );
+        assert_eq!(
+            config.launcher("agent_2").expect("launcher").description(),
+            None
         );
         assert!(config.default_launcher().is_none());
         assert_eq!(
@@ -546,6 +579,14 @@ launchers:
             (
                 "launchers: {editor: {command: example, args: [\"arg\\0value\"]}}\n",
                 "launchers.editor.args[0]",
+            ),
+            (
+                "launchers: {editor: {description: '  ', command: example}}\n",
+                "launchers.editor.description",
+            ),
+            (
+                "launchers: {editor: {description: \"example\\0description\", command: example}}\n",
+                "launchers.editor.description",
             ),
             (
                 "window: {default_launcher: missing}\nlaunchers: {editor: {command: example}}\n",

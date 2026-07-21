@@ -9,10 +9,10 @@ use super::window::{RestoreWindow, restore_shell, start_launcher};
 /// Recreate or repair tmux windows for existing strict kmux Git worktrees only.
 pub(super) fn run() -> Result<()> {
     let repo = load_repo_context()?;
-    // Restore intentionally ignores any one-shot launcher used by `add`: only
+    // Restore intentionally ignores any one-shot launcher used by `create`: only
     // the current configured default applies to newly recreated windows.
     let launcher = resolve_default(&repo.config);
-    let tmux = project_session::resolve(&repo.paths)?.require("kmux restore")?;
+    let tmux = project_session::resolve(&repo.paths)?.require("kmux workspace restore")?;
     let workspaces = strict_kmux_workspaces(&repo)?;
 
     if workspaces.is_empty() {

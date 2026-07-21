@@ -88,5 +88,5 @@ fn resolve_remove_target(
         return resolve_workspace(repo, name);
     }
 
-    resolve_current_kmux_workspace(repo, "remove")
+    resolve_current_kmux_workspace(repo, "workspace remove")
 }

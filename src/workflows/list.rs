@@ -16,7 +16,7 @@ use crate::paths::same_path;
 use crate::workspace::WorkspaceInventoryItem;
 
 /// Print workspace inventory, optionally as JSON for machine consumers.
-pub(super) fn run(args: cli::JsonArgs) -> Result<()> {
+pub(super) fn run(args: cli::ListArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let items = list_items(&repo)?;
 

@@ -5,28 +5,28 @@ use crate::slug::workspace_slug_from_branch;
 
 use super::context::load_repo_context;
 use super::files::{apply_file_operations, run_post_create};
-use super::launch::resolve_add;
-use super::parent::{record_parent, validate_no_cycle};
+use super::launch::resolve_create;
 use super::project_session;
 use super::resolve::{
     find_kmux_workspace_by_name, find_kmux_workspace_by_slug, resolved_from_kmux_worktree,
 };
+use super::set_parent::{record_parent, validate_no_cycle};
 use super::window::{create_shell, select_created, start_launcher};
 use crate::state::workspace::WorkspaceStateStore;
 use crate::workspace::WorkspaceRecord;
 
 /// Create a new branch workspace, tmux window, and parent metadata link.
-pub(super) fn run(args: cli::AddArgs) -> Result<()> {
+pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
     let repo = load_repo_context()?;
-    let launcher = resolve_add(&repo.config, &args)?;
-    let tmux = project_session::resolve(&repo.paths)?.require("kmux add")?;
+    let launcher = resolve_create(&repo.config, &args)?;
+    let tmux = project_session::resolve(&repo.paths)?.require("kmux workspace create")?;
     if !args.background && !tmux.is_ambient {
         bail!(
-            "kmux add cannot focus resolved tmux session '{}' because the caller is not attached to it; pass --background",
+            "kmux workspace create cannot focus resolved tmux session '{}' because the caller is not attached to it; pass --background",
             tmux.session_name
         );
     }
-    let target = AddTarget::resolve(&repo, &args)?;
+    let target = CreateTarget::resolve(&repo, &args)?;
     let workspace_slug = workspace_slug_from_branch(&target.branch)?;
     let worktree_path = repo.paths.workspace_path(&workspace_slug);
     let window_name = repo.config.workspace_window_name(&workspace_slug);
@@ -67,7 +67,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
     }
     if repo.git.local_branch_exists(&target.branch)? {
         bail!(
-            "branch '{}' already exists; kmux add creates new branch workspaces only",
+            "branch '{}' already exists; kmux workspace create creates new branch workspaces only",
             target.branch
         );
     }
@@ -132,7 +132,7 @@ pub(super) fn run(args: cli::AddArgs) -> Result<()> {
 }
 
 // Existing kmux worktrees are create-only conflicts, even when the tmux window
-// is gone. `kmux restore` owns tmux reconciliation for those cases.
+// is gone. `kmux workspace restore` owns tmux reconciliation for those cases.
 fn bail_existing_workspace(expected_branch: &str, resolved: WorkspaceRecord) -> Result<()> {
     if resolved.branch() != Some(expected_branch) {
         bail!(
@@ -144,22 +144,22 @@ fn bail_existing_workspace(expected_branch: &str, resolved: WorkspaceRecord) -> 
         );
     }
     bail!(
-        "workspace for '{}' already exists at {}; use 'kmux restore' to restore tmux windows",
+        "workspace for '{}' already exists at {}; use 'kmux workspace restore' to restore tmux windows",
         expected_branch,
         resolved.path().display()
     );
 }
 
-struct AddTarget {
+struct CreateTarget {
     branch: String,
     start_point: String,
     parent: String,
 }
 
-impl AddTarget {
+impl CreateTarget {
     // Resolve remote-tracking input into the local branch name to create while
     // preserving the remote ref as the start point.
-    fn resolve(repo: &super::context::RepoContext, args: &cli::AddArgs) -> Result<Self> {
+    fn resolve(repo: &super::context::RepoContext, args: &cli::CreateArgs) -> Result<Self> {
         let parent = args
             .parent
             .as_ref()

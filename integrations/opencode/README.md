@@ -72,12 +72,14 @@ are arriving.
 
 ## Existing-server launcher
 
-Define a kmux launcher with an explicit server URL. The name `agent` is only a
-convention used by the packaged delegation skill:
+Define a kmux launcher with an explicit server URL. Launcher names are
+user-defined; a description lets users and agents identify its purpose through
+`kmux config`:
 
 ```yaml
 launchers:
-  agent:
+  opencode:
+    description: OpenCode attached to the existing local server
     command: kmux-opencode-launcher
     args:
       - --server-url
@@ -117,12 +119,13 @@ origin. While waiting for `opencode attach`, the adapter forwards catchable
 Terminal Ctrl-C, pane closure, and direct adapter termination therefore retain one
 foreground process owner; `SIGKILL` remains uncatchable by definition.
 
-Kmux reports add/restore success after the adapter process spawns, before server
-health, session creation, prompt execution, or TUI attachment completes. Later
-errors remain visible in the workspace shell. If session creation succeeds but
-prompt submission fails, the session is left intact. If prompt submission succeeds
-but attach cannot start, headless work can continue on the server. The adapter does
-not delete or abort either partial state automatically.
+`kmux workspace create` and `kmux workspace restore` report success after the
+adapter process spawns, before server health, session creation, prompt execution,
+or TUI attachment completes. Later errors remain visible in the workspace shell.
+If session creation succeeds but prompt submission fails, the session is left
+intact. If prompt submission succeeds but attach cannot start, headless work can
+continue on the server. The adapter does not delete or abort either partial state
+automatically.
 
 OpenCode can request permissions or ask questions before attachment. Delayed
 question recovery is supported by the tested server topology; permission behavior
@@ -131,9 +134,9 @@ attachment sleeps. Attach to the exact session to answer pending interaction.
 
 The prompt is excluded from HTTP errors, logs, the `opencode attach` argv, and kmux
 state, but it is the launcher adapter's final argv element for that process's
-lifetime. Use `kmux add ... --input -` to avoid placing it in the original kmux
-caller argv; same-user process inspection of the adapter remains an explicit
-exposure boundary.
+lifetime. Use `kmux workspace create ... --launcher-input -` to avoid placing it
+in the original kmux caller argv; same-user process inspection of the adapter
+remains an explicit exposure boundary.
 
 ## Behavior and diagnostics
 

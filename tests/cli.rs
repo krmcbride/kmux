@@ -1,6 +1,7 @@
 pub mod support;
 
 use std::fs;
+use std::process::Command as ProcessCommand;
 
 use anyhow::Result;
 use assert_cmd::Command;
@@ -15,16 +16,209 @@ fn help_shows_current_commands() {
         .arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("add"))
-        .stdout(predicate::str::contains("parent"))
-        .stdout(predicate::str::contains("restore"))
-        .stdout(predicate::str::contains("list"))
-        .stdout(predicate::str::contains("remove"))
+        .stdout(predicate::str::contains("workspace"))
+        .stdout(predicate::str::contains("config"))
         .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("sidebar"))
         .stdout(predicate::str::contains("set-agent-status"))
         .stdout(predicate::str::contains("completions"))
+        .stdout(predicate::str::contains("_complete-").not())
+        .stdout(predicate::str::contains("_launch").not())
         .stdout(predicate::str::contains("\n  help ").not());
+}
+
+#[test]
+fn workspace_help_shows_lifecycle_commands() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["workspace", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: kmux workspace <COMMAND>"))
+        .stdout(predicate::str::contains("  create"))
+        .stdout(predicate::str::contains("  list"))
+        .stdout(predicate::str::contains("  remove"))
+        .stdout(predicate::str::contains("  set-parent"))
+        .stdout(predicate::str::contains("  restore"));
+}
+
+#[test]
+fn long_help_is_capped_at_80_columns() {
+    for args in [
+        ["workspace", "create", "--help"].as_slice(),
+        ["set-agent-status", "--help"].as_slice(),
+    ] {
+        let output = Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .env("COLUMNS", "200")
+            .args(args)
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+        let help = String::from_utf8_lossy(&output);
+
+        for line in help.lines() {
+            assert!(
+                line.chars().count() <= 80,
+                "help line exceeded 80 columns: {line:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn removed_root_lifecycle_commands_and_aliases_fail() {
+    for command in ["add", "list", "ls", "remove", "rm", "parent", "restore"] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .arg(command)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unrecognized subcommand"));
+    }
+}
+
+#[test]
+fn workspace_rejects_old_lifecycle_names_and_aliases() {
+    for command in ["add", "ls", "rm", "parent"] {
+        Command::cargo_bin("kmux")
+            .expect("kmux binary should be available")
+            .args(["workspace", command])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("unrecognized subcommand"));
+    }
+}
+
+#[test]
+fn config_help_exposes_json_option() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .args(["config", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("Usage: kmux config [OPTIONS]"))
+        .stdout(predicate::str::contains("--json"));
+}
+
+#[test]
+fn config_prints_the_same_resolved_shape_as_yaml_and_json() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: work-
+window:
+  default_launcher: review-agent
+launchers:
+  review-agent:
+    description: Review project changes and report findings
+    command: example-review-agent
+    args: ["--mode", "review"]
+  code-agent:
+    command: example-code-agent
+post_create:
+  - example-setup
+files:
+  copy: [.envrc]
+  symlink: [local-context]
+status_icons:
+  working: work
+  working_frames: [a, b]
+  waiting: ask
+  done: done
+  sleeping: sleep
+sidebar:
+  idle_after_seconds: 900
+  width: {min: 30, percent: 25, max: 50}
+"#,
+    )?;
+
+    let yaml_output = Command::cargo_bin("kmux")?
+        .current_dir(temp.path())
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("PATH", "")
+        .arg("config")
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let json_output = Command::cargo_bin("kmux")?
+        .current_dir(temp.path())
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("PATH", "")
+        .args(["config", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let yaml: serde_json::Value = yaml_serde::from_slice(&yaml_output)?;
+    let json: serde_json::Value = serde_json::from_slice(&json_output)?;
+    let expected = serde_json::json!({
+        "window_prefix": "work-",
+        "window": {"default_launcher": "review-agent"},
+        "launchers": {
+            "code-agent": {
+                "description": null,
+                "command": "example-code-agent",
+                "args": []
+            },
+            "review-agent": {
+                "description": "Review project changes and report findings",
+                "command": "example-review-agent",
+                "args": ["--mode", "review"]
+            }
+        },
+        "post_create": ["example-setup"],
+        "files": {
+            "copy": [".envrc"],
+            "symlink": ["local-context"]
+        },
+        "status_icons": {
+            "working": "work",
+            "working_frames": ["a", "b"],
+            "waiting": "ask",
+            "done": "done",
+            "sleeping": "sleep"
+        },
+        "sidebar": {
+            "width": {"min": 30, "percent": 25, "max": 50},
+            "idle_after_seconds": 900
+        }
+    });
+
+    assert_eq!(yaml, expected);
+    assert_eq!(json, expected);
+    Ok(())
+}
+
+#[test]
+fn config_reports_invalid_launcher_descriptions() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let config_home = write_config(
+        temp.path(),
+        "launchers: {example: {description: '  ', command: example-agent}}\n",
+    )?;
+
+    Command::cargo_bin("kmux")?
+        .current_dir(temp.path())
+        .env("XDG_CONFIG_HOME", config_home)
+        .arg("config")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "launchers.example.description must not be blank",
+        ));
+    Ok(())
 }
 
 #[test]
@@ -40,46 +234,35 @@ fn help_subcommands_are_disabled() {
 }
 
 #[test]
-fn parent_help_uses_stable_parent_then_child_order() {
+fn set_parent_help_uses_stable_parent_then_child_order() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
-        .args(["parent", "--help"])
+        .args(["workspace", "set-parent", "--help"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Usage: kmux parent <PARENT> [CHILD]",
-        ))
-        .stdout(predicate::str::contains(
-            "Defaults to the current kmux workspace",
+            "Usage: kmux workspace set-parent <PARENT> [CHILD]",
         ));
 }
 
 #[test]
-fn add_help_documents_public_launcher_contract_without_hidden_ingress() {
+fn create_help_exposes_launcher_options_without_hidden_ingress() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
-        .args(["add", "--help"])
+        .args(["workspace", "create", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("--launch <LAUNCH>"))
-        .stdout(predicate::str::contains("--input <INPUT>"))
-        .stdout(predicate::str::contains("--tmux-session").not())
-        .stdout(predicate::str::contains("'-' reads caller stdin"));
-
-    Command::cargo_bin("kmux")
-        .expect("kmux binary should be available")
-        .arg("--help")
-        .assert()
-        .success()
-        .stdout(predicate::str::contains("_launch").not());
+        .stdout(predicate::str::contains("--launcher <LAUNCHER>"))
+        .stdout(predicate::str::contains("--launcher-input <INPUT>"))
+        .stdout(predicate::str::contains("--tmux-session").not());
 }
 
 #[test]
 fn lifecycle_help_omits_project_session_override() {
     for args in [
-        ["add", "--help"].as_slice(),
-        ["restore", "--help"].as_slice(),
-        ["remove", "--help"].as_slice(),
+        ["workspace", "create", "--help"].as_slice(),
+        ["workspace", "restore", "--help"].as_slice(),
+        ["workspace", "remove", "--help"].as_slice(),
     ] {
         Command::cargo_bin("kmux")
             .expect("kmux binary should be available")
@@ -141,37 +324,42 @@ fn sidebar_requires_an_explicit_command() {
 }
 
 #[test]
-fn status_help_documents_global_export_options() {
+fn workspace_requires_an_explicit_command() {
+    Command::cargo_bin("kmux")
+        .expect("kmux binary should be available")
+        .arg("workspace")
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains("Usage: kmux workspace <COMMAND>"));
+}
+
+#[test]
+fn status_help_exposes_global_export_options() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
         .args(["status", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("global agent workspace activity"))
         .stdout(predicate::str::contains("--json"))
         .stdout(predicate::str::contains("--git"));
 }
 
 #[test]
-fn set_agent_status_help_documents_integration_contract() {
+fn set_agent_status_help_exposes_integration_options() {
     Command::cargo_bin("kmux")
         .expect("kmux binary should be available")
         .args(["set-agent-status", "--help"])
         .assert()
         .success()
-        .stdout(predicate::str::contains("supported integration surface"))
         .stdout(predicate::str::contains("--agent-kind"))
         .stdout(predicate::str::contains("--session-id"))
         .stdout(predicate::str::contains("--reporter-kind"))
         .stdout(predicate::str::contains("--reporter-instance"))
-        .stdout(predicate::str::contains("title, context, or target hints"))
         .stdout(predicate::str::contains("working"))
         .stdout(predicate::str::contains("waiting"))
         .stdout(predicate::str::contains("done"))
-        .stdout(predicate::str::contains(
-            "Delete the observation identified by this session and reporter key",
-        ))
-        .stdout(predicate::str::contains("Delete all reporter observations"))
+        .stdout(predicate::str::contains("--delete"))
+        .stdout(predicate::str::contains("--delete-session"))
         .stdout(predicate::str::contains("--title"))
         .stdout(predicate::str::contains("--context"))
         .stdout(predicate::str::contains("--tmux-instance"))
@@ -191,13 +379,81 @@ fn completions_command_emits_shell_completion() {
         .stdout(predicate::str::contains("_kmux"))
         .stdout(predicate::str::contains("_kmux_workspaces"))
         .stdout(predicate::str::contains("_complete-workspaces"))
-        .stdout(predicate::str::contains("_complete-add-branches"))
+        .stdout(predicate::str::contains("_complete-create-branches"))
         .stdout(predicate::str::contains("--parent"))
         .stdout(predicate::str::contains("_complete-git-branches"))
         .stdout(predicate::str::contains("_complete-launchers"))
-        .stdout(predicate::str::contains("--launch"))
-        .stdout(predicate::str::contains("--input"))
+        .stdout(predicate::str::contains("--launcher"))
+        .stdout(predicate::str::contains("--launcher-input"))
         .stdout(predicate::str::contains("--tmux-session").not());
+}
+
+#[test]
+fn fish_completions_handle_nested_dynamic_values_and_command_like_names() -> Result<()> {
+    if ProcessCommand::new("fish")
+        .arg("--version")
+        .output()
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    let temp = tempfile::tempdir()?;
+    let completion_path = temp.path().join("kmux.fish");
+    let output = Command::cargo_bin("kmux")?
+        .args(["completions", "fish"])
+        .output()?;
+    assert!(output.status.success());
+    fs::write(&completion_path, output.stdout)?;
+
+    let complete = |commandline: &str| -> Result<String> {
+        let script = r#"
+source $argv[1]
+function kmux
+    switch $argv[1]
+        case _complete-git-branches
+            echo main
+        case _complete-launchers
+            echo agent
+        case _complete-workspaces
+            echo feature-alpha
+        case _complete-create-branches
+            echo feature-new
+    end
+end
+complete -C $argv[2]
+"#;
+        let output = ProcessCommand::new("fish")
+            .args([
+                "--no-config",
+                "-c",
+                script,
+                &completion_path.display().to_string(),
+                commandline,
+            ])
+            .output()?;
+        assert!(
+            output.status.success(),
+            "fish completion failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        Ok(String::from_utf8(output.stdout)?)
+    };
+
+    assert_eq!(complete("kmux workspace create --parent ")?, "main\n");
+    assert_eq!(complete("kmux workspace create --launcher ")?, "agent\n");
+    assert_eq!(complete("kmux workspace create --launcher-input ")?, "");
+    assert_eq!(
+        complete("kmux workspace set-parent main fea")?,
+        "feature-alpha\n"
+    );
+
+    let command_like_name = complete("kmux workspace remove create --")?;
+    for create_option in ["--background", "--launcher-input", "--launcher", "--parent"] {
+        assert!(!command_like_name.lines().any(|line| line == create_option));
+    }
+
+    Ok(())
 }
 
 #[test]
@@ -285,17 +541,21 @@ fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
     assert!(!workspaces.lines().any(|line| line == "custom-completion"));
     assert!(!workspaces.lines().any(|line| line == "detached-completion"));
 
-    let add_branches = kmux_stdout(&repo, &["_complete-add-branches"])?;
-    assert!(add_branches.lines().any(|line| line == "feature/addable"));
-    assert!(add_branches.lines().any(|line| line == "feature/base"));
+    let create_branches = kmux_stdout(&repo, &["_complete-create-branches"])?;
     assert!(
-        add_branches
+        create_branches
+            .lines()
+            .any(|line| line == "feature/addable")
+    );
+    assert!(create_branches.lines().any(|line| line == "feature/base"));
+    assert!(
+        create_branches
             .lines()
             .any(|line| line == "origin/feature/remote")
     );
-    assert!(!add_branches.lines().any(|line| line == "main"));
-    assert!(!add_branches.lines().any(|line| line == "origin/main"));
-    assert!(!add_branches.lines().any(|line| line == "feature/active"));
+    assert!(!create_branches.lines().any(|line| line == "main"));
+    assert!(!create_branches.lines().any(|line| line == "origin/main"));
+    assert!(!create_branches.lines().any(|line| line == "feature/active"));
 
     let git_branches = kmux_stdout(&repo, &["_complete-git-branches"])?;
     assert!(git_branches.lines().any(|line| line == "main"));

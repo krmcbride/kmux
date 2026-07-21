@@ -71,7 +71,7 @@ fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
     let worktree = temp.path().join("project__worktrees/feature-auth");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/auth"])
+        .args(["workspace", "create", "feature/auth"])
         .assert()
         .success()
         .stdout(predicate::str::contains("created feature-auth"));
@@ -79,14 +79,14 @@ fn lifecycle_commands_manage_worktree_and_window() -> Result<()> {
     assert!(tmux.window_exists("kmux-feature-auth")?);
 
     kmux(&repo, &config_home, &tmux)?
-        .arg("ls")
+        .args(["workspace", "list"])
         .assert()
         .success()
         .stdout(predicate::str::contains("feature/auth"))
         .stdout(predicate::str::contains("project__worktrees/feature-auth"));
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["rm", "feature-auth"])
+        .args(["workspace", "remove", "feature-auth"])
         .assert()
         .success()
         .stdout(predicate::str::contains("removed feature-auth"));
@@ -108,7 +108,7 @@ fn detached_lifecycle_resolves_and_reuses_unique_project_session() -> Result<()>
 
     kmux_detached(&repo, &config_home, &tmux)?
         .env("TMUX", "stale-client-state")
-        .args(["add", "feature/detached", "--background"])
+        .args(["workspace", "create", "feature/detached", "--background"])
         .assert()
         .success()
         .stdout(predicate::str::contains("created feature-detached"));
@@ -117,14 +117,14 @@ fn detached_lifecycle_resolves_and_reuses_unique_project_session() -> Result<()>
 
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-detached"])?;
     kmux_detached(&worktree, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success()
         .stdout(predicate::str::contains("restored feature-detached"));
     assert!(tmux.window_exists("kmux-feature-detached")?);
 
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-detached", "--force"])
+        .args(["workspace", "remove", "feature-detached", "--force"])
         .assert()
         .success()
         .stdout(predicate::str::contains("removed feature-detached"));
@@ -134,7 +134,7 @@ fn detached_lifecycle_resolves_and_reuses_unique_project_session() -> Result<()>
 }
 
 #[test]
-fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Result<()> {
+fn detached_create_rejects_split_project_and_never_focuses_another_client() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -144,7 +144,7 @@ fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Resu
     tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
 
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["add", "feature/ambiguous", "--background"])
+        .args(["workspace", "create", "feature/ambiguous", "--background"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -159,7 +159,7 @@ fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Resu
     kmux_detached(&repo, &config_home, &tmux)?
         .env("TMUX", "stale-client-state")
         .env("TMUX_PANE", "%999999")
-        .args(["add", "feature/focus-refused"])
+        .args(["workspace", "create", "feature/focus-refused"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("caller is not attached"))
@@ -168,7 +168,7 @@ fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Resu
 
     kmux_detached(&repo, &config_home, &tmux)?
         .env("TMUX_PANE", "project:")
-        .args(["add", "feature/malformed-context"])
+        .args(["workspace", "create", "feature/malformed-context"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("caller is not attached"));
@@ -188,7 +188,7 @@ fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Resu
         "#{pane_id}",
     ])?;
     kmux_with_pane(&repo, &config_home, &tmux, &neutral_pane)?
-        .args(["add", "feature/wrong-session"])
+        .args(["workspace", "create", "feature/wrong-session"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("caller is not attached"));
@@ -197,7 +197,7 @@ fn detached_add_rejects_split_project_and_never_focuses_another_client() -> Resu
 }
 
 #[test]
-fn detached_add_rejects_mixed_project_session_before_mutation() -> Result<()> {
+fn detached_create_rejects_mixed_project_session_before_mutation() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let (_other_temp, other_repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
@@ -217,7 +217,7 @@ fn detached_add_rejects_mixed_project_session_before_mutation() -> Result<()> {
     ])?;
 
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["add", "feature/mixed", "--background"])
+        .args(["workspace", "create", "feature/mixed", "--background"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -228,7 +228,7 @@ fn detached_add_rejects_mixed_project_session_before_mutation() -> Result<()> {
 }
 
 #[test]
-fn detached_add_rejects_project_window_linked_across_sessions() -> Result<()> {
+fn detached_create_rejects_project_window_linked_across_sessions() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let neutral = tempfile::tempdir()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
@@ -248,7 +248,7 @@ fn detached_add_rejects_project_window_linked_across_sessions() -> Result<()> {
     tmux.tmux_output(&["link-window", "-s", &project_window, "-t", "project-copy:"])?;
 
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["add", "feature/linked", "--background"])
+        .args(["workspace", "create", "feature/linked", "--background"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -259,7 +259,7 @@ fn detached_add_rejects_project_window_linked_across_sessions() -> Result<()> {
 }
 
 #[test]
-fn detached_add_ignores_sidebar_only_and_other_project_sessions() -> Result<()> {
+fn detached_create_ignores_sidebar_only_and_other_project_sessions() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -275,7 +275,12 @@ fn detached_add_ignores_sidebar_only_and_other_project_sessions() -> Result<()> 
     ])?;
 
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["add", "feature/sidebar-only", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/sidebar-only",
+            "--background",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -283,7 +288,7 @@ fn detached_add_ignores_sidebar_only_and_other_project_sessions() -> Result<()> 
         ));
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/sidebar-only"]).is_err());
     kmux_detached(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -293,7 +298,12 @@ fn detached_add_ignores_sidebar_only_and_other_project_sessions() -> Result<()> 
     let (other_temp, other_repo) = init_repo()?;
     let other_config = write_config(other_temp.path(), "window_prefix: kmux-\n")?;
     kmux_detached(&other_repo, &other_config, &tmux)?
-        .args(["add", "feature/other-project", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/other-project",
+            "--background",
+        ])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -321,7 +331,12 @@ fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Res
     let window_name = "kmux-feature-restore-guard";
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/restore-guard", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/restore-guard",
+            "--background",
+        ])
         .assert()
         .success();
     tmux.tmux_output(&["kill-window", "-t", window_name])?;
@@ -338,7 +353,7 @@ fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Res
         &other_path,
     ])?;
     kmux_detached(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -350,7 +365,7 @@ fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Res
     let repo_path = repo.display().to_string();
     tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
     kmux_detached(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -368,7 +383,7 @@ fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Res
         "sidebar",
     ])?;
     kmux_detached(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -391,7 +406,12 @@ fn remove_rejects_mixed_and_split_topology_before_git_mutation() -> Result<()> {
     let window_name = "kmux-feature-remove-guard";
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/remove-guard", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/remove-guard",
+            "--background",
+        ])
         .assert()
         .success();
 
@@ -407,7 +427,7 @@ fn remove_rejects_mixed_and_split_topology_before_git_mutation() -> Result<()> {
         &other_path,
     ])?;
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-remove-guard", "--force"])
+        .args(["workspace", "remove", "feature-remove-guard", "--force"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -421,7 +441,7 @@ fn remove_rejects_mixed_and_split_topology_before_git_mutation() -> Result<()> {
     let repo_path = repo.display().to_string();
     tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-remove-guard", "--force"])
+        .args(["workspace", "remove", "feature-remove-guard", "--force"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -443,7 +463,7 @@ fn detached_remove_blocks_scratch_panes_and_is_safe_without_a_session() -> Resul
     let worktree = temp.path().join("project__worktrees/feature-remove-live");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/remove-live", "--background"])
+        .args(["workspace", "create", "feature/remove-live", "--background"])
         .assert()
         .success();
     let worktree_text = worktree.display().to_string();
@@ -458,7 +478,7 @@ fn detached_remove_blocks_scratch_panes_and_is_safe_without_a_session() -> Resul
         &worktree_text,
     ])?;
     kmux_detached(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-remove-live", "--force"])
+        .args(["workspace", "remove", "feature-remove-live", "--force"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -470,7 +490,7 @@ fn detached_remove_blocks_scratch_panes_and_is_safe_without_a_session() -> Resul
     kmux_detached(&worktree, &config_home, &tmux)?
         .env("TMUX", "stale-client-state")
         .env("TMUX_PANE", "%999999")
-        .args(["remove", "--force"])
+        .args(["workspace", "remove", "--force"])
         .assert()
         .success()
         .stdout(predicate::str::contains("removed feature-remove-live"));
@@ -498,7 +518,12 @@ fn concurrent_waiter_resnapshots_topology_after_project_lock() -> Result<()> {
 
     let mut first = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
     first
-        .args(["add", "feature/concurrent-a", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/concurrent-a",
+            "--background",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let first = first.spawn()?;
@@ -508,7 +533,12 @@ fn concurrent_waiter_resnapshots_topology_after_project_lock() -> Result<()> {
     second
         .env("KMUX_TELEMETRY", "1")
         .env("KMUX_TELEMETRY_PATH", &second_telemetry)
-        .args(["add", "feature/concurrent-b", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/concurrent-b",
+            "--background",
+        ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let mut second = second.spawn()?;
@@ -563,9 +593,9 @@ fn concurrent_projects_cannot_claim_a_neutral_session() -> Result<()> {
     let first_config = write_config(first_temp.path(), "window_prefix: kmux-\n")?;
     let second_config = write_config(second_temp.path(), "window_prefix: kmux-\n")?;
     let mut first = kmux_process_detached(&first_repo, &first_config, &tmux);
-    first.args(["add", "feature/project-a", "--background"]);
+    first.args(["workspace", "create", "feature/project-a", "--background"]);
     let mut second = kmux_process_detached(&second_repo, &second_config, &tmux);
-    second.args(["add", "feature/project-b", "--background"]);
+    second.args(["workspace", "create", "feature/project-b", "--background"]);
     let (first, second) = run_concurrently(first, second)?;
 
     assert!(!first.status.success());
@@ -578,7 +608,7 @@ fn concurrent_projects_cannot_claim_a_neutral_session() -> Result<()> {
 }
 
 #[test]
-fn add_runs_configured_file_ops_and_post_create() -> Result<()> {
+fn create_runs_configured_file_ops_and_post_create() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -605,7 +635,7 @@ files:
     let worktree = temp.path().join("project__worktrees/feature-files");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/files", "--background"])
+        .args(["workspace", "create", "feature/files", "--background"])
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -637,13 +667,13 @@ fn recursive_lifecycle_from_post_create_fails_instead_of_deadlocking() -> Result
     };
     let config_home = write_config(
         temp.path(),
-        "window_prefix: kmux-\npost_create:\n  - '\"$KMUX_RECURSIVE_BIN\" restore'\n",
+        "window_prefix: kmux-\npost_create:\n  - '\"$KMUX_RECURSIVE_BIN\" workspace restore'\n",
     )?;
     let worktree = temp.path().join("project__worktrees/feature-recursive");
 
     kmux(&repo, &config_home, &tmux)?
         .env("KMUX_RECURSIVE_BIN", env!("CARGO_BIN_EXE_kmux"))
-        .args(["add", "feature/recursive", "--background"])
+        .args(["workspace", "create", "feature/recursive", "--background"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -669,7 +699,7 @@ fn recursive_lifecycle_from_git_hook_fails_instead_of_deadlocking() -> Result<()
     let hook = repo.join(".git/hooks/post-checkout");
     fs::write(
         &hook,
-        "#!/bin/sh\n\"$KMUX_RECURSIVE_BIN\" restore > \"$KMUX_HOOK_OUTPUT\" 2>&1\n",
+        "#!/bin/sh\n\"$KMUX_RECURSIVE_BIN\" workspace restore > \"$KMUX_HOOK_OUTPUT\" 2>&1\n",
     )?;
     fs::set_permissions(&hook, fs::Permissions::from_mode(0o755))?;
     let hooks_path = repo.join(".git/hooks").display().to_string();
@@ -678,7 +708,12 @@ fn recursive_lifecycle_from_git_hook_fails_instead_of_deadlocking() -> Result<()
     let _assert = kmux(&repo, &config_home, &tmux)?
         .env("KMUX_RECURSIVE_BIN", env!("CARGO_BIN_EXE_kmux"))
         .env("KMUX_HOOK_OUTPUT", &hook_output)
-        .args(["add", "feature/hook-recursion", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/hook-recursion",
+            "--background",
+        ])
         .assert();
 
     wait_for_nonempty_file(&hook_output)?;
@@ -689,14 +724,14 @@ fn recursive_lifecycle_from_git_hook_fails_instead_of_deadlocking() -> Result<()
 }
 
 #[test]
-fn parent_waits_for_add_before_updating_shared_workspace_state() -> Result<()> {
+fn set_parent_waits_for_create_before_updating_shared_workspace_state() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/child", "--background"])
+        .args(["workspace", "create", "feature/child", "--background"])
         .assert()
         .success();
 
@@ -709,7 +744,7 @@ fn parent_waits_for_add_before_updating_shared_workspace_state() -> Result<()> {
         ),
     )?;
     let mut add = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
-    add.args(["add", "feature/sibling", "--background"])
+    add.args(["workspace", "create", "feature/sibling", "--background"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     let add = add.spawn()?;
@@ -717,7 +752,12 @@ fn parent_waits_for_add_before_updating_shared_workspace_state() -> Result<()> {
 
     let mut parent = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
     let parent = parent
-        .args(["parent", "feature/sibling", "feature/child"])
+        .args([
+            "workspace",
+            "set-parent",
+            "feature/sibling",
+            "feature/child",
+        ])
         .output()?;
     let add = add.wait_with_output()?;
     assert!(
@@ -749,7 +789,7 @@ fn parent_waits_for_add_before_updating_shared_workspace_state() -> Result<()> {
 }
 
 #[test]
-fn add_waits_for_delayed_shell_before_starting_launcher() -> Result<()> {
+fn create_waits_for_delayed_shell_before_starting_launcher() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -771,7 +811,12 @@ launchers:
     ])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/delayed-shell", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/delayed-shell",
+            "--background",
+        ])
         .assert()
         .success()
         .stdout(predicate::str::contains("created feature-delayed-shell"));
@@ -813,10 +858,11 @@ launchers:
         .env("HOME", &home)
         .env("XDG_RUNTIME_DIR", &runtime)
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/home-state",
             "--background",
-            "--launch",
+            "--launcher",
             "example-launcher",
         ])
         .assert()
@@ -859,10 +905,11 @@ launchers:
         .env("XDG_STATE_HOME", &state_blocker)
         .env("XDG_RUNTIME_DIR", &runtime)
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/unusable-state",
             "--background",
-            "--launch",
+            "--launcher",
             "example-launcher",
         ])
         .assert()
@@ -877,7 +924,7 @@ launchers:
 
 #[cfg(unix)]
 #[test]
-fn add_launcher_preserves_argv_tty_ordering_and_shell_survival() -> Result<()> {
+fn create_launcher_preserves_argv_tty_ordering_and_shell_survival() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let (temp, repo) = init_repo()?;
@@ -952,12 +999,13 @@ launchers:
         .env("KMUX_TELEMETRY", "1")
         .env("KMUX_TELEMETRY_PATH", &telemetry)
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/launcher",
             "--background",
-            "--launch",
+            "--launcher",
             "example-launcher",
-            "--input",
+            "--launcher-input",
             &input,
         ])
         .assert()
@@ -1006,7 +1054,7 @@ launchers:
 }
 
 #[test]
-fn add_stdin_input_preserves_bytes_and_rejects_invalid_data_preflight() -> Result<()> {
+fn create_stdin_input_preserves_bytes_and_rejects_invalid_data_preflight() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1036,12 +1084,13 @@ launchers:
 
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/stdin",
             "--background",
-            "--launch",
+            "--launcher",
             "stdin-launcher",
-            "--input",
+            "--launcher-input",
             "-",
         ])
         .write_stdin(stdin_text)
@@ -1055,12 +1104,13 @@ launchers:
     fs::remove_file(&count)?;
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/empty-input",
             "--background",
-            "--launch",
+            "--launcher",
             "stdin-launcher",
-            "--input",
+            "--launcher-input",
             "-",
         ])
         .write_stdin("")
@@ -1074,10 +1124,11 @@ launchers:
     fs::remove_file(&count)?;
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/no-input",
             "--background",
-            "--launch",
+            "--launcher",
             "stdin-launcher",
         ])
         .assert()
@@ -1095,12 +1146,13 @@ launchers:
     ] {
         kmux(&repo, &config_home, &tmux)?
             .args([
-                "add",
+                "workspace",
+                "create",
                 branch,
                 "--background",
-                "--launch",
+                "--launcher",
                 "stdin-launcher",
-                "--input",
+                "--launcher-input",
                 "-",
             ])
             .write_stdin(bytes)
@@ -1139,11 +1191,12 @@ launchers:
 
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/unknown-launcher",
-            "--launch",
+            "--launcher",
             "missing",
-            "--input",
+            "--launcher-input",
             "preflight-sentinel",
         ])
         .assert()
@@ -1161,7 +1214,7 @@ launchers:
 
     let initial_window = tmux.current_window_id()?;
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/default-launcher"])
+        .args(["workspace", "create", "feature/default-launcher"])
         .assert()
         .success();
     wait_for_path(&marker)?;
@@ -1207,12 +1260,13 @@ launchers:
 
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/restore-launcher",
             "--background",
-            "--launch",
+            "--launcher",
             "agent",
-            "--input",
+            "--launcher-input",
             "one-shot-context",
         ])
         .assert()
@@ -1223,7 +1277,7 @@ launchers:
 
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-restore-launcher"])?;
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success();
     wait_for_nonempty_file(&editor_output)?;
@@ -1232,7 +1286,7 @@ launchers:
     write_config(temp.path(), &config("changed"))?;
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-restore-launcher"])?;
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success();
     wait_for_nonempty_file(&changed_output)?;
@@ -1240,7 +1294,7 @@ launchers:
 
     fs::remove_file(&changed_output)?;
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success();
     assert!(!changed_output.exists());
@@ -1285,12 +1339,13 @@ launchers:
 
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/broken-launcher",
             "--background",
-            "--launch",
+            "--launcher",
             "broken-launcher",
-            "--input",
+            "--launcher-input",
             input,
         ])
         .assert()
@@ -1324,7 +1379,7 @@ launchers:
         ),
     )?;
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success();
     assert!(!marker.exists());
@@ -1340,7 +1395,7 @@ fn restore_ingress_timeout_keeps_first_window_and_stops_before_later_workspaces(
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
     for branch in ["feature/alpha", "feature/beta"] {
         kmux(&repo, &config_home, &tmux)?
-            .args(["add", branch, "--background"])
+            .args(["workspace", "create", branch, "--background"])
             .assert()
             .success();
     }
@@ -1358,7 +1413,7 @@ launchers:
     )?;
 
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("timed out after 3s"))
@@ -1381,7 +1436,7 @@ fn restore_spawn_failure_keeps_shell_window_and_stops() -> Result<()> {
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
     for branch in ["feature/alpha-spawn", "feature/beta-spawn"] {
         kmux(&repo, &config_home, &tmux)?
-            .args(["add", branch, "--background"])
+            .args(["workspace", "create", branch, "--background"])
             .assert()
             .success();
     }
@@ -1398,7 +1453,7 @@ launchers:
     )?;
 
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -1461,10 +1516,11 @@ launchers:
 
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/interrupt",
             "--background",
-            "--launch",
+            "--launcher",
             "interrupt",
         ])
         .assert()
@@ -1477,7 +1533,14 @@ launchers:
     assert!(tmux.window_exists("kmux-feature-interrupt")?);
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/close", "--background", "--launch", "close"])
+        .args([
+            "workspace",
+            "create",
+            "feature/close",
+            "--background",
+            "--launcher",
+            "close",
+        ])
         .assert()
         .success();
     wait_for_path(&close_ready)?;
@@ -1529,10 +1592,11 @@ launchers:
 
     kmux(&repo, &config_home, &tmux)?
         .args([
-            "add",
+            "workspace",
+            "create",
             "feature/resilient-interrupt",
             "--background",
-            "--launch",
+            "--launcher",
             "resilient",
         ])
         .assert()
@@ -1559,7 +1623,7 @@ launchers:
 }
 
 #[test]
-fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()> {
+fn create_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1577,7 +1641,7 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
     let worktree = temp.path().join("project__worktrees/remote-only");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "origin/remote-only", "--background"])
+        .args(["workspace", "create", "origin/remote-only", "--background"])
         .assert()
         .success()
         .stdout(predicate::str::contains("created remote-only"));
@@ -1590,7 +1654,7 @@ fn add_remote_branch_creates_local_worktree_without_remote_prefix() -> Result<()
 }
 
 #[test]
-fn parent_short_form_discovers_child_from_current_workspace() -> Result<()> {
+fn set_parent_short_form_discovers_child_from_current_workspace() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1600,12 +1664,12 @@ fn parent_short_form_discovers_child_from_current_workspace() -> Result<()> {
     let worktree = temp.path().join("project__worktrees/feature-child");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/child", "--background"])
+        .args(["workspace", "create", "feature/child", "--background"])
         .assert()
         .success();
 
     kmux_with_pane(&worktree, &config_home, &tmux, &tmux.pane_id)?
-        .args(["parent", "feature/parent"])
+        .args(["workspace", "set-parent", "feature/parent"])
         .assert()
         .success()
         .stdout(predicate::str::contains(
@@ -1616,7 +1680,7 @@ fn parent_short_form_discovers_child_from_current_workspace() -> Result<()> {
 }
 
 #[test]
-fn add_is_create_only_when_branch_already_exists() -> Result<()> {
+fn create_is_create_only_when_branch_already_exists() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1626,7 +1690,7 @@ fn add_is_create_only_when_branch_already_exists() -> Result<()> {
     git(&repo, &["branch", "feature/existing"])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/existing"])
+        .args(["workspace", "create", "feature/existing"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -1639,7 +1703,7 @@ fn add_is_create_only_when_branch_already_exists() -> Result<()> {
 }
 
 #[test]
-fn add_rejects_worktree_only_partial_workspace() -> Result<()> {
+fn create_rejects_worktree_only_partial_workspace() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1648,13 +1712,13 @@ fn add_rejects_worktree_only_partial_workspace() -> Result<()> {
     let worktree = temp.path().join("project__worktrees/feature-partial");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/partial", "--background"])
+        .args(["workspace", "create", "feature/partial", "--background"])
         .assert()
         .success();
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-partial"])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/partial", "--background"])
+        .args(["workspace", "create", "feature/partial", "--background"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -1668,7 +1732,7 @@ fn add_rejects_worktree_only_partial_workspace() -> Result<()> {
 }
 
 #[test]
-fn add_rejects_window_only_partial_workspace() -> Result<()> {
+fn create_rejects_window_only_partial_workspace() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1688,7 +1752,7 @@ fn add_rejects_window_only_partial_workspace() -> Result<()> {
     ])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/window-only"])
+        .args(["workspace", "create", "feature/window-only"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -1708,13 +1772,13 @@ fn restore_recreates_workspace_window_idempotently() -> Result<()> {
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/restore", "--background"])
+        .args(["workspace", "create", "feature/restore", "--background"])
         .assert()
         .success();
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-restore"])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success()
         .stdout(predicate::str::contains("restored feature-restore"));
@@ -1722,7 +1786,7 @@ fn restore_recreates_workspace_window_idempotently() -> Result<()> {
 
     let window_count = tmux.unique_window_count()?;
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .success();
     assert_eq!(tmux.unique_window_count()?, window_count);
@@ -1741,7 +1805,7 @@ fn restore_rejects_duplicate_expected_window_names() -> Result<()> {
     let worktree_path = worktree.display().to_string();
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/duplicate", "--background"])
+        .args(["workspace", "create", "feature/duplicate", "--background"])
         .assert()
         .success();
     tmux.tmux_output(&[
@@ -1756,7 +1820,7 @@ fn restore_rejects_duplicate_expected_window_names() -> Result<()> {
     ])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .arg("restore")
+        .args(["workspace", "restore"])
         .assert()
         .failure()
         .stderr(predicate::str::contains(
@@ -1779,7 +1843,12 @@ fn remove_rejects_duplicate_expected_windows_before_git_mutation() -> Result<()>
     let window_name = "kmux-feature-remove-duplicate";
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/remove-duplicate", "--background"])
+        .args([
+            "workspace",
+            "create",
+            "feature/remove-duplicate",
+            "--background",
+        ])
         .assert()
         .success();
     tmux.tmux_output(&[
@@ -1794,7 +1863,7 @@ fn remove_rejects_duplicate_expected_windows_before_git_mutation() -> Result<()>
     ])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-remove-duplicate", "--force"])
+        .args(["workspace", "remove", "feature-remove-duplicate", "--force"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("has multiple windows named"));
@@ -1816,7 +1885,7 @@ fn remove_without_name_targets_current_kmux_workspace() -> Result<()> {
     let worktree = temp.path().join("project__worktrees/feature-current");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/current"])
+        .args(["workspace", "create", "feature/current"])
         .assert()
         .success();
     assert!(worktree.is_dir());
@@ -1824,7 +1893,7 @@ fn remove_without_name_targets_current_kmux_workspace() -> Result<()> {
 
     let worktree_pane = tmux.pane_for_window("kmux-feature-current")?;
     kmux_with_pane(&worktree, &config_home, &tmux, &worktree_pane)?
-        .arg("rm")
+        .args(["workspace", "remove"])
         .assert()
         .success()
         .stdout(predicate::str::contains("removed feature-current"));
@@ -1845,20 +1914,20 @@ fn remove_warns_when_other_links_still_reference_removed_branch() -> Result<()> 
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/parent", "--background"])
+        .args(["workspace", "create", "feature/parent", "--background"])
         .assert()
         .success();
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/child", "--background"])
+        .args(["workspace", "create", "feature/child", "--background"])
         .assert()
         .success();
     kmux(&repo, &config_home, &tmux)?
-        .args(["parent", "feature/parent", "feature-child"])
+        .args(["workspace", "set-parent", "feature/parent", "feature-child"])
         .assert()
         .success();
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-parent"])
+        .args(["workspace", "remove", "feature-parent"])
         .assert()
         .success()
         .stderr(predicate::str::contains(
@@ -1878,7 +1947,7 @@ fn remove_unmerged_branch_fails_before_deleting_worktree() -> Result<()> {
     let worktree = temp.path().join("project__worktrees/feature-unmerged");
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["add", "feature/unmerged"])
+        .args(["workspace", "create", "feature/unmerged"])
         .assert()
         .success();
     fs::write(worktree.join("change.txt"), "unmerged\n")?;
@@ -1886,7 +1955,7 @@ fn remove_unmerged_branch_fails_before_deleting_worktree() -> Result<()> {
     git(&worktree, &["commit", "-m", "unmerged change"])?;
 
     kmux(&repo, &config_home, &tmux)?
-        .args(["remove", "feature-unmerged"])
+        .args(["workspace", "remove", "feature-unmerged"])
         .assert()
         .failure()
         .stderr(predicate::str::contains("is not safely merged"));

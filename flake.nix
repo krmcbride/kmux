@@ -26,7 +26,10 @@
               pkgs.installShellFiles
               pkgs.makeWrapper
             ];
-            nativeCheckInputs = [ pkgs.git ];
+            nativeCheckInputs = [
+              pkgs.fish
+              pkgs.git
+            ];
             postInstall = ''
               export HOME=$TMPDIR
               installShellCompletion --cmd kmux \

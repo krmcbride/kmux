@@ -8,13 +8,13 @@ use crate::cli;
 use crate::config::Config;
 use crate::launcher::ResolvedLauncher;
 
-/// Resolve add's explicit/default launcher policy and caller-owned input.
-pub(super) fn resolve_add(
+/// Resolve create's explicit/default launcher policy and caller-owned input.
+pub(super) fn resolve_create(
     config: &Config,
-    args: &cli::AddArgs,
+    args: &cli::CreateArgs,
 ) -> Result<Option<ResolvedLauncher>> {
-    let input = resolve_input(args)?;
-    let selected = if let Some(name) = args.launch.as_deref() {
+    let input = resolve_launcher_input(args)?;
+    let selected = if let Some(name) = args.launcher.as_deref() {
         let launcher = config
             .launcher(name)
             .ok_or_else(|| anyhow::anyhow!("unknown launcher {name:?}"))?;
@@ -33,12 +33,12 @@ pub(super) fn resolve_default(config: &Config) -> Option<ResolvedLauncher> {
         .map(|(name, launcher)| ResolvedLauncher::from_config(name, launcher, None))
 }
 
-fn resolve_input(args: &cli::AddArgs) -> Result<Option<String>> {
-    if args.input.is_some() && args.launch.is_none() {
-        bail!("--input requires --launch");
+fn resolve_launcher_input(args: &cli::CreateArgs) -> Result<Option<String>> {
+    if args.launcher_input.is_some() && args.launcher.is_none() {
+        bail!("--launcher-input requires --launcher");
     }
 
-    let input = match args.input.as_deref() {
+    let input = match args.launcher_input.as_deref() {
         Some("-") => {
             let mut bytes = Vec::new();
             std::io::stdin()

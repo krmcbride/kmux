@@ -9,7 +9,7 @@ use super::resolve::{resolve_current_kmux_workspace, resolve_workspace};
 use crate::workspace::WorkspaceRecord;
 
 /// Set or replace a workspace parent link without changing branches, worktrees, or tmux windows.
-pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
+pub(super) fn run(args: cli::SetParentArgs) -> Result<()> {
     let repo = load_repo_context()?;
     let _lifecycle_lock = project_session::lock_project_lifecycle(&repo.paths)?;
     let (resolved, parent) = resolve_target(&repo, args)?;
@@ -30,8 +30,8 @@ pub(super) fn run(args: cli::ParentArgs) -> Result<()> {
 
 /// Validate and persist a parent link while the caller holds the project lifecycle lock.
 ///
-/// Add already holds the lock through its resolved tmux context; the standalone
-/// parent command acquires it before target and state resolution.
+/// Create already holds the lock through its resolved tmux context; the standalone
+/// set-parent command acquires it before target and state resolution.
 pub(super) fn record_parent(repo: &RepoContext, child: &str, parent: &str) -> Result<String> {
     if child == parent {
         bail!("workspace branch '{child}' cannot be its own parent");
@@ -64,13 +64,16 @@ pub(super) fn validate_no_cycle(state: &WorkspaceState, child: &str, parent: &st
     Ok(())
 }
 
-// `kmux parent <parent> <child>` targets an explicit child; `kmux parent <parent>`
-// discovers the child from the current kmux workspace.
-fn resolve_target(repo: &RepoContext, args: cli::ParentArgs) -> Result<(WorkspaceRecord, String)> {
-    let cli::ParentArgs { parent, child } = args;
+// `kmux workspace set-parent <parent> <child>` targets an explicit child; omitting
+// the child discovers it from the current kmux workspace.
+fn resolve_target(
+    repo: &RepoContext,
+    args: cli::SetParentArgs,
+) -> Result<(WorkspaceRecord, String)> {
+    let cli::SetParentArgs { parent, child } = args;
     let resolved = match child {
         Some(child) => resolve_workspace(repo, &child)?,
-        None => resolve_current_kmux_workspace(repo, "parent")?,
+        None => resolve_current_kmux_workspace(repo, "workspace set-parent")?,
     };
 
     Ok((resolved, parent))

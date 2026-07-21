@@ -29,12 +29,15 @@ pub fn generate(shell: Shell) -> Result<()> {
             println!("{base_script}");
             print_zsh_dynamic_completion();
         }
+        Shell::Fish => {
+            let base_script = prepare_fish_base(&base_script);
+            println!("{base_script}");
+            print_fish_dynamic_completion();
+        }
         _ => {
             print!("{base_script}");
-            match shell {
-                Shell::Bash => print_bash_dynamic_completion(),
-                Shell::Fish => print_fish_dynamic_completion(),
-                _ => {}
+            if shell == Shell::Bash {
+                print_bash_dynamic_completion();
             }
         }
     }
@@ -95,8 +98,8 @@ pub fn complete_workspaces() -> Result<()> {
     Ok(())
 }
 
-/// Print branch refs that can be used with `kmux add` without colliding with worktrees.
-pub fn complete_add_branches() -> Result<()> {
+/// Print branch refs usable by `kmux workspace create` without worktree collisions.
+pub fn complete_create_branches() -> Result<()> {
     for branch in checkoutable_branch_refs() {
         println!("{branch}");
     }
@@ -185,6 +188,27 @@ fn prepare_zsh_base(script: &str, name: &str) -> String {
         .to_owned()
 }
 
+// clap_complete's Fish generator uses a heuristic that searches every token for
+// nested subcommand names. Replace those predicates with the position-aware
+// helpers in our dynamic suffix so workspace values like "create" cannot select
+// another workspace command's options.
+fn prepare_fish_base(script: &str) -> String {
+    let workspace_commands = ["create", "list", "remove", "set-parent", "restore"];
+    let mut script = script.replace(
+        "__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create list remove set-parent restore",
+        "__kmux_needs_workspace_command",
+    );
+    for command in workspace_commands {
+        script = script.replace(
+            &format!(
+                "__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from {command}"
+            ),
+            &format!("__kmux_in_workspace_command {command}"),
+        );
+    }
+    script
+}
+
 fn print_bash_dynamic_completion() {
     print!("{}", include_str!("bash_dynamic.bash"));
 }
@@ -231,7 +255,23 @@ mod tests {
     }
 
     #[test]
-    fn parent_dynamic_completion_follows_parent_then_child_order() {
+    fn prepare_fish_base_uses_position_aware_workspace_predicates() {
+        let input = concat!(
+            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create list remove set-parent restore\" -a create\n",
+            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from create\" -l parent\n",
+            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from remove\" -l force\n",
+        );
+
+        let result = prepare_fish_base(input);
+
+        assert!(result.contains("__kmux_needs_workspace_command"));
+        assert!(result.contains("__kmux_in_workspace_command create"));
+        assert!(result.contains("__kmux_in_workspace_command remove"));
+        assert!(!result.contains("__fish_seen_subcommand_from"));
+    }
+
+    #[test]
+    fn set_parent_dynamic_completion_follows_parent_then_child_order() {
         let bash = include_str!("bash_dynamic.bash");
         assert!(bash.contains(concat!(
             "if (( positional_before == 1 )); then\n",
@@ -252,9 +292,13 @@ mod tests {
         )));
 
         let fish = include_str!("fish_dynamic.fish");
-        assert!(fish.contains("parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'"));
-        assert!(fish.contains("parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'"));
-        assert!(!fish.contains("parent_completed_arg_count) -ge 1'"));
+        assert!(
+            fish.contains("set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'")
+        );
+        assert!(
+            fish.contains("set_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'")
+        );
+        assert!(!fish.contains("set_parent_completed_arg_count) -ge 1'"));
     }
 
     #[test]
@@ -262,28 +306,31 @@ mod tests {
         let bash = include_str!("bash_dynamic.bash");
         assert!(bash.contains("kmux _complete-launchers 2>/dev/null"));
         assert!(bash.contains(concat!(
-            "--launch)\n",
+            "--launcher)\n",
             "                        COMPREPLY=($(compgen -W \"$(_kmux_launchers)\""
         )));
         assert!(bash.contains(concat!(
-            "--input)\n",
+            "--launcher-input)\n",
             "                        COMPREPLY=()\n",
             "                        return"
         )));
 
         let fish = include_str!("fish_dynamic.fish");
-        assert!(fish.contains("__fish_prev_arg_in --launch' -f -a '(__kmux_launchers)'"));
-        assert!(fish.contains("not __fish_prev_arg_in --parent --launch --input"));
+        assert!(fish.contains(
+            "__kmux_in_workspace_command create' -l launcher -r -f -a '(__kmux_launchers)'"
+        ));
+        assert!(fish.contains("__kmux_in_workspace_command create' -l launcher-input -r -f"));
+        assert!(fish.contains("not __fish_prev_arg_in --parent --launcher --launcher-input"));
 
         let zsh = include_str!("zsh_dynamic.zsh");
         assert!(zsh.contains("kmux _complete-launchers 2>/dev/null"));
         assert!(zsh.contains(concat!(
-            "[[ \"$cmd\" == \"add\" && \"${words[CURRENT-1]}\" == \"--launch\" ]]",
+            "[[ \"$cmd\" == \"create\" && \"${words[CURRENT-1]}\" == \"--launcher\" ]]",
             "; then\n",
             "        _kmux_launchers"
         )));
         assert!(zsh.contains(concat!(
-            "[[ \"$cmd\" == \"add\" && \"${words[CURRENT-1]}\" == \"--input\" ]]",
+            "[[ \"$cmd\" == \"create\" && \"${words[CURRENT-1]}\" == \"--launcher-input\" ]]",
             "; then\n",
             "        return"
         )));
@@ -306,5 +353,21 @@ mod tests {
             .map(Command::get_name)
             .collect::<Vec<_>>();
         assert_eq!(sidebar_commands, ["on", "off", "toggle"]);
+
+        let workspace = command
+            .find_subcommand("workspace")
+            .expect("public workspace command should remain");
+        let workspace_commands = workspace
+            .get_subcommands()
+            .map(Command::get_name)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            workspace_commands,
+            ["create", "list", "remove", "set-parent", "restore"]
+        );
+
+        for removed in ["add", "list", "ls", "remove", "rm", "parent", "restore"] {
+            assert!(command.find_subcommand(removed).is_none());
+        }
     }
 }

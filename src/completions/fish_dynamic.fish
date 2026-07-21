@@ -5,8 +5,8 @@ function __kmux_workspaces
 end
 
 # Branch refs that are not already checked out in a worktree.
-function __kmux_add_branches
-    kmux _complete-add-branches 2>/dev/null
+function __kmux_create_branches
+    kmux _complete-create-branches 2>/dev/null
 end
 
 # Local branch refs for parent-valued arguments.
@@ -19,19 +19,28 @@ function __kmux_launchers
     kmux _complete-launchers 2>/dev/null
 end
 
-function __kmux_parent_completed_arg_count
+function __kmux_in_workspace_command --argument-names command
     set -l tokens (commandline -opc)
-    set -l current (commandline -ct)
-    if test -n "$current"; and test (count $tokens) -gt 1
-        set tokens $tokens[1..-2]
-    end
+    test (count $tokens) -ge 3
+    and test "$tokens[2]" = workspace
+    and test "$tokens[3]" = "$command"
+end
+
+function __kmux_needs_workspace_command
+    set -l tokens (commandline -opc)
+    test (count $tokens) -eq 2
+    and test "$tokens[2]" = workspace
+end
+
+function __kmux_set_parent_completed_arg_count
+    set -l tokens (commandline -opc)
 
     set -l count 0
-    set -l after_parent 0
+    set -l after_set_parent 0
     for token in $tokens
-        if test $after_parent -eq 0
-            if test "$token" = parent
-                set after_parent 1
+        if test $after_set_parent -eq 0
+            if test "$token" = set-parent
+                set after_set_parent 1
             end
             continue
         end
@@ -42,9 +51,10 @@ function __kmux_parent_completed_arg_count
     echo $count
 end
 
-complete -c kmux -n '__fish_seen_subcommand_from remove rm status' -f -a '(__kmux_workspaces)'
-complete -c kmux -n '__fish_seen_subcommand_from add; and __fish_prev_arg_in --parent' -f -a '(__kmux_git_branches)'
-complete -c kmux -n '__fish_seen_subcommand_from add; and __fish_prev_arg_in --launch' -f -a '(__kmux_launchers)'
-complete -c kmux -n '__fish_seen_subcommand_from add; and not __fish_prev_arg_in --parent --launch --input' -f -a '(__kmux_add_branches)'
-complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
-complete -c kmux -n '__fish_seen_subcommand_from parent; and test (__kmux_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'
+complete -c kmux -n '__kmux_in_workspace_command remove' -f -a '(__kmux_workspaces)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l parent -r -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l launcher -r -f -a '(__kmux_launchers)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l launcher-input -r -f
+complete -c kmux -n '__kmux_in_workspace_command create; and not __fish_prev_arg_in --parent --launcher --launcher-input' -f -a '(__kmux_create_branches)'
+complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'

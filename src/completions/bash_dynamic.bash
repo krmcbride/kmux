@@ -5,8 +5,8 @@ _kmux_workspaces() {
 }
 
 # Branch refs that are not already checked out in a worktree.
-_kmux_add_branches() {
-    kmux _complete-add-branches 2>/dev/null
+_kmux_create_branches() {
+    kmux _complete-create-branches 2>/dev/null
 }
 
 # Local branch refs for parent-valued arguments.
@@ -32,40 +32,40 @@ _kmux_dynamic() {
         cword=$COMP_CWORD
     fi
 
-    if [[ ${cword} -ge 2 ]]; then
-        local cmd="${words[1]}"
+    if [[ ${cword} -ge 3 && "${words[1]}" == "workspace" ]]; then
+        local cmd="${words[2]}"
         case "$cmd" in
-            remove|rm|status)
+            remove)
                 if [[ "$cur" != -* ]]; then
                     COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     return
                 fi
                 ;;
-            add)
+            create)
                 case "$prev" in
                     --parent)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
                         return
                         ;;
-                    --launch)
+                    --launcher)
                         COMPREPLY=($(compgen -W "$(_kmux_launchers)" -- "$cur"))
                         return
                         ;;
-                    --input)
+                    --launcher-input)
                         COMPREPLY=()
                         return
                         ;;
                 esac
                 if [[ "$cur" != -* ]]; then
-                    COMPREPLY=($(compgen -W "$(_kmux_add_branches)" -- "$cur"))
+                    COMPREPLY=($(compgen -W "$(_kmux_create_branches)" -- "$cur"))
                     return
                 fi
                 ;;
-            parent)
+            set-parent)
                 if [[ "$cur" != -* ]]; then
                     local positional_before=0
                     local index
-                    for ((index = 2; index < cword; index++)); do
+                    for ((index = 3; index < cword; index++)); do
                         if [[ "${words[index]}" != -* ]]; then
                             ((positional_before++))
                         fi

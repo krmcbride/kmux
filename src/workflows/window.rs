@@ -5,7 +5,7 @@
 //! then handed to that shell as the controlled hidden command
 //! `kmux _launch <capability>`. The hidden ingress reads the real argv from private
 //! transient storage, starts the launcher as the shell's foreground job with the
-//! pane TTY, acknowledges spawn to the original add/restore process, and waits for
+//! pane TTY, acknowledges spawn to the original create/restore process, and waits for
 //! the launcher. When ingress exits, the original pane shell naturally resumes.
 //!
 //! This module owns workflow ordering around that mechanism: duplicate checks,

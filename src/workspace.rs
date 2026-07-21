@@ -145,17 +145,17 @@ impl WorkspaceInventoryItem {
         }
     }
 
-    /// Return the workspace slug serialized in `list --json` output.
+    /// Return the workspace slug serialized in `workspace list --json` output.
     pub fn workspace_slug(&self) -> &str {
         &self.workspace_slug
     }
 
-    /// Return the Git branch serialized in `list --json` output.
+    /// Return the Git branch serialized in `workspace list --json` output.
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
     }
 
-    /// Return the parent branch serialized in `list --json` output.
+    /// Return the parent branch serialized in `workspace list --json` output.
     pub fn git_parent_branch(&self) -> Option<&str> {
         self.git_parent_branch.as_deref()
     }

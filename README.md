@@ -67,38 +67,38 @@ Start in the main checkout and create a branch workspace:
 ```sh
 tmux new-session -s work
 cd /repo/project-alpha
-kmux add feature/sidebar
+kmux workspace create feature/sidebar
 ```
 
-`kmux add` creates a new local branch, a linked worktree, and a tmux window. By
-default the current branch is recorded as the parent and the new window receives
-focus. Use `--parent <BRANCH>` or `--background` to override those choices.
+`kmux workspace create` creates a new local branch, a linked worktree, and a tmux
+window. By default the current branch is recorded as the parent and the new window
+receives focus. Use `--parent <BRANCH>` or `--background` to override those choices.
 Detached callers must use `--background`; they otherwise fail before creating
 the branch or worktree.
 
 When a default launcher is configured, kmux starts it as the foreground program
 in the new window after file operations, `post_create`, and parent metadata are
-complete. Override it for one add without changing the default:
+complete. Override it for one create without changing the default:
 
 ```sh
-kmux add feature/review --launch editor
-kmux add feature/delegated --background --launch agent \
-  --input "Implement Phase 2 from .agents/plans/example.md"
+kmux workspace create feature/review --launcher editor
+kmux workspace create feature/delegated --background --launcher review-agent \
+  --launcher-input "Review the current test harness and report correctness risks"
 ```
 
-`--input` requires an explicit `--launch`. It appends one literal final argument
-after the launcher's configured arguments. Omitted input adds no argument; an
-explicit empty value adds one empty argument. Exactly `--input -` reads all caller
-stdin as UTF-8 without trimming, which is preferable for multiline text or when
-the input should not appear in the original kmux process argv.
+`--launcher-input` requires an explicit `--launcher`. It appends one literal final
+argument after the launcher's configured arguments. Omitted input adds no argument;
+an explicit empty value adds one empty argument. Exactly `--launcher-input -` reads
+all caller stdin as UTF-8 without trimming, which is preferable for multiline text
+or when the input should not appear in the original kmux process argv.
 
-Kmux considers the add successful once the launcher process spawns. It does not
+Kmux considers the create successful once the launcher process spawns. It does not
 wait for launcher-specific readiness or completion. The shell gets three seconds
 to consume the ingress request, followed by a fresh three seconds to acknowledge
 launcher spawn. A spawn failure or timeout returns an error but deliberately
 leaves the created branch, worktree, setup effects, parent metadata, and usable
 shell window in place for manual recovery. A later launcher failure is visible in
-that shell and does not retroactively fail `kmux add`.
+that shell and does not retroactively fail `kmux workspace create`.
 
 The one-shot request lives briefly under the owner-only
 `$XDG_STATE_HOME/kmux/launcher-runtime` directory (or the platform's user-state
@@ -110,36 +110,36 @@ removes its private directory after handoff or failure.
 Inspect workspace state as a table or JSON:
 
 ```sh
-kmux list
-kmux list --json
+kmux workspace list
+kmux workspace list --json
 ```
 
 Change the recorded parent of the current workspace, or name an explicit child:
 
 ```sh
-kmux parent main
-kmux parent main feature/sidebar
+kmux workspace set-parent main
+kmux workspace set-parent main feature/sidebar
 ```
 
 If worktrees still exist after restarting tmux or closing windows, restore their
 expected windows:
 
 ```sh
-kmux restore
+kmux workspace restore
 ```
 
 Restore affects only missing expected windows. It uses the current configured
 default launcher with no dynamic input, never a previous one-shot override. An
 existing shell window is left untouched, including after an earlier launcher
-failure. Without a default launcher, add and restore create ordinary shell
+failure. Without a default launcher, create and restore create ordinary shell
 windows.
 
 Remove a workspace by branch, slug, or window name. From inside a kmux worktree,
 the name may be omitted:
 
 ```sh
-kmux remove feature/sidebar
-kmux remove
+kmux workspace remove feature/sidebar
+kmux workspace remove
 ```
 
 Removal deletes the linked worktree, local branch, expected tmux window, and the
@@ -177,9 +177,9 @@ prefers an active or previous matching non-sidebar pane before a deterministic
 pane fallback. If only the sidebar remains, the window jump still succeeds.
 
 A row remains visible when agent activity exists but no matching window is live;
-the sidebar recommends `kmux restore` for managed workspaces. If matching windows
-span multiple tmux sessions, kmux reports the ambiguity instead of choosing an
-arbitrary destination.
+the sidebar recommends `kmux workspace restore` for managed workspaces. If matching
+windows span multiple tmux sessions, kmux reports the ambiguity instead of choosing
+an arbitrary destination.
 
 ## Status and integrations
 
@@ -217,8 +217,9 @@ The Nix package also installs the generic `delegating-with-kmux` skill under
 `$out/share/kmux/skills/delegating-with-kmux/`. Package share directories are not
 agent discovery roots. Copy or symlink that directory into a supported location,
 such as `~/.agents/skills/delegating-with-kmux/`, then restart or refresh the agent
-runtime. The skill acts only after an explicit delegation request and requires a
-user-configured launcher named `agent`; that name has no built-in kmux semantics.
+runtime. The skill acts only after an explicit delegation request, discovers
+available launchers from the active kmux configuration, and asks the user when no
+launcher clearly matches the requested work.
 
 After `nix profile install .`, the packaged source is normally available at
 `~/.nix-profile/share/kmux/skills/delegating-with-kmux/`. Install it without
@@ -245,7 +246,14 @@ ln -s "$out/share/kmux/skills/delegating-with-kmux" \
 
 kmux loads strict YAML configuration from
 `${XDG_CONFIG_HOME:-$HOME/.config}/kmux/config.yaml`. A missing file uses
-defaults. For example:
+defaults. Inspect the fully-resolved active values as YAML or JSON:
+
+```sh
+kmux config
+kmux config --json
+```
+
+For example, the source configuration can contain:
 
 ```yaml
 window_prefix: kmux-
@@ -255,9 +263,11 @@ window:
 
 launchers:
   editor:
+    description: Open the workspace in Neovim
     command: nvim
 
-  agent:
+  review-agent:
+    description: Review project changes and report findings
     command: example-agent-launcher
     args:
       - --existing-server
@@ -277,28 +287,32 @@ sidebar:
     max: 52
 ```
 
-Launcher names must match `^[a-z0-9]+(?:[-_][a-z0-9]+)*$`. Each launcher has one
-nonblank executable in `command` and an optional ordered `args` list. These are
-exact argv values, not shell fragments: quotes, whitespace, wildcards,
-redirections, and metacharacters remain literal. Put complex shell behavior in an
-explicit script or configure a shell executable and arguments yourself.
+Launcher names must match `^[a-z0-9]+(?:[-_][a-z0-9]+)*$`. Each launcher has an
+optional nonblank `description`, one nonblank executable in `command`, and an
+optional ordered `args` list. Descriptions help users and agents select a launcher
+for a task. Commands and arguments are exact argv values, not shell fragments:
+quotes, whitespace, wildcards, redirections, and metacharacters remain literal.
+Put complex shell behavior in an explicit script or configure a shell executable
+and arguments yourself.
 
 Launchers run with the new worktree as cwd and inherit the pane shell's
 environment and TTY streams. Bare commands resolve through that environment's
 `PATH`; absolute paths remain absolute; relative paths containing separators are
 resolved from the worktree. The optional final input also appears in the launcher
 adapter's argv for that process's lifetime, so same-user process inspection is an
-explicit exposure boundary even when `--input -` protects the original kmux argv.
+explicit exposure boundary even when `--launcher-input -` protects the original
+kmux argv.
 
 `post_create` remains a separate ordered list of shell commands. Configuration
 also supports repo-relative files to copy or symlink before launcher startup.
-Post-create hooks run while kmux owns the project's lifecycle transaction;
-recursive `kmux add`, `restore`, `remove`, or `parent` calls fail immediately
+Post-create hooks run while kmux owns the project's lifecycle transaction.
+Recursive `kmux workspace create`, `kmux workspace restore`,
+`kmux workspace remove`, or `kmux workspace set-parent` calls fail immediately
 instead of waiting on their parent process. The same guard applies to synchronous
 Git hooks and checkout filters invoked by kmux. Run nested lifecycle operations
 after the original command returns.
 Unknown fields, invalid paths, invalid launcher references, NUL values, and blank
-commands are rejected rather than ignored.
+launcher descriptions or commands are rejected rather than ignored.
 
 ## Shell completions
 

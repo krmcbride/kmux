@@ -8,27 +8,33 @@ use anyhow::Result;
 
 use crate::cli;
 
-mod add;
+mod config;
 mod context;
+mod create;
 mod files;
 mod launch;
 mod list;
-mod parent;
 mod project_session;
 mod remove;
 mod resolve;
 mod restore;
+mod set_parent;
 mod status;
 mod window;
 
 /// Run the workspace creation workflow.
-pub fn run_add(args: cli::AddArgs) -> Result<()> {
-    add::run(args)
+pub fn run_create(args: cli::CreateArgs) -> Result<()> {
+    create::run(args)
+}
+
+/// Print the fully-resolved active kmux configuration.
+pub fn run_config(args: cli::ConfigArgs) -> Result<()> {
+    config::run(args)
 }
 
 /// Run the parent metadata workflow.
-pub fn run_parent(args: cli::ParentArgs) -> Result<()> {
-    parent::run(args)
+pub fn run_set_parent(args: cli::SetParentArgs) -> Result<()> {
+    set_parent::run(args)
 }
 
 /// Reconcile tmux windows for existing strict kmux worktrees.
@@ -37,7 +43,7 @@ pub fn run_restore() -> Result<()> {
 }
 
 /// Print workspace inventory in human or JSON form.
-pub fn run_list(args: cli::JsonArgs) -> Result<()> {
+pub fn run_list(args: cli::ListArgs) -> Result<()> {
     list::run(args)
 }
 

@@ -360,7 +360,7 @@ fn missing_target_error(row: &SidebarRow, detail: Option<String>) -> anyhow::Err
         .map(|detail| format!(" ({detail})"))
         .unwrap_or_default();
     anyhow::anyhow!(
-        "cannot jump to {}: no live tmux window matches workspace {}; run `kmux restore` if this is a managed workspace{detail}",
+        "cannot jump to {}: no live tmux window matches workspace {}; run `kmux workspace restore` if this is a managed workspace{detail}",
         row.primary,
         row.selection.workspace_key
     )
@@ -508,7 +508,7 @@ mod tests {
             .resolve_jump_destination(&row)
             .expect_err("stale candidates should fail");
 
-        assert!(error.to_string().contains("kmux restore"));
+        assert!(error.to_string().contains("kmux workspace restore"));
         Ok(())
     }
 
@@ -530,7 +530,7 @@ mod tests {
             SidebarJumpExecution::Failed(failure) => failure,
             SidebarJumpExecution::Succeeded(_) => anyhow::bail!("missing target should fail"),
         };
-        assert!(failure.error.to_string().contains("kmux restore"));
+        assert!(failure.error.to_string().contains("kmux workspace restore"));
         assert_eq!(fixture.selected_target()?, Some(previous.identity));
         Ok(())
     }
