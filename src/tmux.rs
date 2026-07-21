@@ -14,7 +14,7 @@
 //! list all sessions can therefore report the same window and pane IDs more than
 //! once; callers that operate on physical windows must deduplicate by ID.
 
-use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
@@ -864,7 +864,7 @@ fn parse_pane_snapshots(output: &str) -> Result<Vec<TmuxPaneSnapshot>> {
 fn validate_consistent_session_names<'a>(
     sessions: impl IntoIterator<Item = (&'a str, &'a str)>,
 ) -> Result<()> {
-    let mut names_by_id = BTreeMap::new();
+    let mut names_by_id = HashMap::new();
     for (session_id, session_name) in sessions {
         if let Some(previous_name) = names_by_id.insert(session_id, session_name)
             && previous_name != session_name

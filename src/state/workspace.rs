@@ -5,7 +5,7 @@
 //! graph. It is intentionally separate from `state::agent`, which stores
 //! external agent observations in XDG state.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -79,7 +79,7 @@ impl WorkspaceState {
     /// The proposed edge replaces any existing edge for `branch`, which lets callers
     /// validate both new links and reparenting through the same path.
     pub fn would_create_cycle(&self, branch: &str, parent: &str) -> bool {
-        let mut parents = BTreeMap::new();
+        let mut parents = HashMap::new();
         for link in &self.parents {
             if link.branch != branch {
                 parents.insert(link.branch.as_str(), link.parent.as_str());

@@ -5,7 +5,7 @@
 //! display, navigation, and workspace-wide actions use one application policy.
 
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::Result;
@@ -189,18 +189,18 @@ pub(super) fn workspace_activities_from_sessions(
 
 // Collapse logical sessions into deterministic workspace activity aggregates.
 fn aggregate_workspace_activities(sessions: Vec<ResolvedAgentSession>) -> Vec<WorkspaceActivity> {
-    let mut by_workspace = BTreeMap::<String, WorkspaceActivityAccumulator>::new();
+    let mut by_workspace = HashMap::<String, WorkspaceActivityAccumulator>::new();
     for session in sessions {
         let workspace_key = session.workspace_key().to_owned();
         let session_key = session.key.clone();
         match by_workspace.entry(workspace_key) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
+            std::collections::hash_map::Entry::Vacant(entry) => {
                 entry.insert(WorkspaceActivityAccumulator {
                     primary_session: session,
                     member_session_keys: BTreeSet::from([session_key]),
                 });
             }
-            std::collections::btree_map::Entry::Occupied(mut entry) => {
+            std::collections::hash_map::Entry::Occupied(mut entry) => {
                 let activity = entry.get_mut();
                 activity.member_session_keys.insert(session_key);
                 if primary_session_order(&session, &activity.primary_session).is_gt() {

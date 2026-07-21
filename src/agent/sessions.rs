@@ -4,7 +4,7 @@
 //! module attaches those observations to Git worktree roots, then derives the
 //! ordered live tmux navigation candidates or an explicit unavailability reason.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -605,15 +605,15 @@ fn cross_session_target(matches: &[WindowWorkspaceMatch]) -> AgentTmuxTarget {
 #[derive(Debug, Clone)]
 struct WindowWorkspaceMatch {
     window_id: String,
-    sessions: BTreeMap<String, WindowSessionMatch>,
+    sessions: HashMap<String, WindowSessionMatch>,
     matching_panes: Vec<TmuxPaneSnapshot>,
 }
 
 #[derive(Debug, Clone)]
 struct WindowWorkspaceAccumulator {
     window_id: String,
-    sessions: BTreeMap<String, WindowSessionMatch>,
-    matching_panes: BTreeMap<String, TmuxPaneSnapshot>,
+    sessions: HashMap<String, WindowSessionMatch>,
+    matching_panes: HashMap<String, TmuxPaneSnapshot>,
 }
 
 #[derive(Debug, Clone)]
@@ -630,7 +630,7 @@ fn window_workspace_matches(
     panes: &[TmuxPaneSnapshot],
     workspace_resolver: &mut impl AgentWorkspaceLookup,
 ) -> Vec<WindowWorkspaceMatch> {
-    let mut windows = BTreeMap::<String, WindowWorkspaceAccumulator>::new();
+    let mut windows = HashMap::<String, WindowWorkspaceAccumulator>::new();
     for pane in panes
         .iter()
         .filter(|pane| pane.kmux_role.as_deref() != Some("sidebar"))
@@ -647,8 +647,8 @@ fn window_workspace_matches(
             .entry(pane.identity.window_id.clone())
             .or_insert_with(|| WindowWorkspaceAccumulator {
                 window_id: pane.identity.window_id.clone(),
-                sessions: BTreeMap::new(),
-                matching_panes: BTreeMap::new(),
+                sessions: HashMap::new(),
+                matching_panes: HashMap::new(),
             });
         if workspace.key() == attachment.key() {
             entry
@@ -793,11 +793,11 @@ mod tests {
     use crate::git::test_support::GitRepoFixture;
     use crate::state::{AgentObservationKey, AgentObservationState};
     use crate::tmux::{TmuxPaneActivity, TmuxPaneGeometry, TmuxPaneIdentity, TmuxPanePlacement};
-    use std::collections::BTreeMap;
+    use std::collections::HashMap;
 
     #[derive(Default)]
     struct FakeWorkspaceResolver {
-        attachments: BTreeMap<String, AgentWorkspaceAttachment>,
+        attachments: HashMap<String, AgentWorkspaceAttachment>,
     }
 
     impl FakeWorkspaceResolver {

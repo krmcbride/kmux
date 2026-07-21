@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -192,7 +192,7 @@ fn parent_tree_order(mut items: Vec<WorkspaceInventoryItem>) -> Vec<WorkspaceInv
         .iter()
         .filter_map(|item| item.git_branch().map(ToOwned::to_owned))
         .collect::<BTreeSet<_>>();
-    let mut children = BTreeMap::<String, Vec<usize>>::new();
+    let mut children = HashMap::<String, Vec<usize>>::new();
     for (index, item) in items.iter().enumerate() {
         if let Some(parent) = item.git_parent_branch()
             && branch_set.contains(parent)
@@ -243,7 +243,7 @@ fn parent_tree_order(mut items: Vec<WorkspaceInventoryItem>) -> Vec<WorkspaceInv
 fn visit_parent_tree(
     index: usize,
     depth: usize,
-    children: &BTreeMap<String, Vec<usize>>,
+    children: &HashMap<String, Vec<usize>>,
     items: &mut [WorkspaceInventoryItem],
     visited: &mut HashSet<usize>,
     ordered: &mut Vec<usize>,

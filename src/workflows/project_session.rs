@@ -13,7 +13,7 @@
 //! persist ownership metadata, infer identity from session names, or use agent
 //! observation/sidebar state as a topology source.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeSet, HashMap};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -193,7 +193,7 @@ impl ProjectSessionResolution {
 }
 
 fn collect_evidence(panes: &[TmuxPane]) -> Result<Vec<SessionEvidence>> {
-    let mut sessions = BTreeMap::<String, SessionEvidence>::new();
+    let mut sessions = HashMap::<String, SessionEvidence>::new();
     for pane in panes {
         let session = sessions
             .entry(pane.identity.session_id.clone())
