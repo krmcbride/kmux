@@ -748,6 +748,133 @@ fn parent_waits_for_add_before_updating_shared_workspace_state() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn add_waits_for_delayed_shell_before_starting_launcher() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+window: {default_launcher: editor}
+launchers:
+  editor: {command: /bin/true}
+"#,
+    )?;
+    tmux.tmux_output(&[
+        "set-option",
+        "-g",
+        "default-command",
+        "sleep 2; exec /bin/sh",
+    ])?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .args(["add", "feature/delayed-shell", "--background"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("created feature-delayed-shell"));
+
+    assert!(tmux.window_exists("kmux-feature-delayed-shell")?);
+    assert!(
+        temp.path()
+            .join("project__worktrees/feature-delayed-shell")
+            .is_dir()
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn launcher_uses_home_state_when_xdg_state_is_unset() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+launchers:
+  example-launcher: {command: /bin/true}
+"#,
+    )?;
+    let home = temp.path().join("home");
+    let runtime = temp.path().join("runtime");
+    fs::create_dir(&home)?;
+    fs::create_dir(&runtime)?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .env_remove("XDG_STATE_HOME")
+        .env("HOME", &home)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .args([
+            "add",
+            "feature/home-state",
+            "--background",
+            "--launch",
+            "example-launcher",
+        ])
+        .assert()
+        .success();
+
+    let launcher_runtime = home.join(".local/state/kmux/launcher-runtime");
+    assert_eq!(
+        fs::metadata(&launcher_runtime)?.permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(fs::read_dir(&launcher_runtime)?.count(), 0);
+    assert_eq!(fs::read_dir(&runtime)?.count(), 0);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn launcher_fails_closed_when_state_storage_is_unusable() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let (temp, repo) = init_repo()?;
+    let Some(tmux) = TmuxFixture::new(&repo)? else {
+        return Ok(());
+    };
+    let config_home = write_config(
+        temp.path(),
+        r#"
+window_prefix: kmux-
+launchers:
+  example-launcher: {command: /bin/true}
+"#,
+    )?;
+    let state_blocker = temp.path().join("state-blocker");
+    let runtime = temp.path().join("runtime");
+    fs::write(&state_blocker, "not a directory")?;
+    fs::create_dir(&runtime)?;
+    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+
+    kmux(&repo, &config_home, &tmux)?
+        .env("XDG_STATE_HOME", &state_blocker)
+        .env("XDG_RUNTIME_DIR", &runtime)
+        .args([
+            "add",
+            "feature/unusable-state",
+            "--background",
+            "--launch",
+            "example-launcher",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "failed to create kmux state directory",
+        ));
+
+    assert_eq!(fs::read_dir(&runtime)?.count(), 0);
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn add_launcher_preserves_argv_tty_ordering_and_shell_survival() -> Result<()> {
@@ -766,9 +893,8 @@ fn add_launcher_preserves_argv_tty_ordering_and_shell_survival() -> Result<()> {
     let shell_returned = temp.path().join("shell-returned");
     let side_effect = temp.path().join("must-not-exist");
     let telemetry = temp.path().join("telemetry.jsonl");
-    let runtime = temp.path().join("runtime");
-    fs::create_dir(&runtime)?;
-    fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
+    let state_home = temp.path().join("state-home");
+    fs::create_dir(&state_home)?;
     let config_home = write_config(
         temp.path(),
         &format!(
@@ -822,7 +948,7 @@ launchers:
     let shell_command = tmux.pane_format(&tmux.pane_id, "#{pane_current_command}")?;
 
     kmux(&repo, &config_home, &tmux)?
-        .env("XDG_RUNTIME_DIR", &runtime)
+        .env("XDG_STATE_HOME", &state_home)
         .env("KMUX_TELEMETRY", "1")
         .env("KMUX_TELEMETRY_PATH", &telemetry)
         .args([
@@ -869,7 +995,12 @@ launchers:
     tmux.tmux_output(&["send-keys", "-t", &pane, "-l", &shell_command_text])?;
     tmux.tmux_output(&["send-keys", "-t", &pane, "Enter"])?;
     wait_for_path(&shell_returned)?;
-    assert_eq!(fs::read_dir(&runtime)?.count(), 0);
+    let launcher_runtime = state_home.join("kmux/launcher-runtime");
+    assert_eq!(
+        fs::metadata(&launcher_runtime)?.permissions().mode() & 0o777,
+        0o700
+    );
+    assert_eq!(fs::read_dir(&launcher_runtime)?.count(), 0);
     assert!(!fs::read_to_string(telemetry)?.contains(&input));
     Ok(())
 }
@@ -1201,7 +1332,7 @@ launchers:
 }
 
 #[test]
-fn restore_timeout_keeps_first_window_and_stops_before_later_workspaces() -> Result<()> {
+fn restore_ingress_timeout_keeps_first_window_and_stops_before_later_workspaces() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let Some(tmux) = TmuxFixture::new(&repo)? else {
         return Ok(());
@@ -1215,7 +1346,7 @@ fn restore_timeout_keeps_first_window_and_stops_before_later_workspaces() -> Res
     }
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-alpha"])?;
     tmux.tmux_output(&["kill-window", "-t", "kmux-feature-beta"])?;
-    tmux.tmux_output(&["set-option", "-g", "default-command", "sleep 30"])?;
+    tmux.tmux_output(&["set-option", "-g", "default-command", "sleep 60"])?;
     write_config(
         temp.path(),
         r#"
@@ -1231,6 +1362,9 @@ launchers:
         .assert()
         .failure()
         .stderr(predicate::str::contains("timed out after 3s"))
+        .stderr(predicate::str::contains(
+            "waiting for launcher ingress to consume its request",
+        ))
         .stderr(predicate::str::contains("may already be running"))
         .stderr(predicate::str::contains("shell window remains available"));
     assert!(tmux.window_exists("kmux-feature-alpha")?);

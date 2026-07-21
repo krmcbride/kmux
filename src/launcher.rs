@@ -7,8 +7,8 @@
 //!   concepts.
 //! - [`PendingLaunch`] is the caller-side capability. It creates a private
 //!   one-shot directory, writes a versioned request, builds the controlled hidden
-//!   shell command, waits a bounded time for spawn acknowledgment, and owns
-//!   cleanup even on failure.
+//!   shell command, waits bounded intervals for ingress claim and spawn
+//!   acknowledgment, and owns cleanup even on failure.
 //! - [`run_ingress`] is the pane-side adapter invoked by that hidden command. It
 //!   consumes the request before spawn, validates it again, launches exact argv in
 //!   the worktree with inherited TTY streams, acknowledges spawn, and waits/reaps
@@ -29,6 +29,7 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
+use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, TempDir};
 
@@ -40,6 +41,11 @@ const REQUEST_FILE: &str = "request.json";
 const REQUEST_TEMP_FILE: &str = "request.tmp";
 const ACK_FILE: &str = "ack.json";
 const ACK_TEMP_FILE: &str = "ack.tmp";
+const LAUNCH_RUNTIME_DIRECTORY: &str = "launcher-runtime";
+// A newly-created pane may run shell hooks or a cold direnv/Nix evaluation
+// before it can execute command text already queued by tmux. Once ingress
+// consumes the request, process spawn should remain a short local operation.
+const INGRESS_CLAIM_TIMEOUT: Duration = Duration::from_secs(3);
 const SPAWN_ACK_TIMEOUT: Duration = Duration::from_secs(3);
 const ACK_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
@@ -82,6 +88,21 @@ impl PendingLaunch {
     pub fn create(launcher: &ResolvedLauncher, cwd: &Path) -> Result<Self> {
         validate_resolved_launcher(launcher, cwd)?;
         let directory = create_request_directory()?;
+        Self::create_in_directory(launcher, cwd, directory)
+    }
+
+    #[cfg(test)]
+    fn create_under(launcher: &ResolvedLauncher, cwd: &Path, base: &Path) -> Result<Self> {
+        validate_resolved_launcher(launcher, cwd)?;
+        let directory = create_request_directory_under(base)?;
+        Self::create_in_directory(launcher, cwd, directory)
+    }
+
+    fn create_in_directory(
+        launcher: &ResolvedLauncher,
+        cwd: &Path,
+        directory: TempDir,
+    ) -> Result<Self> {
         let canonical_directory = fs::canonicalize(directory.path())
             .context("failed to resolve private launcher request directory")?;
         let request_path = canonical_directory.join(REQUEST_FILE);
@@ -126,13 +147,18 @@ impl PendingLaunch {
         ))
     }
 
-    /// Wait a bounded interval for the pane ingress to acknowledge child spawn.
+    /// Wait for the pane shell to claim the request, then acknowledge child spawn.
     pub fn wait_for_spawn(self) -> Result<()> {
-        self.wait_for_spawn_timeout(SPAWN_ACK_TIMEOUT)
+        self.wait_for_spawn_timeouts(INGRESS_CLAIM_TIMEOUT, SPAWN_ACK_TIMEOUT)
     }
 
-    fn wait_for_spawn_timeout(&self, timeout: Duration) -> Result<()> {
-        let started = Instant::now();
+    fn wait_for_spawn_timeouts(
+        &self,
+        ingress_timeout: Duration,
+        spawn_timeout: Duration,
+    ) -> Result<()> {
+        let ingress_started = Instant::now();
+        let mut spawn_started = None;
         loop {
             match read_acknowledgment(&self.ack_path) {
                 Ok(Some(acknowledgment)) => {
@@ -151,11 +177,33 @@ impl PendingLaunch {
                 }
             }
 
+            if spawn_started.is_none()
+                && !self
+                    .request_path
+                    .try_exists()
+                    .context("failed to inspect private launcher request")?
+            {
+                spawn_started = Some(Instant::now());
+            }
+            let (started, timeout) = spawn_started
+                .map(|started| (started, spawn_timeout))
+                .unwrap_or((ingress_started, ingress_timeout));
             let elapsed = started.elapsed();
             if elapsed >= timeout {
-                bail!(
-                    "timed out after {timeout:?} waiting for launcher process spawn acknowledgment"
-                );
+                if spawn_started.is_some() {
+                    bail!(
+                        "timed out after {timeout:?} waiting for launcher process spawn acknowledgment"
+                    );
+                }
+                if cancel_unclaimed_request(&self.request_path)? {
+                    bail!(
+                        "timed out after {timeout:?} waiting for launcher ingress to consume its request"
+                    );
+                }
+                // Ingress won the atomic remove race at the claim deadline. It
+                // owns the request and receives the full spawn-ack interval.
+                spawn_started = Some(Instant::now());
+                continue;
             }
             thread::sleep(ACK_POLL_INTERVAL.min(timeout.saturating_sub(elapsed)));
         }
@@ -372,22 +420,23 @@ fn validate_cwd(cwd: &Path) -> Result<()> {
 }
 
 fn create_request_directory() -> Result<TempDir> {
-    let preferred = preferred_runtime_directory();
-    if let Some(base) = preferred.as_deref() {
-        prune_stale_directories(base, STALE_AFTER);
-        if let Ok(directory) = create_private_tempdir(base) {
-            return Ok(directory);
-        }
-    }
+    let base = shared_launcher_runtime_directory()?;
+    create_request_directory_under(&base)
+}
 
-    let fallback = std::env::temp_dir();
-    if preferred.as_deref() != Some(fallback.as_path()) {
-        prune_stale_directories(&fallback, STALE_AFTER);
-    }
-    create_private_tempdir(&fallback).with_context(|| {
+fn create_request_directory_under(base: &Path) -> Result<TempDir> {
+    create_private_base_directory(base)?;
+    let base = fs::canonicalize(base).with_context(|| {
+        format!(
+            "failed to resolve launcher runtime directory {}",
+            base.display()
+        )
+    })?;
+    prune_stale_directories(&base, STALE_AFTER);
+    create_private_tempdir(&base).with_context(|| {
         format!(
             "failed to create private launcher request directory under {}",
-            fallback.display()
+            base.display()
         )
     })
 }
@@ -399,12 +448,29 @@ fn create_private_tempdir(base: &Path) -> Result<TempDir> {
     Ok(directory)
 }
 
-fn preferred_runtime_directory() -> Option<PathBuf> {
-    let path = PathBuf::from(std::env::var_os("XDG_RUNTIME_DIR")?);
-    if !path.is_absolute() || validate_private_directory(&path).is_err() {
-        return None;
+// Launcher requests cross from the invoking process into an existing tmux
+// server. Sandboxes may give those processes different /tmp and runtime mounts,
+// so use the shared user-state filesystem rather than namespace-local temp.
+fn shared_launcher_runtime_directory() -> Result<PathBuf> {
+    let base_dirs = BaseDirs::new().context("could not determine launcher state directory")?;
+    let state_root = base_dirs
+        .state_dir()
+        .unwrap_or_else(|| base_dirs.data_local_dir());
+    Ok(state_root.join("kmux").join(LAUNCH_RUNTIME_DIRECTORY))
+}
+
+fn create_private_base_directory(path: &Path) -> Result<()> {
+    let parent = path.parent().context("launcher runtime has no parent")?;
+    fs::create_dir_all(parent)
+        .with_context(|| format!("failed to create kmux state directory {}", parent.display()))?;
+    let mut builder = fs::DirBuilder::new();
+    configure_private_directory_create(&mut builder);
+    match builder.create(path) {
+        Ok(()) => set_private_directory_permissions(path)?,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(error) => return Err(error).context("failed to create launcher runtime directory"),
     }
-    fs::canonicalize(path).ok()
+    validate_private_directory(path)
 }
 
 fn validate_protocol_path(request_path: &Path) -> Result<PathBuf> {
@@ -437,10 +503,26 @@ fn consume_request(path: &Path) -> Result<LaunchRequest> {
         file.read_to_end(&mut bytes)?;
         serde_json::from_slice(&bytes).context("failed to decode private launcher request")
     })();
+    finish_request_claim(path, result)
+}
+
+// Request removal is the atomic claim. If deadline cancellation removes the
+// file first, ingress must reject even a request it already opened and decoded.
+fn finish_request_claim(path: &Path, result: Result<LaunchRequest>) -> Result<LaunchRequest> {
     let removal = fs::remove_file(path).context("failed to consume private launcher request");
     match (result, removal) {
         (Ok(request), Ok(())) => Ok(request),
         (Err(error), _) | (_, Err(error)) => Err(error),
+    }
+}
+
+// Compete with ingress's required request removal at the claim deadline. A
+// successful cancellation prevents late spawn; NotFound means ingress won.
+fn cancel_unclaimed_request(path: &Path) -> Result<bool> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error).context("failed to cancel private launcher request"),
     }
 }
 
@@ -537,6 +619,16 @@ fn configure_no_follow(options: &mut OpenOptions) {
 
 #[cfg(not(unix))]
 fn configure_no_follow(_options: &mut OpenOptions) {}
+
+#[cfg(unix)]
+fn configure_private_directory_create(builder: &mut fs::DirBuilder) {
+    use std::os::unix::fs::DirBuilderExt;
+
+    builder.mode(0o700);
+}
+
+#[cfg(not(unix))]
+fn configure_private_directory_create(_builder: &mut fs::DirBuilder) {}
 
 #[cfg(unix)]
 fn set_private_directory_permissions(path: &Path) -> Result<()> {
@@ -698,6 +790,10 @@ mod tests {
         }
     }
 
+    fn create_pending(launcher: &ResolvedLauncher, cwd: &Path) -> Result<PendingLaunch> {
+        PendingLaunch::create_under(launcher, cwd, &cwd.join("launcher-state"))
+    }
+
     #[cfg(unix)]
     #[test]
     fn request_round_trip_preserves_exact_argv_and_cleans_up() -> Result<()> {
@@ -718,7 +814,7 @@ mod tests {
             ],
             Some(input),
         );
-        let pending = PendingLaunch::create(&launcher, cwd.path())?;
+        let pending = create_pending(&launcher, cwd.path())?;
         let request_path = pending.request_path.clone();
         let directory = request_path.parent().expect("request parent").to_path_buf();
         let ingress_path = request_path;
@@ -750,7 +846,7 @@ mod tests {
                 shell_quote(&output.display().to_string())
             );
             let launcher = resolved("/bin/sh", &["-c", &script, "launcher"], input);
-            let pending = PendingLaunch::create(&launcher, cwd.path())?;
+            let pending = create_pending(&launcher, cwd.path())?;
             let ingress_path = pending.request_path.clone();
             let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
 
@@ -768,12 +864,15 @@ mod tests {
 
         let cwd = tempfile::tempdir()?;
         let launcher = resolved("/bin/true", &[], None);
-        let first = PendingLaunch::create(&launcher, cwd.path())?;
-        let second = PendingLaunch::create(&launcher, cwd.path())?;
+        let first = create_pending(&launcher, cwd.path())?;
+        let second = create_pending(&launcher, cwd.path())?;
+        let runtime = cwd.path().join("launcher-state");
 
         assert_ne!(first.request_path, second.request_path);
         for pending in [&first, &second] {
             let directory = pending.request_path.parent().expect("request parent");
+            assert_eq!(directory.parent(), Some(runtime.as_path()));
+            assert_eq!(fs::metadata(&runtime)?.mode() & 0o777, 0o700);
             assert_eq!(fs::metadata(directory)?.mode() & 0o777, 0o700);
             assert_eq!(fs::metadata(&pending.request_path)?.mode() & 0o777, 0o600);
             assert!(!directory.join(REQUEST_TEMP_FILE).exists());
@@ -783,11 +882,34 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn request_base_rejects_symlinks_and_non_private_permissions() -> Result<()> {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let cwd = tempfile::tempdir()?;
+        let launcher = resolved("/bin/true", &[], None);
+        let public_base = cwd.path().join("public-base");
+        fs::create_dir(&public_base)?;
+        fs::set_permissions(&public_base, fs::Permissions::from_mode(0o755))?;
+
+        assert!(PendingLaunch::create_under(&launcher, cwd.path(), &public_base).is_err());
+
+        let private_target = cwd.path().join("private-target");
+        fs::create_dir(&private_target)?;
+        fs::set_permissions(&private_target, fs::Permissions::from_mode(0o700))?;
+        let symlink_base = cwd.path().join("symlink-base");
+        symlink(&private_target, &symlink_base)?;
+
+        assert!(PendingLaunch::create_under(&launcher, cwd.path(), &symlink_base).is_err());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn concurrent_requests_do_not_collide_or_cross_acknowledgments() -> Result<()> {
         let cwd = tempfile::tempdir()?;
         let launcher = resolved("/bin/sh", &["-c", "exit 0"], None);
         let pending = (0..8)
-            .map(|_| PendingLaunch::create(&launcher, cwd.path()))
+            .map(|_| create_pending(&launcher, cwd.path()))
             .collect::<Result<Vec<_>>>()?;
         let ingress = pending
             .iter()
@@ -810,7 +932,7 @@ mod tests {
     fn ingress_command_contains_only_controlled_capability_data() -> Result<()> {
         let cwd = tempfile::tempdir()?;
         let sentinel = "opaque-input-sentinel";
-        let pending = PendingLaunch::create(
+        let pending = create_pending(
             &resolved("example-command", &["static-sentinel"], Some(sentinel)),
             cwd.path(),
         )?;
@@ -829,7 +951,7 @@ mod tests {
         let cwd = tempfile::tempdir()?;
         let command_sentinel = "missing-command-sentinel";
         let input_sentinel = "opaque-input-sentinel";
-        let pending = PendingLaunch::create(
+        let pending = create_pending(
             &resolved(command_sentinel, &[], Some(input_sentinel)),
             cwd.path(),
         )?;
@@ -856,7 +978,7 @@ mod tests {
     fn malformed_version_is_consumed_and_acknowledged_as_failure() -> Result<()> {
         let cwd = tempfile::tempdir()?;
         let launcher = resolved("example-command", &[], None);
-        let pending = PendingLaunch::create(&launcher, cwd.path())?;
+        let pending = create_pending(&launcher, cwd.path())?;
         fs::remove_file(&pending.request_path)?;
         write_json_atomically(
             pending.request_path.parent().expect("request parent"),
@@ -884,20 +1006,85 @@ mod tests {
     }
 
     #[test]
-    fn acknowledgment_timeout_drops_all_transient_files() -> Result<()> {
+    fn ingress_claim_timeout_drops_all_transient_files() -> Result<()> {
         let cwd = tempfile::tempdir()?;
-        let pending = PendingLaunch::create(&resolved("example-command", &[], None), cwd.path())?;
+        let pending = create_pending(&resolved("example-command", &[], None), cwd.path())?;
         let directory = pending
             .request_path
             .parent()
             .expect("request parent")
             .to_path_buf();
 
-        pending
-            .wait_for_spawn_timeout(Duration::from_millis(25))
+        let error = pending
+            .wait_for_spawn_timeouts(Duration::from_millis(25), Duration::from_millis(25))
             .expect_err("missing ingress should time out");
+        assert!(
+            error
+                .to_string()
+                .contains("waiting for launcher ingress to consume its request")
+        );
         drop(pending);
         assert!(!directory.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn consumed_request_gets_a_fresh_spawn_acknowledgment_window() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let pending = create_pending(&resolved("example-command", &[], None), cwd.path())?;
+        let directory = pending
+            .request_path
+            .parent()
+            .expect("request parent")
+            .to_path_buf();
+        fs::remove_file(&pending.request_path)?;
+        let acknowledgment = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            write_acknowledgment(&directory, SpawnResult::Spawned)
+        });
+
+        pending.wait_for_spawn_timeouts(Duration::from_millis(10), Duration::from_millis(250))?;
+        acknowledgment.join().expect("acknowledgment thread")?;
+        Ok(())
+    }
+
+    #[test]
+    fn claim_timeout_cancellation_prevents_late_request_consumption() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let pending = create_pending(&resolved("example-command", &[], None), cwd.path())?;
+        let mut file = open_private_file(&pending.request_path)?;
+        let mut bytes = Vec::new();
+        file.read_to_end(&mut bytes)?;
+        let decoded = serde_json::from_slice(&bytes)
+            .context("test request should decode before cancellation")?;
+
+        assert!(cancel_unclaimed_request(&pending.request_path)?);
+        let error = finish_request_claim(&pending.request_path, Ok(decoded))
+            .expect_err("ingress must lose after deadline cancellation removes the request");
+
+        assert!(
+            error
+                .to_string()
+                .contains("failed to consume private launcher request")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn spawn_acknowledgment_timeout_starts_after_request_consumption() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let pending = create_pending(&resolved("example-command", &[], None), cwd.path())?;
+        fs::remove_file(&pending.request_path)?;
+
+        let error = pending
+            .wait_for_spawn_timeouts(Duration::from_secs(1), Duration::from_millis(25))
+            .expect_err("consumed request without acknowledgment should time out");
+
+        assert!(
+            error
+                .to_string()
+                .contains("waiting for launcher process spawn acknowledgment")
+        );
         Ok(())
     }
 
@@ -908,8 +1095,7 @@ mod tests {
         let cwd = tempfile::tempdir()?;
         let marker = cwd.path().join("launcher-ran");
         let script = format!("touch {}", shell_quote(&marker.display().to_string()));
-        let pending =
-            PendingLaunch::create(&resolved("/bin/sh", &["-c", &script], None), cwd.path())?;
+        let pending = create_pending(&resolved("/bin/sh", &["-c", &script], None), cwd.path())?;
         fs::create_dir(
             pending
                 .request_path
@@ -921,9 +1107,13 @@ mod tests {
         let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
 
         let error = pending
-            .wait_for_spawn_timeout(Duration::from_millis(50))
+            .wait_for_spawn_timeouts(Duration::from_millis(200), Duration::from_millis(50))
             .expect_err("missing acknowledgment should time out");
-        assert!(error.to_string().contains("timed out"));
+        assert!(
+            error
+                .to_string()
+                .contains("waiting for launcher process spawn acknowledgment")
+        );
         let ingress_error = ingress
             .join()
             .expect("ingress thread")
@@ -940,7 +1130,7 @@ mod tests {
     #[test]
     fn malformed_acknowledgment_is_rejected_and_cleaned_up() -> Result<()> {
         let cwd = tempfile::tempdir()?;
-        let pending = PendingLaunch::create(&resolved("example-command", &[], None), cwd.path())?;
+        let pending = create_pending(&resolved("example-command", &[], None), cwd.path())?;
         let directory = pending
             .request_path
             .parent()
@@ -951,7 +1141,7 @@ mod tests {
         drop(acknowledgment);
 
         pending
-            .wait_for_spawn_timeout(Duration::from_millis(25))
+            .wait_for_spawn_timeouts(Duration::from_millis(25), Duration::from_millis(25))
             .expect_err("malformed acknowledgment should fail");
         drop(pending);
         assert!(!directory.exists());
@@ -968,8 +1158,7 @@ mod tests {
         let executable = cwd.path().join("relative-launcher");
         fs::write(&executable, "#!/bin/sh\ntouch relative-ran\n")?;
         fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
-        let pending =
-            PendingLaunch::create(&resolved("./relative-launcher", &[], None), cwd.path())?;
+        let pending = create_pending(&resolved("./relative-launcher", &[], None), cwd.path())?;
         let ingress_path = pending.request_path.clone();
         let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
 
@@ -987,7 +1176,7 @@ mod tests {
         let cwd = tempfile::tempdir()?;
         let external = cwd.path().join("external-request");
         fs::write(&external, "not a request")?;
-        let pending = PendingLaunch::create(&resolved("/bin/true", &[], None), cwd.path())?;
+        let pending = create_pending(&resolved("/bin/true", &[], None), cwd.path())?;
         fs::remove_file(&pending.request_path)?;
         symlink(&external, &pending.request_path)?;
 

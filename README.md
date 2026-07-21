@@ -93,11 +93,19 @@ stdin as UTF-8 without trimming, which is preferable for multiline text or when
 the input should not appear in the original kmux process argv.
 
 Kmux considers the add successful once the launcher process spawns. It does not
-wait for launcher-specific readiness or completion. A spawn failure or bounded
-ingress timeout returns an error but deliberately leaves the created branch,
-worktree, setup effects, parent metadata, and usable shell window in place for
-manual recovery. A later launcher failure is visible in that shell and does not
-retroactively fail `kmux add`.
+wait for launcher-specific readiness or completion. The shell gets three seconds
+to consume the ingress request, followed by a fresh three seconds to acknowledge
+launcher spawn. A spawn failure or timeout returns an error but deliberately
+leaves the created branch, worktree, setup effects, parent metadata, and usable
+shell window in place for manual recovery. A later launcher failure is visible in
+that shell and does not retroactively fail `kmux add`.
+
+The one-shot request lives briefly under the owner-only
+`$XDG_STATE_HOME/kmux/launcher-runtime` directory (or the platform's user-state
+directory when `XDG_STATE_HOME` is unset) so a sandboxed caller and an existing
+tmux server can access the same capability even when they have different `/tmp`
+or `XDG_RUNTIME_DIR` mounts. Kmux consumes the request before launcher spawn and
+removes its private directory after handoff or failure.
 
 Inspect workspace state as a table or JSON:
 
