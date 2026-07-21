@@ -38,7 +38,7 @@ impl SidebarCandidateMatcher {
     }
 
     fn is_restored_sidebar_shape(&self, pane: &TmuxPaneSnapshot) -> bool {
-        if pane.kmux_role.is_some() || pane.pane_active || pane.pane_left != 0 {
+        if pane.kmux_role.is_some() || pane.activity.pane_active || pane.geometry.pane_left != 0 {
             return false;
         }
         let Some(width) = self.width else {
@@ -46,8 +46,12 @@ impl SidebarCandidateMatcher {
         };
         // Use the same content-only geometry and target calculation as lifecycle
         // reconciliation so restoration cannot recognize a width we would not create.
-        let minimum_content_width = pane.window_layout.minimum_width(Some(&pane.pane_id));
-        pane.pane_width == target_width(width, pane.window_width, minimum_content_width)
+        let minimum_content_width = pane
+            .geometry
+            .window_layout
+            .minimum_width(Some(&pane.identity.pane_id));
+        pane.geometry.pane_width
+            == target_width(width, pane.geometry.window_width, minimum_content_width)
     }
 }
 
@@ -72,10 +76,10 @@ pub(super) fn sidebar_candidates_by_window<'a>(
 ) -> HashMap<String, &'a TmuxPaneSnapshot> {
     let mut matches = HashMap::<String, Vec<&TmuxPaneSnapshot>>::new();
     for pane in sidebar_candidate_snapshots(panes, matcher) {
-        let window_matches = matches.entry(pane.window_id.clone()).or_default();
+        let window_matches = matches.entry(pane.identity.window_id.clone()).or_default();
         if window_matches
             .iter()
-            .all(|existing| existing.pane_id != pane.pane_id)
+            .all(|existing| existing.identity.pane_id != pane.identity.pane_id)
         {
             window_matches.push(pane);
         }
@@ -106,6 +110,7 @@ fn sidebar_candidate_for_window<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::{TmuxPaneActivity, TmuxPaneGeometry, TmuxPaneIdentity, TmuxPanePlacement};
 
     #[test]
     fn sidebar_candidates_are_marked_or_exact_left_panes() {
@@ -113,7 +118,7 @@ mod tests {
         let wide = pane_snapshot("%2", "@1", 0, 31, Some("kmux"), None, None);
         let not_left = pane_snapshot("%3", "@1", 10, 30, Some("kmux"), None, None);
         let mut active = pane_snapshot("%5", "@1", 0, 30, Some("kmux"), None, None);
-        active.pane_active = true;
+        active.activity.pane_active = true;
         let tagged = pane_snapshot("%4", "@1", 10, 90, Some("shell"), None, Some(SIDEBAR_ROLE));
         let matcher = test_matcher(Some(fixed_width(30)));
 
@@ -143,7 +148,7 @@ mod tests {
             .remove("@1")
             .expect("window should have a sidebar candidate");
 
-        assert_eq!(sidebar.pane_id, "%2");
+        assert_eq!(sidebar.identity.pane_id, "%2");
     }
 
     #[test]
@@ -157,7 +162,7 @@ mod tests {
             .remove("@1")
             .expect("window should have a sidebar candidate");
 
-        assert_eq!(sidebar.pane_id, "%1");
+        assert_eq!(sidebar.identity.pane_id, "%1");
     }
 
     #[test]
@@ -201,27 +206,28 @@ mod tests {
         };
         let narrow = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
         let mut proportional = pane_snapshot("%2", "@2", 0, 40, Some("fish"), Some("fish"), None);
-        proportional.window_width = 160;
+        proportional.geometry.window_width = 160;
         let panes = vec![narrow, proportional];
         let matcher = test_matcher(Some(policy));
 
         let sidebars = sidebar_candidates_by_window(&panes, &matcher);
 
         assert_eq!(sidebars.len(), 2);
-        assert_eq!(sidebars["@1"].pane_width, 30);
-        assert_eq!(sidebars["@2"].pane_width, 40);
+        assert_eq!(sidebars["@1"].geometry.pane_width, 30);
+        assert_eq!(sidebars["@2"].geometry.pane_width, 40);
     }
 
     #[test]
     fn sidebar_candidates_match_narrow_multi_pane_layout_cap() {
         let policy = SidebarWidth::default();
         let mut sidebar = pane_snapshot("%1", "@1", 0, 16, Some("kmux"), Some("kmux"), None);
-        sidebar.window_width = 20;
-        sidebar.window_layout = crate::tmux::test_support::test_window_layout(&["%1", "%2", "%3"]);
+        sidebar.geometry.window_width = 20;
+        sidebar.geometry.window_layout =
+            crate::tmux::test_support::test_window_layout(&["%1", "%2", "%3"]);
         let mut first_content = pane_snapshot("%2", "@1", 17, 1, Some("fish"), Some("fish"), None);
-        first_content.window_width = 20;
+        first_content.geometry.window_width = 20;
         let mut second_content = pane_snapshot("%3", "@1", 19, 1, Some("fish"), Some("fish"), None);
-        second_content.window_width = 20;
+        second_content.geometry.window_width = 20;
         let panes = vec![sidebar, first_content, second_content];
         let matcher = test_matcher(Some(policy));
 
@@ -229,14 +235,15 @@ mod tests {
             .remove("@1")
             .expect("narrow sidebar should match layout-aware cap");
 
-        assert_eq!(matched.pane_id, "%1");
+        assert_eq!(matched.identity.pane_id, "%1");
     }
 
     #[test]
     fn sidebar_candidates_deduplicate_linked_window_snapshots() {
         let restored = pane_snapshot("%1", "@1", 0, 30, Some("fish"), Some("fish"), None);
         let mut linked = restored.clone();
-        linked.session_name = "linked-project".to_owned();
+        linked.identity.session_id = "$2".to_owned();
+        linked.placement.session_name = "linked-project".to_owned();
         let panes = vec![restored, linked];
         let matcher = test_matcher(Some(fixed_width(30)));
 
@@ -244,7 +251,7 @@ mod tests {
             .remove("@1")
             .expect("linked snapshot should reuse one physical sidebar");
 
-        assert_eq!(matched.pane_id, "%1");
+        assert_eq!(matched.identity.pane_id, "%1");
     }
 
     fn pane_snapshot(
@@ -257,24 +264,33 @@ mod tests {
         kmux_role: Option<&str>,
     ) -> TmuxPaneSnapshot {
         TmuxPaneSnapshot {
-            session_name: "project".to_owned(),
-            window_id: window_id.to_owned(),
-            window_index: "1".to_owned(),
-            window_name: "main".to_owned(),
-            pane_id: pane_id.to_owned(),
-            pane_index: pane_id.trim_start_matches('%').to_owned(),
-            pane_left,
-            pane_width,
-            window_width: 120,
-            window_layout: crate::tmux::test_support::test_window_layout(&[pane_id]),
+            identity: TmuxPaneIdentity {
+                session_id: "$1".to_owned(),
+                window_id: window_id.to_owned(),
+                pane_id: pane_id.to_owned(),
+            },
+            placement: TmuxPanePlacement {
+                session_name: "project".to_owned(),
+                window_name: "main".to_owned(),
+                window_index: "1".to_owned(),
+                pane_index: pane_id.trim_start_matches('%').to_owned(),
+                current_path: None,
+            },
+            geometry: TmuxPaneGeometry {
+                pane_left,
+                pane_width,
+                window_width: 120,
+                window_layout: crate::tmux::test_support::test_window_layout(&[pane_id]),
+            },
+            activity: TmuxPaneActivity {
+                pane_active: false,
+                pane_last: false,
+                window_active: false,
+                window_last: false,
+                session_attached: false,
+            },
             title: title.map(str::to_owned),
             current_command: current_command.map(str::to_owned),
-            current_path: None,
-            pane_active: false,
-            pane_last: false,
-            window_active: false,
-            window_last: false,
-            session_attached: false,
             kmux_role: kmux_role.map(str::to_owned),
         }
     }

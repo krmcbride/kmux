@@ -13,7 +13,7 @@
 //! persist ownership metadata, infer identity from session names, or use agent
 //! observation/sidebar state as a topology source.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -22,7 +22,7 @@ use crate::LIFECYCLE_ACTIVE_ENV;
 use crate::paths::{RepoPaths, discover_project_identity, same_path};
 use crate::project::ProjectIdentity;
 use crate::state::workspace::{WorkspaceLifecycleLock, WorkspaceStateStore};
-use crate::tmux::{Tmux, TmuxSessionSnapshot};
+use crate::tmux::{Tmux, TmuxPane};
 
 /// Tmux target and held lifecycle lock shared by window-mutating workflows.
 pub(super) struct TmuxContext {
@@ -48,8 +48,9 @@ struct SelectedSession {
     is_ambient: bool,
 }
 
-struct SessionEvidence<'a> {
-    snapshot: &'a TmuxSessionSnapshot,
+struct SessionEvidence {
+    session_name: String,
+    session_id: String,
     projects: Vec<ProjectIdentity>,
 }
 
@@ -58,9 +59,9 @@ pub(super) fn resolve(paths: &RepoPaths) -> Result<ProjectSessionResolution> {
     let tmux = Tmux::from_env();
     let project = paths.project_identity()?;
     let lifecycle_lock = lock_project_lifecycle(paths)?;
-    let sessions = tmux.list_session_snapshots()?;
+    let panes = tmux.list_panes()?;
     let ambient = tmux.current_context_for_session_resolution()?;
-    let evidence = collect_evidence(&sessions);
+    let evidence = collect_evidence(&panes)?;
     let selected = select_session(
         &project,
         &evidence,
@@ -113,8 +114,8 @@ impl ProjectSessionResolution {
         workspace: &Path,
         expected_window_name: &str,
     ) -> Result<Option<String>> {
-        let sessions = self.tmux.list_session_snapshots()?;
-        let evidence = collect_evidence(&sessions);
+        let panes = self.tmux.list_panes()?;
+        let evidence = collect_evidence(&panes)?;
         let fresh_selected = select_session(&self.project, &evidence, None)?;
         let original_id = self
             .selected
@@ -130,12 +131,11 @@ impl ProjectSessionResolution {
             );
         }
         let mut matching_sessions = BTreeSet::new();
-        let expected_window_ids = sessions
+        let expected_window_ids = panes
             .iter()
-            .filter(|session| selected_id == Some(session.session_id.as_str()))
-            .flat_map(|session| &session.panes)
-            .filter(|pane| pane.window_name == expected_window_name)
-            .map(|pane| pane.window_id.clone())
+            .filter(|pane| selected_id == Some(pane.identity.session_id.as_str()))
+            .filter(|pane| pane.placement.window_name == expected_window_name)
+            .map(|pane| pane.identity.window_id.clone())
             .collect::<BTreeSet<_>>();
         if expected_window_ids.len() > 1 {
             let selected_name = fresh_selected
@@ -148,21 +148,25 @@ impl ProjectSessionResolution {
         }
         let expected_window_id = expected_window_ids.into_iter().next();
 
-        for session in &sessions {
-            let has_external_match = session.panes.iter().any(|pane| {
-                if pane.kmux_role.as_deref() == Some("sidebar") {
-                    return false;
-                }
-                let matches_workspace = pane.current_path.as_deref().is_some_and(|path| {
-                    RepoPaths::discover(path)
-                        .is_ok_and(|paths| same_path(&paths.current_worktree, workspace))
+        for session in &evidence {
+            let has_external_match = panes
+                .iter()
+                .filter(|pane| pane.identity.session_id == session.session_id)
+                .any(|pane| {
+                    if pane.kmux_role.as_deref() == Some("sidebar") {
+                        return false;
+                    }
+                    let matches_workspace =
+                        pane.placement.current_path.as_deref().is_some_and(|path| {
+                            RepoPaths::discover(path)
+                                .is_ok_and(|paths| same_path(&paths.current_worktree, workspace))
+                        });
+                    if !matches_workspace {
+                        return false;
+                    }
+                    selected_id != Some(session.session_id.as_str())
+                        || expected_window_id.as_deref() != Some(pane.identity.window_id.as_str())
                 });
-                if !matches_workspace {
-                    return false;
-                }
-                selected_id != Some(session.session_id.as_str())
-                    || expected_window_id.as_deref() != Some(pane.window_id.as_str())
-            });
             if has_external_match {
                 matching_sessions.insert(session.session_name.clone());
             }
@@ -188,32 +192,50 @@ impl ProjectSessionResolution {
     }
 }
 
-fn collect_evidence(sessions: &[TmuxSessionSnapshot]) -> Vec<SessionEvidence<'_>> {
-    sessions
-        .iter()
-        .map(|snapshot| {
-            let mut projects = Vec::new();
-            for path in snapshot
-                .panes
-                .iter()
-                .filter(|pane| pane.kmux_role.as_deref() != Some("sidebar"))
-                .filter_map(|pane| pane.current_path.as_deref())
-            {
-                if let Ok(candidate) = discover_project_identity(path)
-                    && !projects.contains(&candidate)
-                {
-                    projects.push(candidate);
-                }
-            }
-            projects.sort_by(|left, right| left.main_worktree().cmp(right.main_worktree()));
-            SessionEvidence { snapshot, projects }
-        })
-        .collect()
+fn collect_evidence(panes: &[TmuxPane]) -> Result<Vec<SessionEvidence>> {
+    let mut sessions = BTreeMap::<String, SessionEvidence>::new();
+    for pane in panes {
+        let session = sessions
+            .entry(pane.identity.session_id.clone())
+            .or_insert_with(|| SessionEvidence {
+                session_name: pane.placement.session_name.clone(),
+                session_id: pane.identity.session_id.clone(),
+                projects: Vec::new(),
+            });
+        if session.session_name != pane.placement.session_name {
+            bail!(
+                "inconsistent tmux pane records for session id {:?}",
+                pane.identity.session_id
+            );
+        }
+        if pane.kmux_role.as_deref() == Some("sidebar") {
+            continue;
+        }
+        if let Some(path) = pane.placement.current_path.as_deref()
+            && let Ok(candidate) = discover_project_identity(path)
+            && !session.projects.contains(&candidate)
+        {
+            session.projects.push(candidate);
+        }
+    }
+
+    let mut sessions = sessions.into_values().collect::<Vec<_>>();
+    for session in &mut sessions {
+        session
+            .projects
+            .sort_by(|left, right| left.main_worktree().cmp(right.main_worktree()));
+    }
+    sessions.sort_by(|left, right| {
+        left.session_name
+            .cmp(&right.session_name)
+            .then_with(|| left.session_id.cmp(&right.session_id))
+    });
+    Ok(sessions)
 }
 
 fn select_session(
     project: &ProjectIdentity,
-    sessions: &[SessionEvidence<'_>],
+    sessions: &[SessionEvidence],
     ambient_session_id: Option<&str>,
 ) -> Result<Option<SelectedSession>> {
     let mut matching = sessions
@@ -221,10 +243,9 @@ fn select_session(
         .filter(|session| session.projects.contains(project))
         .collect::<Vec<_>>();
     matching.sort_by(|left, right| {
-        left.snapshot
-            .session_name
-            .cmp(&right.snapshot.session_name)
-            .then_with(|| left.snapshot.session_id.cmp(&right.snapshot.session_id))
+        left.session_name
+            .cmp(&right.session_name)
+            .then_with(|| left.session_id.cmp(&right.session_id))
     });
 
     let session = match matching.as_slice() {
@@ -234,11 +255,7 @@ fn select_session(
             bail!(
                 "project {} has live panes in multiple tmux sessions: {}; move, unlink, or close project windows until it appears in exactly one session",
                 project.main_worktree().display(),
-                display_session_names(
-                    matching
-                        .iter()
-                        .map(|session| session.snapshot.session_name.as_str())
-                )
+                display_session_names(matching.iter().map(|session| session.session_name.as_str()))
             )
         }
     };
@@ -246,15 +263,15 @@ fn select_session(
     if session.projects.len() > 1 {
         bail!(
             "tmux session {:?} contains panes from multiple Git projects: {}; move or close windows until the session contains exactly one project",
-            session.snapshot.session_name,
+            session.session_name,
             display_project_roots(&session.projects)
         );
     }
 
     Ok(Some(SelectedSession {
-        session_name: session.snapshot.session_name.clone(),
-        session_id: session.snapshot.session_id.clone(),
-        is_ambient: ambient_session_id == Some(session.snapshot.session_id.as_str()),
+        session_name: session.session_name.clone(),
+        session_id: session.session_id.clone(),
+        is_ambient: ambient_session_id == Some(session.session_id.as_str()),
     }))
 }
 
@@ -280,7 +297,7 @@ mod tests {
     use super::*;
     use crate::git::test_support::GitRepoFixture;
     use crate::tmux::test_support::{TmuxFixture, create_test_session};
-    use crate::tmux::{TmuxSessionPaneSnapshot, TmuxSessionSnapshot};
+    use crate::tmux::{TmuxPaneIdentity, TmuxPanePlacement};
 
     fn project(root: &str) -> ProjectIdentity {
         let root = std::path::PathBuf::from(root);
@@ -288,39 +305,40 @@ mod tests {
             .expect("test project identity should be valid")
     }
 
-    fn snapshot(name: &str, id: &str) -> TmuxSessionSnapshot {
-        TmuxSessionSnapshot {
+    fn evidence(name: &str, id: &str, projects: &[ProjectIdentity]) -> SessionEvidence {
+        SessionEvidence {
             session_name: name.to_owned(),
             session_id: id.to_owned(),
-            panes: Vec::new(),
-        }
-    }
-
-    fn pane(path: Option<&Path>, role: Option<&str>) -> TmuxSessionPaneSnapshot {
-        TmuxSessionPaneSnapshot {
-            window_id: "@1".to_owned(),
-            window_name: "main".to_owned(),
-            pane_id: "%1".to_owned(),
-            current_path: path.map(|path| path.display().to_string()),
-            kmux_role: role.map(str::to_owned),
-        }
-    }
-
-    fn evidence<'a>(
-        snapshot: &'a TmuxSessionSnapshot,
-        projects: &[ProjectIdentity],
-    ) -> SessionEvidence<'a> {
-        SessionEvidence {
-            snapshot,
             projects: projects.to_vec(),
+        }
+    }
+
+    fn pane(index: u16, path: Option<&Path>, role: Option<&str>) -> TmuxPane {
+        TmuxPane {
+            identity: TmuxPaneIdentity {
+                session_id: "$1".to_owned(),
+                window_id: "@1".to_owned(),
+                pane_id: format!("%{index}"),
+            },
+            placement: TmuxPanePlacement {
+                session_name: "project-alpha".to_owned(),
+                window_name: "main".to_owned(),
+                window_index: "1".to_owned(),
+                pane_index: index.to_string(),
+                current_path: path.map(|path| path.display().to_string()),
+            },
+            kmux_role: role.map(str::to_owned),
         }
     }
 
     #[test]
     fn unique_project_bucket_resolves_equally_for_attached_and_detached_callers() -> Result<()> {
         let target = project("/repo/project-alpha");
-        let session = snapshot("project-alpha", "$1");
-        let sessions = [evidence(&session, std::slice::from_ref(&target))];
+        let sessions = [evidence(
+            "project-alpha",
+            "$1",
+            std::slice::from_ref(&target),
+        )];
 
         let detached = select_session(&target, &sessions, None)?
             .expect("detached caller should resolve the project bucket");
@@ -341,11 +359,9 @@ mod tests {
     #[test]
     fn split_project_reports_sessions_in_deterministic_order() {
         let target = project("/repo/project-alpha");
-        let later = snapshot("zeta", "$2");
-        let earlier = snapshot("alpha", "$1");
         let sessions = [
-            evidence(&later, std::slice::from_ref(&target)),
-            evidence(&earlier, std::slice::from_ref(&target)),
+            evidence("zeta", "$2", std::slice::from_ref(&target)),
+            evidence("alpha", "$1", std::slice::from_ref(&target)),
         ];
 
         let error = select_session(&target, &sessions, Some("$2"))
@@ -359,8 +375,7 @@ mod tests {
     fn mixed_project_session_reports_every_project_root() {
         let target = project("/repo/project-alpha");
         let other = project("/repo/project-beta");
-        let session = snapshot("mixed", "$1");
-        let sessions = [evidence(&session, &[target.clone(), other])];
+        let sessions = [evidence("mixed", "$1", &[target.clone(), other])];
 
         let error = select_session(&target, &sessions, None)
             .expect_err("a mixed-project session should fail closed");
@@ -374,11 +389,9 @@ mod tests {
         let target = project("/repo/project-alpha");
         let other = project("/repo/project-beta");
         let third = project("/repo/project-gamma");
-        let target_session = snapshot("project-alpha", "$1");
-        let unrelated = snapshot("unrelated-mixed", "$2");
         let sessions = [
-            evidence(&target_session, std::slice::from_ref(&target)),
-            evidence(&unrelated, &[other, third]),
+            evidence("project-alpha", "$1", std::slice::from_ref(&target)),
+            evidence("unrelated-mixed", "$2", &[other, third]),
         ];
 
         let selected = select_session(&target, &sessions, None)?
@@ -391,8 +404,7 @@ mod tests {
     fn missing_project_evidence_returns_no_session() -> Result<()> {
         let target = project("/repo/project-alpha");
         let other = project("/repo/project-beta");
-        let session = snapshot("project-beta", "$1");
-        let sessions = [evidence(&session, &[other])];
+        let sessions = [evidence("project-beta", "$1", &[other])];
 
         assert!(select_session(&target, &sessions, None)?.is_none());
         Ok(())
@@ -410,15 +422,14 @@ mod tests {
         fixture.git(&["worktree", "add", "-b", "feature/auth", linked_text])?;
         let other = GitRepoFixture::new()?;
         let neutral = tempfile::tempdir()?;
-        let mut session = snapshot("project-alpha", "$1");
-        session.panes = vec![
-            pane(Some(fixture.path()), None),
-            pane(Some(&linked), None),
-            pane(Some(neutral.path()), None),
-            pane(Some(other.path()), Some("sidebar")),
+        let panes = vec![
+            pane(1, Some(fixture.path()), None),
+            pane(2, Some(&linked), None),
+            pane(3, Some(neutral.path()), None),
+            pane(4, Some(other.path()), Some("sidebar")),
         ];
 
-        let topology = collect_evidence(std::slice::from_ref(&session));
+        let topology = collect_evidence(&panes)?;
         let expected = RepoPaths::discover(fixture.path())?.project_identity()?;
 
         assert_eq!(topology.len(), 1);
@@ -430,15 +441,35 @@ mod tests {
     fn topology_detects_two_projects_in_one_session() -> Result<()> {
         let first = GitRepoFixture::new()?;
         let second = GitRepoFixture::new()?;
-        let mut session = snapshot("mixed", "$1");
-        session.panes = vec![
-            pane(Some(first.path()), None),
-            pane(Some(second.path()), None),
+        let panes = vec![
+            pane(1, Some(first.path()), None),
+            pane(2, Some(second.path()), None),
         ];
 
-        let topology = collect_evidence(std::slice::from_ref(&session));
+        let topology = collect_evidence(&panes)?;
 
         assert_eq!(topology[0].projects.len(), 2);
+        Ok(())
+    }
+
+    #[test]
+    fn topology_preserves_linked_window_rows_as_distinct_sessions() -> Result<()> {
+        let repo = GitRepoFixture::new()?;
+        let first = pane(1, Some(repo.path()), None);
+        let mut linked = first.clone();
+        linked.identity.session_id = "$2".to_owned();
+        linked.placement.session_name = "linked-project".to_owned();
+
+        let topology = collect_evidence(&[first, linked])?;
+        let project = RepoPaths::discover(repo.path())?.project_identity()?;
+        let error = select_session(&project, &topology, None)
+            .expect_err("one physical window linked into two sessions must remain ambiguous");
+
+        assert!(
+            error
+                .to_string()
+                .contains("live panes in multiple tmux sessions")
+        );
         Ok(())
     }
 
@@ -458,16 +489,16 @@ mod tests {
         create_test_session(&fixture.tmux, "primary", repo.path())?;
         let primary = fixture
             .tmux
-            .list_session_snapshots()?
+            .list_panes()?
             .into_iter()
-            .find(|session| session.session_name == "primary")
+            .find(|pane| pane.placement.session_name == "primary")
             .ok_or_else(|| anyhow::anyhow!("expected primary test session"))?;
         let resolution = ProjectSessionResolution {
             tmux: fixture.tmux.clone(),
             project: RepoPaths::discover(repo.path())?.project_identity()?,
             selected: Some(SelectedSession {
-                session_name: primary.session_name,
-                session_id: primary.session_id,
+                session_name: primary.placement.session_name,
+                session_id: primary.identity.session_id,
                 is_ambient: false,
             }),
             lifecycle_lock: WorkspaceStateStore::new(

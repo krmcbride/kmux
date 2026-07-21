@@ -68,10 +68,10 @@ impl SidebarTmuxFixture {
         create_test_session(&fixture.tmux, "project", temp.path())?;
         let session_id = fixture
             .tmux
-            .list_session_snapshots()?
+            .list_panes()?
             .into_iter()
-            .find(|session| session.session_name == "project")
-            .map(|session| session.session_id)
+            .find(|pane| pane.placement.session_name == "project")
+            .map(|pane| pane.identity.session_id)
             .ok_or_else(|| anyhow::anyhow!("expected project test session"))?;
         let pane_id =
             fixture
@@ -81,8 +81,8 @@ impl SidebarTmuxFixture {
             .tmux
             .list_pane_snapshots()?
             .into_iter()
-            .find(|pane| pane.pane_id == pane_id)
-            .map(|pane| pane.window_id)
+            .find(|pane| pane.identity.pane_id == pane_id)
+            .map(|pane| pane.identity.window_id)
             .ok_or_else(|| anyhow::anyhow!("expected created pane in tmux snapshot"))?;
 
         Ok(Some(Self {

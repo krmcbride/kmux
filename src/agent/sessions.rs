@@ -542,12 +542,12 @@ fn enrich_target_from_live_tmux(
 
     let mut common_sessions = matches[0].sessions.keys().cloned().collect::<BTreeSet<_>>();
     for window in &matches[1..] {
-        common_sessions.retain(|session_name| window.sessions.contains_key(session_name));
+        common_sessions.retain(|session_id| window.sessions.contains_key(session_id));
     }
     if common_sessions.len() != 1 {
         return cross_session_target(&matches);
     }
-    let Some(session_name) = common_sessions.pop_first() else {
+    let Some(session_id) = common_sessions.pop_first() else {
         return cross_session_target(&matches);
     };
     let mut ordered_windows = matches
@@ -555,7 +555,7 @@ fn enrich_target_from_live_tmux(
         .filter_map(|window| {
             window
                 .sessions
-                .get(&session_name)
+                .get(&session_id)
                 .map(|session| (window, session))
         })
         .collect::<Vec<_>>();
@@ -563,6 +563,7 @@ fn enrich_target_from_live_tmux(
         return cross_session_target(&matches);
     }
     ordered_windows.sort_by_key(|(window, session)| window_sort_key(window, session));
+    let session_name = ordered_windows[0].1.session_name.clone();
 
     let mut candidates = Vec::with_capacity(ordered_windows.len());
     for (index, (window, session)) in ordered_windows.into_iter().enumerate() {
@@ -573,7 +574,10 @@ fn enrich_target_from_live_tmux(
         }
         candidates.push(AgentTmuxWindowCandidate {
             window_id: window.window_id.clone(),
-            pane_ids: panes.into_iter().map(|pane| pane.pane_id.clone()).collect(),
+            pane_ids: panes
+                .into_iter()
+                .map(|pane| pane.identity.pane_id.clone())
+                .collect(),
         });
     }
 
@@ -586,7 +590,12 @@ fn enrich_target_from_live_tmux(
 fn cross_session_target(matches: &[WindowWorkspaceMatch]) -> AgentTmuxTarget {
     let session_names = matches
         .iter()
-        .flat_map(|window| window.sessions.keys().cloned())
+        .flat_map(|window| {
+            window
+                .sessions
+                .values()
+                .map(|session| session.session_name.clone())
+        })
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
@@ -609,6 +618,7 @@ struct WindowWorkspaceAccumulator {
 
 #[derive(Debug, Clone)]
 struct WindowSessionMatch {
+    session_name: String,
     window_index: String,
     window_name: String,
     active: bool,
@@ -626,33 +636,34 @@ fn window_workspace_matches(
         .filter(|pane| pane.kmux_role.as_deref() != Some("sidebar"))
     {
         let Some(workspace) = pane
+            .placement
             .current_path
             .as_deref()
             .and_then(|path| workspace_resolver.attachment_for_path(path))
         else {
             continue;
         };
-        let entry =
-            windows
-                .entry(pane.window_id.clone())
-                .or_insert_with(|| WindowWorkspaceAccumulator {
-                    window_id: pane.window_id.clone(),
-                    sessions: BTreeMap::new(),
-                    matching_panes: BTreeMap::new(),
-                });
+        let entry = windows
+            .entry(pane.identity.window_id.clone())
+            .or_insert_with(|| WindowWorkspaceAccumulator {
+                window_id: pane.identity.window_id.clone(),
+                sessions: BTreeMap::new(),
+                matching_panes: BTreeMap::new(),
+            });
         if workspace.key() == attachment.key() {
             entry
                 .sessions
-                .entry(pane.session_name.clone())
+                .entry(pane.identity.session_id.clone())
                 .or_insert_with(|| WindowSessionMatch {
-                    window_index: pane.window_index.clone(),
-                    window_name: pane.window_name.clone(),
-                    active: pane.window_active,
-                    last: pane.window_last,
+                    session_name: pane.placement.session_name.clone(),
+                    window_index: pane.placement.window_index.clone(),
+                    window_name: pane.placement.window_name.clone(),
+                    active: pane.activity.window_active,
+                    last: pane.activity.window_last,
                 });
             entry
                 .matching_panes
-                .entry(pane.pane_id.clone())
+                .entry(pane.identity.pane_id.clone())
                 .or_insert_with(|| pane.clone());
         }
     }
@@ -687,17 +698,17 @@ fn window_sort_key<'a>(
 }
 
 fn pane_sort_key(pane: &TmuxPaneSnapshot) -> (u8, u64, &str) {
-    let preference = if pane.pane_active {
+    let preference = if pane.activity.pane_active {
         0
-    } else if pane.pane_last {
+    } else if pane.activity.pane_last {
         1
     } else {
         2
     };
     (
         preference,
-        pane.pane_index.parse().unwrap_or(u64::MAX),
-        &pane.pane_id,
+        pane.placement.pane_index.parse().unwrap_or(u64::MAX),
+        &pane.identity.pane_id,
     )
 }
 
@@ -720,7 +731,7 @@ fn enrich_target_from_window_match(
     target.tmux_session_name = Some(session_name.to_owned());
     target.tmux_window_id = Some(window.window_id.clone());
     target.tmux_window_name = Some(session.window_name.clone());
-    target.tmux_pane_id = Some(pane.pane_id.clone());
+    target.tmux_pane_id = Some(pane.identity.pane_id.clone());
     target.tmux_pane_title = pane.title.clone();
     target.tmux_pane_current_command = pane.current_command.clone();
 }
@@ -781,6 +792,7 @@ mod tests {
     use crate::agent::workspace_activity::workspace_activities_from_sessions;
     use crate::git::test_support::GitRepoFixture;
     use crate::state::{AgentObservationKey, AgentObservationState};
+    use crate::tmux::{TmuxPaneActivity, TmuxPaneGeometry, TmuxPaneIdentity, TmuxPanePlacement};
     use std::collections::BTreeMap;
 
     #[derive(Default)]
@@ -1198,11 +1210,11 @@ mod tests {
         let (_directory_temp, directory) = git_repo_path();
         let server = directory_only_observation(&directory);
         let mut previous = pane_snapshot("%1", "@1", &directory, None);
-        previous.window_active = false;
-        previous.window_last = true;
-        previous.window_index = "1".to_owned();
+        previous.activity.window_active = false;
+        previous.activity.window_last = true;
+        previous.placement.window_index = "1".to_owned();
         let mut current = pane_snapshot("%2", "@2", &directory, None);
-        current.window_index = "9".to_owned();
+        current.placement.window_index = "9".to_owned();
 
         let views = reconcile_resolved_sessions(vec![server], &[previous, current], "default");
 
@@ -1216,14 +1228,14 @@ mod tests {
         let (_scratch_temp, scratch) = git_repo_path();
         let server = directory_only_observation(&directory);
         let mut current_scratch = pane_snapshot("%scratch", "@9", &scratch, None);
-        current_scratch.window_index = "9".to_owned();
+        current_scratch.placement.window_index = "9".to_owned();
         let mut lowest = pane_snapshot("%1", "@1", &directory, None);
-        lowest.window_active = false;
-        lowest.window_index = "1".to_owned();
+        lowest.activity.window_active = false;
+        lowest.placement.window_index = "1".to_owned();
         let mut previous = pane_snapshot("%2", "@2", &directory, None);
-        previous.window_active = false;
-        previous.window_last = true;
-        previous.window_index = "8".to_owned();
+        previous.activity.window_active = false;
+        previous.activity.window_last = true;
+        previous.placement.window_index = "8".to_owned();
 
         let views = reconcile_resolved_sessions(
             vec![server],
@@ -1240,14 +1252,14 @@ mod tests {
         let (_directory_temp, directory) = git_repo_path();
         let server = directory_only_observation(&directory);
         let mut high = pane_snapshot("%2", "@2", &directory, None);
-        high.window_active = false;
-        high.window_index = "70000".to_owned();
+        high.activity.window_active = false;
+        high.placement.window_index = "70000".to_owned();
         let mut tied_later = pane_snapshot("%9", "@9", &directory, None);
-        tied_later.window_active = false;
-        tied_later.window_index = "65536".to_owned();
+        tied_later.activity.window_active = false;
+        tied_later.placement.window_index = "65536".to_owned();
         let mut tied_first = pane_snapshot("%1", "@1", &directory, None);
-        tied_first.window_active = false;
-        tied_first.window_index = "65536".to_owned();
+        tied_first.activity.window_active = false;
+        tied_first.placement.window_index = "65536".to_owned();
 
         let views =
             reconcile_resolved_sessions(vec![server], &[high, tied_later, tied_first], "default");
@@ -1261,11 +1273,11 @@ mod tests {
         let (_directory_temp, directory) = git_repo_path();
         let server = directory_only_observation(&directory);
         let mut project_link = pane_snapshot_in_session("project", "%1", "@1", &directory, None);
-        project_link.window_active = false;
+        project_link.activity.window_active = false;
         let mut linked_copy = pane_snapshot_in_session("linked", "%1", "@1", &directory, None);
-        linked_copy.window_active = false;
+        linked_copy.activity.window_active = false;
         let mut project_only = pane_snapshot_in_session("project", "%2", "@2", &directory, None);
-        project_only.window_active = false;
+        project_only.activity.window_active = false;
 
         let views = reconcile_resolved_sessions(
             vec![server],
@@ -1430,14 +1442,14 @@ mod tests {
             &directory,
         );
         let mut first = pane_snapshot("%1", "@1", &directory, None);
-        first.pane_active = false;
-        first.pane_index = "1".to_owned();
+        first.activity.pane_active = false;
+        first.placement.pane_index = "1".to_owned();
         let mut second = pane_snapshot("%2", "@1", &directory, None);
-        second.pane_active = true;
-        second.pane_index = "2".to_owned();
+        second.activity.pane_active = true;
+        second.placement.pane_index = "2".to_owned();
         let mut sidebar = pane_snapshot("%sidebar", "@1", "/tmp/kmux", Some("sidebar"));
-        sidebar.pane_active = false;
-        sidebar.pane_index = "0".to_owned();
+        sidebar.activity.pane_active = false;
+        sidebar.placement.pane_index = "0".to_owned();
 
         let views = reconcile_resolved_sessions(vec![server], &[sidebar, first, second], "default");
 
@@ -1455,14 +1467,14 @@ mod tests {
         let (_directory_temp, directory) = git_repo_path();
         let server = directory_only_observation(&directory);
         let mut first = pane_snapshot("%1", "@1", &directory, None);
-        first.pane_active = false;
-        first.pane_index = "1".to_owned();
+        first.activity.pane_active = false;
+        first.placement.pane_index = "1".to_owned();
         let mut previous = pane_snapshot("%2", "@1", &directory, None);
-        previous.pane_active = false;
-        previous.pane_last = true;
-        previous.pane_index = "8".to_owned();
+        previous.activity.pane_active = false;
+        previous.activity.pane_last = true;
+        previous.placement.pane_index = "8".to_owned();
         let mut sidebar = pane_snapshot("%sidebar", "@1", &directory, Some("sidebar"));
-        sidebar.pane_index = "0".to_owned();
+        sidebar.placement.pane_index = "0".to_owned();
 
         let views =
             reconcile_resolved_sessions(vec![server], &[sidebar, first, previous], "default");
@@ -1476,14 +1488,14 @@ mod tests {
         let (_directory_temp, directory) = git_repo_path();
         let server = directory_only_observation(&directory);
         let mut high = pane_snapshot("%2", "@1", &directory, None);
-        high.pane_active = false;
-        high.pane_index = "70000".to_owned();
+        high.activity.pane_active = false;
+        high.placement.pane_index = "70000".to_owned();
         let mut tied_later = pane_snapshot("%9", "@1", &directory, None);
-        tied_later.pane_active = false;
-        tied_later.pane_index = "65536".to_owned();
+        tied_later.activity.pane_active = false;
+        tied_later.placement.pane_index = "65536".to_owned();
         let mut tied_first = pane_snapshot("%1", "@1", &directory, None);
-        tied_first.pane_active = false;
-        tied_first.pane_index = "65536".to_owned();
+        tied_first.activity.pane_active = false;
+        tied_first.placement.pane_index = "65536".to_owned();
 
         let views =
             reconcile_resolved_sessions(vec![server], &[high, tied_later, tied_first], "default");
@@ -1744,25 +1756,39 @@ mod tests {
         current_path: &str,
         kmux_role: Option<&str>,
     ) -> TmuxPaneSnapshot {
+        let session_id = match session_name {
+            "project" => "$1",
+            "linked" => "$2",
+            _ => "$3",
+        };
         TmuxPaneSnapshot {
-            session_name: session_name.to_owned(),
-            window_id: window_id.to_owned(),
-            window_index: "1".to_owned(),
-            window_name: format!("{session_name}-window"),
-            pane_id: pane_id.to_owned(),
-            pane_index: "1".to_owned(),
-            pane_left: 0,
-            pane_width: 80,
-            window_width: 120,
-            window_layout: crate::tmux::test_support::test_window_layout(&[pane_id]),
+            identity: TmuxPaneIdentity {
+                session_id: session_id.to_owned(),
+                window_id: window_id.to_owned(),
+                pane_id: pane_id.to_owned(),
+            },
+            placement: TmuxPanePlacement {
+                session_name: session_name.to_owned(),
+                window_name: format!("{session_name}-window"),
+                window_index: "1".to_owned(),
+                pane_index: "1".to_owned(),
+                current_path: Some(current_path.to_owned()),
+            },
+            geometry: TmuxPaneGeometry {
+                pane_left: 0,
+                pane_width: 80,
+                window_width: 120,
+                window_layout: crate::tmux::test_support::test_window_layout(&[pane_id]),
+            },
+            activity: TmuxPaneActivity {
+                pane_active: true,
+                pane_last: false,
+                window_active: true,
+                window_last: false,
+                session_attached: true,
+            },
             title: Some("pane title".to_owned()),
             current_command: Some("opencode".to_owned()),
-            current_path: Some(current_path.to_owned()),
-            pane_active: true,
-            pane_last: false,
-            window_active: true,
-            window_last: false,
-            session_attached: true,
             kmux_role: kmux_role.map(str::to_owned),
         }
     }

@@ -337,10 +337,10 @@ impl SidebarActions {
             .ok()?
             .into_iter()
             .filter(|pane| {
-                pane.window_id == destination_window_id
+                pane.identity.window_id == destination_window_id
                     && pane.kmux_role.as_deref() != Some("sidebar")
             })
-            .map(|pane| pane.pane_id)
+            .map(|pane| pane.identity.pane_id)
             .collect::<std::collections::BTreeSet<_>>();
         for pane_id in pane_ids {
             if live_pane_ids.contains(pane_id) && self.tmux.select_pane(pane_id).is_ok() {
@@ -564,12 +564,13 @@ mod tests {
             .tmux
             .list_pane_snapshots()?
             .into_iter()
-            .find(|pane| pane.window_id == fixture.window_id)
+            .find(|pane| pane.identity.window_id == fixture.window_id)
             .ok_or_else(|| anyhow::anyhow!("expected target window pane"))?;
-        fixture
-            .fixture
-            .tmux
-            .set_pane_option(&target_pane.pane_id, "@kmux_role", "sidebar")?;
+        fixture.fixture.tmux.set_pane_option(
+            &target_pane.identity.pane_id,
+            "@kmux_role",
+            "sidebar",
+        )?;
         fixture
             .fixture
             .tmux
@@ -577,7 +578,7 @@ mod tests {
 
         let selected_pane = fixture
             .actions()?
-            .focus_first_available_pane(&fixture.window_id, &[target_pane.pane_id]);
+            .focus_first_available_pane(&fixture.window_id, &[target_pane.identity.pane_id]);
 
         let active_window = fixture
             .fixture
@@ -594,7 +595,7 @@ mod tests {
                 .tmux
                 .list_panes()?
                 .into_iter()
-                .find(|pane| pane.window_id == fixture.window_id)
+                .find(|pane| pane.identity.window_id == fixture.window_id)
                 .and_then(|pane| pane.kmux_role)
                 .as_deref(),
             Some("sidebar")
@@ -612,8 +613,8 @@ mod tests {
             .tmux
             .list_pane_snapshots()?
             .into_iter()
-            .find(|pane| pane.window_id == fixture.window_id)
-            .map(|pane| pane.pane_id)
+            .find(|pane| pane.identity.window_id == fixture.window_id)
+            .map(|pane| pane.identity.pane_id)
             .ok_or_else(|| anyhow::anyhow!("expected content pane"))?;
         let sidebar_pane_id =
             fixture
@@ -638,7 +639,9 @@ mod tests {
                 .tmux
                 .list_pane_snapshots()?
                 .into_iter()
-                .any(|pane| pane.pane_id == content_pane_id && pane.pane_active)
+                .any(|pane| {
+                    pane.identity.pane_id == content_pane_id && pane.activity.pane_active
+                })
         );
         Ok(())
     }

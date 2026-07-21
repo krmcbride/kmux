@@ -77,7 +77,7 @@ pub(super) fn disable() -> Result<()> {
     let panes = tmux.list_pane_snapshots()?;
     let matcher = SidebarCandidateMatcher::new(None);
     for pane in sidebar_candidate_snapshots(&panes, &matcher) {
-        let _ = tmux.kill_pane(&pane.pane_id);
+        let _ = tmux.kill_pane(&pane.identity.pane_id);
     }
     print_user_message("sidebar disabled");
     Ok(())
@@ -111,8 +111,8 @@ pub(super) fn wake_window(tmux: &Tmux, window_id: &str) -> Result<()> {
 
 /// Notify all live sidebar panes that agent observations changed.
 pub(super) fn notify_observation_changed(tmux: &Tmux) -> Result<()> {
-    for pane in sidebar_panes(&tmux.list_panes()?) {
-        let _ = tmux.send_key(&pane.pane_id, SIDEBAR_WAKE_KEY);
+    for pane_id in unique_sidebar_pane_ids(&tmux.list_panes()?) {
+        let _ = tmux.send_key(pane_id, SIDEBAR_WAKE_KEY);
     }
     Ok(())
 }
@@ -186,7 +186,7 @@ fn reconcile_locked(tmux: &Tmux, config: &Config) -> Result<()> {
         let sidebar = sidebars_by_window.remove(&window.window_id);
         let minimum_content_width = window
             .layout
-            .minimum_width(sidebar.map(|sidebar| sidebar.pane_id.as_str()));
+            .minimum_width(sidebar.map(|sidebar| sidebar.identity.pane_id.as_str()));
         let width = target_width(width_policy, window.window_width, minimum_content_width);
         if let Some(pane) = sidebar {
             heal_sidebar_pane(tmux, pane, width, &command)?;
@@ -215,11 +215,11 @@ fn prune_extra_sidebars(tmux: &Tmux) -> Result<()> {
     let matcher = SidebarCandidateMatcher::new(None);
     let keep = sidebar_candidates_by_window(&panes, &matcher)
         .into_values()
-        .map(|pane| pane.pane_id.clone())
+        .map(|pane| pane.identity.pane_id.clone())
         .collect::<HashSet<_>>();
     for pane in sidebar_candidate_snapshots(&panes, &matcher) {
-        if !keep.contains(&pane.pane_id) {
-            let _ = tmux.kill_pane(&pane.pane_id);
+        if !keep.contains(&pane.identity.pane_id) {
+            let _ = tmux.kill_pane(&pane.identity.pane_id);
         }
     }
     Ok(())
@@ -232,13 +232,13 @@ fn heal_sidebar_pane(
     width: u16,
     command: &str,
 ) -> Result<()> {
-    if pane.pane_width != width {
-        let _ = tmux.resize_pane_width(&pane.pane_id, width);
+    if pane.geometry.pane_width != width {
+        let _ = tmux.resize_pane_width(&pane.identity.pane_id, width);
     }
     if should_respawn_sidebar_pane(pane) {
-        tmux.respawn_pane(&pane.pane_id, command)?;
+        tmux.respawn_pane(&pane.identity.pane_id, command)?;
     }
-    tmux.set_pane_option(&pane.pane_id, SIDEBAR_ROLE_OPTION, SIDEBAR_ROLE)?;
+    tmux.set_pane_option(&pane.identity.pane_id, SIDEBAR_ROLE_OPTION, SIDEBAR_ROLE)?;
     Ok(())
 }
 
@@ -291,10 +291,22 @@ fn sidebar_panes(panes: &[TmuxPane]) -> impl Iterator<Item = &TmuxPane> {
         .filter(|pane| pane.kmux_role.as_deref() == Some(SIDEBAR_ROLE))
 }
 
+// Linked tmux windows produce one row per session, but notification targets are
+// physical panes and should receive each wake key only once.
+fn unique_sidebar_pane_ids(panes: &[TmuxPane]) -> Vec<&str> {
+    let mut seen = HashSet::new();
+    sidebar_panes(panes)
+        .filter_map(|pane| {
+            let pane_id = pane.identity.pane_id.as_str();
+            seen.insert(pane_id).then_some(pane_id)
+        })
+        .collect()
+}
+
 fn sidebar_pane_for_window<'a>(panes: &'a [TmuxPane], window_id: &str) -> Option<&'a str> {
     sidebar_panes(panes)
-        .find(|pane| pane.window_id == window_id)
-        .map(|pane| pane.pane_id.as_str())
+        .find(|pane| pane.identity.window_id == window_id)
+        .map(|pane| pane.identity.pane_id.as_str())
 }
 
 // RAII wrapper for the tmux wait-for lock used around sidebar reconciliation.
@@ -318,32 +330,33 @@ impl Drop for SidebarLock<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::{TmuxPaneActivity, TmuxPaneGeometry, TmuxPaneIdentity, TmuxPanePlacement};
 
     #[test]
     fn sidebar_pane_for_window_returns_target_window_sidebar() {
         let panes = vec![
-            TmuxPane {
-                session_name: "project".to_owned(),
-                window_id: "@1".to_owned(),
-                pane_id: "%1".to_owned(),
-                kmux_role: Some(SIDEBAR_ROLE.to_owned()),
-            },
-            TmuxPane {
-                session_name: "project".to_owned(),
-                window_id: "@2".to_owned(),
-                pane_id: "%2".to_owned(),
-                kmux_role: None,
-            },
-            TmuxPane {
-                session_name: "project".to_owned(),
-                window_id: "@2".to_owned(),
-                pane_id: "%3".to_owned(),
-                kmux_role: Some(SIDEBAR_ROLE.to_owned()),
-            },
+            pane("@1", "%1", Some(SIDEBAR_ROLE)),
+            pane("@2", "%2", None),
+            pane("@2", "%3", Some(SIDEBAR_ROLE)),
         ];
 
         assert_eq!(sidebar_pane_for_window(&panes, "@2"), Some("%3"));
         assert_eq!(sidebar_pane_for_window(&panes, "@missing"), None);
+    }
+
+    #[test]
+    fn notification_pane_ids_deduplicate_linked_window_rows() {
+        let sidebar = pane("@1", "%1", Some(SIDEBAR_ROLE));
+        let mut linked = sidebar.clone();
+        linked.identity.session_id = "$2".to_owned();
+        linked.placement.session_name = "linked-project".to_owned();
+        let other = pane("@2", "%2", Some(SIDEBAR_ROLE));
+        let content = pane("@3", "%3", None);
+
+        assert_eq!(
+            unique_sidebar_pane_ids(&[sidebar, linked, other, content]),
+            vec!["%1", "%2"]
+        );
     }
 
     #[test]
@@ -359,24 +372,51 @@ mod tests {
 
     fn pane_snapshot(kmux_role: Option<&str>, current_command: Option<&str>) -> TmuxPaneSnapshot {
         TmuxPaneSnapshot {
-            session_name: "project".to_owned(),
-            window_id: "@1".to_owned(),
-            window_index: "1".to_owned(),
-            window_name: "main".to_owned(),
-            pane_id: "%1".to_owned(),
-            pane_index: "1".to_owned(),
-            pane_left: 0,
-            pane_width: 42,
-            window_width: 120,
-            window_layout: crate::tmux::test_support::test_window_layout(&["%1"]),
+            identity: TmuxPaneIdentity {
+                session_id: "$1".to_owned(),
+                window_id: "@1".to_owned(),
+                pane_id: "%1".to_owned(),
+            },
+            placement: TmuxPanePlacement {
+                session_name: "project".to_owned(),
+                window_name: "main".to_owned(),
+                window_index: "1".to_owned(),
+                pane_index: "1".to_owned(),
+                current_path: None,
+            },
+            geometry: TmuxPaneGeometry {
+                pane_left: 0,
+                pane_width: 42,
+                window_width: 120,
+                window_layout: crate::tmux::test_support::test_window_layout(&["%1"]),
+            },
+            activity: TmuxPaneActivity {
+                pane_active: false,
+                pane_last: false,
+                window_active: false,
+                window_last: false,
+                session_attached: false,
+            },
             title: None,
             current_command: current_command.map(str::to_owned),
-            current_path: None,
-            pane_active: false,
-            pane_last: false,
-            window_active: false,
-            window_last: false,
-            session_attached: false,
+            kmux_role: kmux_role.map(str::to_owned),
+        }
+    }
+
+    fn pane(window_id: &str, pane_id: &str, kmux_role: Option<&str>) -> TmuxPane {
+        TmuxPane {
+            identity: TmuxPaneIdentity {
+                session_id: "$1".to_owned(),
+                window_id: window_id.to_owned(),
+                pane_id: pane_id.to_owned(),
+            },
+            placement: TmuxPanePlacement {
+                session_name: "project".to_owned(),
+                window_name: "main".to_owned(),
+                window_index: "1".to_owned(),
+                pane_index: "1".to_owned(),
+                current_path: None,
+            },
             kmux_role: kmux_role.map(str::to_owned),
         }
     }

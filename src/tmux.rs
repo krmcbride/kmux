@@ -14,7 +14,7 @@
 //! list all sessions can therefore report the same window and pane IDs more than
 //! once; callers that operate on physical windows must deduplicate by ID.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
@@ -50,27 +50,46 @@ pub struct TmuxContext {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// One tmux session and the pane paths used to observe project topology.
-pub struct TmuxSessionSnapshot {
-    pub session_name: String,
+/// Stable tmux IDs that address one pane and its containing session/window.
+pub struct TmuxPaneIdentity {
     pub session_id: String,
-    pub panes: Vec<TmuxSessionPaneSnapshot>,
+    pub window_id: String,
+    pub pane_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Minimal pane identity and cwd evidence for project-session resolution.
-pub struct TmuxSessionPaneSnapshot {
-    pub window_id: String,
+/// Pane placement within tmux plus its current filesystem location.
+pub struct TmuxPanePlacement {
+    pub session_name: String,
     pub window_name: String,
-    pub pane_id: String,
+    pub window_index: String,
+    pub pane_index: String,
     pub current_path: Option<String>,
-    pub kmux_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Parsed recursive `#{window_layout}` topology used to calculate minimum pane geometry.
 pub struct TmuxWindowLayout {
     root: TmuxLayoutCell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+/// Pane/window dimensions and recursive split structure at one point in time.
+pub struct TmuxPaneGeometry {
+    pub pane_left: u16,
+    pub pane_width: u16,
+    pub window_width: u16,
+    pub window_layout: TmuxWindowLayout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Pane/window selection and attachment state at one point in time.
+pub struct TmuxPaneActivity {
+    pub pane_active: bool,
+    pub pane_last: bool,
+    pub window_active: bool,
+    pub window_last: bool,
+    pub session_attached: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,33 +107,20 @@ pub struct TmuxWindow {
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Minimal pane metadata used for sidebar ownership and cleanup.
 pub struct TmuxPane {
-    pub session_name: String,
-    pub window_id: String,
-    pub pane_id: String,
+    pub identity: TmuxPaneIdentity,
+    pub placement: TmuxPanePlacement,
     pub kmux_role: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Point-in-time pane data used to reconcile agent observations with tmux state.
 pub struct TmuxPaneSnapshot {
-    pub session_name: String,
-    pub window_id: String,
-    pub window_index: String,
-    pub window_name: String,
-    pub pane_id: String,
-    pub pane_index: String,
-    pub pane_left: u16,
-    pub pane_width: u16,
-    pub window_width: u16,
-    pub window_layout: TmuxWindowLayout,
+    pub identity: TmuxPaneIdentity,
+    pub placement: TmuxPanePlacement,
+    pub geometry: TmuxPaneGeometry,
+    pub activity: TmuxPaneActivity,
     pub title: Option<String>,
     pub current_command: Option<String>,
-    pub current_path: Option<String>,
-    pub pane_active: bool,
-    pub pane_last: bool,
-    pub window_active: bool,
-    pub window_last: bool,
-    pub session_attached: bool,
     pub kmux_role: Option<String>,
 }
 
@@ -541,32 +547,15 @@ impl Tmux {
         parse_windows(&output)
     }
 
-    /// List panes with their kmux role option when set.
-    pub fn list_panes(&self) -> Result<Vec<TmuxPane>> {
-        let format = "#{session_name}\t#{window_id}\t#{pane_id}\t#{@kmux_role}";
-        let output = self.stdout(["list-panes", "-a", "-F", format])?;
-        parse_panes(&output)
-    }
-
-    /// List rich pane snapshots used by status and sidebar reconciliation.
-    pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
-        let separator = TMUX_FIELD_SEPARATOR;
-        let format = format!(
-            "#{{session_name}}{separator}#{{window_id}}{separator}#{{window_index}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{window_layout}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{pane_last}}{separator}#{{window_active}}{separator}#{{window_last_flag}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
-        );
-        let output = self.stdout(["list-panes", "-a", "-F", &format])?;
-        parse_pane_snapshots(&output)
-    }
-
-    /// List tmux sessions with live pane cwd evidence.
+    /// List lightweight pane identity, placement, cwd, and kmux role snapshots.
     ///
-    /// A missing tmux server is represented as an empty snapshot. Other tmux
-    /// failures remain errors so callers do not mistake permission or protocol
-    /// failures for proof that no workspace window is live.
-    pub fn list_session_snapshots(&self) -> Result<Vec<TmuxSessionSnapshot>> {
+    /// A missing tmux server is represented as an empty list. Other failures
+    /// remain errors so callers do not mistake permission or protocol failures
+    /// for an empty tmux instance.
+    pub fn list_panes(&self) -> Result<Vec<TmuxPane>> {
         let separator = TMUX_FIELD_SEPARATOR;
         let format = format!(
-            "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{pane_id}}{separator}#{{pane_current_path}}{separator}#{{@kmux_role}}"
+            "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{window_index}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_current_path}}{separator}#{{@kmux_role}}"
         );
         let output = self.output(["list-panes", "-a", "-F", &format])?;
         if !output.status.success() {
@@ -575,7 +564,17 @@ impl Tmux {
             }
             return bail_tmux(output);
         }
-        parse_session_snapshots(&output.stdout)
+        parse_panes(&output.stdout)
+    }
+
+    /// List rich pane snapshots used by status and sidebar reconciliation.
+    pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let format = format!(
+            "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{window_index}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{window_layout}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{pane_last}}{separator}#{{window_active}}{separator}#{{window_last_flag}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
+        );
+        let output = self.stdout(["list-panes", "-a", "-F", &format])?;
+        parse_pane_snapshots(&output)
     }
 
     /// Return whether a session contains a window with an exact name match.
@@ -838,51 +837,42 @@ fn parse_context(output: &str) -> Result<TmuxContext> {
 }
 
 fn parse_panes(output: &str) -> Result<Vec<TmuxPane>> {
-    output.lines().map(parse_pane).collect()
+    let panes = output.lines().map(parse_pane).collect::<Result<Vec<_>>>()?;
+    validate_consistent_session_names(panes.iter().map(|pane| {
+        (
+            pane.identity.session_id.as_str(),
+            pane.placement.session_name.as_str(),
+        )
+    }))?;
+    Ok(panes)
 }
 
 fn parse_pane_snapshots(output: &str) -> Result<Vec<TmuxPaneSnapshot>> {
-    output.lines().map(parse_pane_snapshot).collect()
+    let panes = output
+        .lines()
+        .map(parse_pane_snapshot)
+        .collect::<Result<Vec<_>>>()?;
+    validate_consistent_session_names(panes.iter().map(|pane| {
+        (
+            pane.identity.session_id.as_str(),
+            pane.placement.session_name.as_str(),
+        )
+    }))?;
+    Ok(panes)
 }
 
-fn parse_session_snapshots(output: &str) -> Result<Vec<TmuxSessionSnapshot>> {
-    // This map only groups repeated pane rows by opaque session ID. The explicit
-    // sort below defines the stable output order.
-    let mut sessions = HashMap::<String, TmuxSessionSnapshot>::new();
-    for line in output.lines().filter(|line| !line.is_empty()) {
-        let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
-        if fields.len() != 7 {
-            bail!("unexpected tmux project session format: {line:?}");
+fn validate_consistent_session_names<'a>(
+    sessions: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> Result<()> {
+    let mut names_by_id = BTreeMap::new();
+    for (session_id, session_name) in sessions {
+        if let Some(previous_name) = names_by_id.insert(session_id, session_name)
+            && previous_name != session_name
+        {
+            bail!("inconsistent tmux pane records for session id {session_id:?}");
         }
-        validate_session_id(fields[0])?;
-        let session_id = fields[0].to_owned();
-        let session_name = fields[1].to_owned();
-        let session = sessions
-            .entry(session_id.clone())
-            .or_insert_with(|| TmuxSessionSnapshot {
-                session_name: session_name.clone(),
-                session_id,
-                panes: Vec::new(),
-            });
-        if session.session_name != session_name {
-            bail!("inconsistent tmux project session records for {session_name:?}");
-        }
-        session.panes.push(TmuxSessionPaneSnapshot {
-            window_id: fields[2].to_owned(),
-            window_name: fields[3].to_owned(),
-            pane_id: fields[4].to_owned(),
-            current_path: non_empty_string(fields[5]),
-            kmux_role: non_empty_string(fields[6]),
-        });
     }
-
-    let mut sessions = sessions.into_values().collect::<Vec<_>>();
-    sessions.sort_by(|left, right| {
-        left.session_name
-            .cmp(&right.session_name)
-            .then_with(|| left.session_id.cmp(&right.session_id))
-    });
-    Ok(sessions)
+    Ok(())
 }
 
 fn parse_window(line: &str) -> Result<TmuxWindow> {
@@ -909,16 +899,30 @@ fn parse_window_u16(line: &str, field: &str, value: &str) -> Result<u16> {
 }
 
 fn parse_pane(line: &str) -> Result<TmuxPane> {
-    let fields = line.split('\t').collect::<Vec<_>>();
-    if !(3..=4).contains(&fields.len()) {
+    let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
+    if fields.len() != 9 {
         bail!("unexpected tmux pane format: {line:?}");
+    }
+    validate_session_id(fields[0])?;
+    validate_window_id(fields[2])?;
+    if !is_tmux_pane_id(fields[5]) {
+        bail!("invalid tmux pane id {:?}", fields[5]);
     }
 
     Ok(TmuxPane {
-        session_name: fields[0].to_owned(),
-        window_id: fields[1].to_owned(),
-        pane_id: fields[2].to_owned(),
-        kmux_role: fields.get(3).and_then(|field| non_empty_string(field)),
+        identity: TmuxPaneIdentity {
+            session_id: fields[0].to_owned(),
+            window_id: fields[2].to_owned(),
+            pane_id: fields[5].to_owned(),
+        },
+        placement: TmuxPanePlacement {
+            session_name: fields[1].to_owned(),
+            window_name: fields[3].to_owned(),
+            window_index: fields[4].to_owned(),
+            pane_index: fields[6].to_owned(),
+            current_path: non_empty_string(fields[7]),
+        },
+        kmux_role: non_empty_string(fields[8]),
     })
 }
 
@@ -926,30 +930,44 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
 // titles and paths can contain tabs.
 fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     let fields = line.split(TMUX_FIELD_SEPARATOR).collect::<Vec<_>>();
-    if fields.len() != 19 {
+    if fields.len() != 20 {
         bail!("unexpected tmux pane snapshot format: {line:?}");
+    }
+    validate_session_id(fields[0])?;
+    validate_window_id(fields[2])?;
+    if !is_tmux_pane_id(fields[5]) {
+        bail!("invalid tmux pane id {:?}", fields[5]);
     }
 
     Ok(TmuxPaneSnapshot {
-        session_name: fields[0].to_owned(),
-        window_id: fields[1].to_owned(),
-        window_index: fields[2].to_owned(),
-        window_name: fields[3].to_owned(),
-        pane_id: fields[4].to_owned(),
-        pane_index: fields[5].to_owned(),
-        pane_left: parse_pane_snapshot_u16(line, "pane_left", fields[6])?,
-        pane_width: parse_pane_snapshot_u16(line, "pane_width", fields[7])?,
-        window_width: parse_pane_snapshot_u16(line, "window_width", fields[8])?,
-        window_layout: TmuxWindowLayout::parse(fields[9])?,
-        title: non_empty_string(fields[10]),
-        current_command: non_empty_string(fields[11]),
-        current_path: non_empty_string(fields[12]),
-        pane_active: tmux_bool(fields[13]),
-        pane_last: tmux_bool(fields[14]),
-        window_active: tmux_bool(fields[15]),
-        window_last: tmux_bool(fields[16]),
-        session_attached: tmux_attached(fields[17]),
-        kmux_role: non_empty_string(fields[18]),
+        identity: TmuxPaneIdentity {
+            session_id: fields[0].to_owned(),
+            window_id: fields[2].to_owned(),
+            pane_id: fields[5].to_owned(),
+        },
+        placement: TmuxPanePlacement {
+            session_name: fields[1].to_owned(),
+            window_name: fields[3].to_owned(),
+            window_index: fields[4].to_owned(),
+            pane_index: fields[6].to_owned(),
+            current_path: non_empty_string(fields[13]),
+        },
+        geometry: TmuxPaneGeometry {
+            pane_left: parse_pane_snapshot_u16(line, "pane_left", fields[7])?,
+            pane_width: parse_pane_snapshot_u16(line, "pane_width", fields[8])?,
+            window_width: parse_pane_snapshot_u16(line, "window_width", fields[9])?,
+            window_layout: TmuxWindowLayout::parse(fields[10])?,
+        },
+        activity: TmuxPaneActivity {
+            pane_active: tmux_bool(fields[14]),
+            pane_last: tmux_bool(fields[15]),
+            window_active: tmux_bool(fields[16]),
+            window_last: tmux_bool(fields[17]),
+            session_attached: tmux_attached(fields[18]),
+        },
+        title: non_empty_string(fields[11]),
+        current_command: non_empty_string(fields[12]),
+        kmux_role: non_empty_string(fields[19]),
     })
 }
 
@@ -1152,62 +1170,86 @@ mod tests {
     }
 
     #[test]
-    fn parses_project_session_snapshots() -> Result<()> {
+    fn parses_lightweight_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "$1{separator}project:alpha{separator}@1{separator}main{separator}%1{separator}/repo/project alpha{separator}\n$1{separator}project:alpha{separator}@2{separator}feature{separator}%2{separator}/repo/project alpha/worktree{separator}sidebar\n$2{separator}other{separator}@3{separator}main{separator}%3{separator}/repo/other{separator}"
+            "$1{separator}project:alpha{separator}@1{separator}main{separator}1{separator}%1{separator}0{separator}/repo/project alpha{separator}\n$1{separator}project:alpha{separator}@2{separator}feature{separator}2{separator}%2{separator}0{separator}/repo/project alpha/worktree{separator}sidebar\n$2{separator}other{separator}@3{separator}main{separator}1{separator}%3{separator}0{separator}/repo/other{separator}"
         );
 
-        let sessions = parse_session_snapshots(&output)?;
+        let panes = parse_panes(&output)?;
 
-        assert_eq!(sessions.len(), 2);
-        assert_eq!(sessions[0].session_name, "other");
-        assert_eq!(sessions[0].session_id, "$2");
-        assert_eq!(sessions[1].session_name, "project:alpha");
-        assert_eq!(sessions[1].session_id, "$1");
-        assert_eq!(sessions[1].panes.len(), 2);
-        assert_eq!(sessions[1].panes[0].pane_id, "%1");
-        assert_eq!(sessions[1].panes[0].window_name, "main");
-        assert_eq!(sessions[1].panes[1].kmux_role.as_deref(), Some("sidebar"));
+        assert_eq!(panes.len(), 3);
+        assert_eq!(panes[0].identity.session_id, "$1");
+        assert_eq!(panes[0].placement.session_name, "project:alpha");
+        assert_eq!(panes[0].identity.window_id, "@1");
+        assert_eq!(panes[0].placement.window_name, "main");
+        assert_eq!(panes[0].identity.pane_id, "%1");
+        assert_eq!(
+            panes[0].placement.current_path.as_deref(),
+            Some("/repo/project alpha")
+        );
+        assert_eq!(panes[1].kmux_role.as_deref(), Some("sidebar"));
+        assert_eq!(panes[2].identity.session_id, "$2");
         Ok(())
+    }
+
+    #[test]
+    fn pane_snapshots_reject_inconsistent_names_for_one_session_id() {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let output = format!(
+            "$1{separator}project{separator}@1{separator}main{separator}1{separator}%1{separator}0{separator}/repo/project{separator}\n$1{separator}renamed{separator}@2{separator}other{separator}2{separator}%2{separator}0{separator}/repo/project{separator}"
+        );
+
+        let error = parse_panes(&output)
+            .expect_err("one opaque session id must not have conflicting names");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inconsistent tmux pane records for session id \"$1\"")
+        );
     }
 
     #[test]
     fn parses_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}0{separator}1{separator}0{separator}2{separator}sidebar\nproject{separator}@2{separator}2{separator}empty{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,3{separator}{separator}{separator}{separator}0{separator}1{separator}0{separator}1{separator}0{separator}"
+            "$1{separator}project{separator}@1{separator}kmux-feature{separator}1{separator}%2{separator}1{separator}0{separator}42{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}0{separator}1{separator}0{separator}2{separator}sidebar\n$1{separator}project{separator}@2{separator}empty{separator}2{separator}%3{separator}1{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,3{separator}{separator}{separator}{separator}0{separator}1{separator}0{separator}1{separator}0{separator}"
         );
 
         let panes = parse_pane_snapshots(&output)?;
 
         assert_eq!(panes.len(), 2);
-        assert_eq!(panes[0].session_name, "project");
-        assert_eq!(panes[0].window_id, "@1");
-        assert_eq!(panes[0].window_index, "1");
-        assert_eq!(panes[0].window_name, "kmux-feature");
-        assert_eq!(panes[0].pane_id, "%2");
-        assert_eq!(panes[0].pane_index, "1");
-        assert_eq!(panes[0].pane_left, 0);
-        assert_eq!(panes[0].pane_width, 42);
-        assert_eq!(panes[0].window_width, 120);
-        assert_eq!(panes[0].window_layout.minimum_width(None), 1);
+        assert_eq!(panes[0].identity.session_id, "$1");
+        assert_eq!(panes[0].placement.session_name, "project");
+        assert_eq!(panes[0].identity.window_id, "@1");
+        assert_eq!(panes[0].placement.window_index, "1");
+        assert_eq!(panes[0].placement.window_name, "kmux-feature");
+        assert_eq!(panes[0].identity.pane_id, "%2");
+        assert_eq!(panes[0].placement.pane_index, "1");
+        assert_eq!(panes[0].geometry.pane_left, 0);
+        assert_eq!(panes[0].geometry.pane_width, 42);
+        assert_eq!(panes[0].geometry.window_width, 120);
+        assert_eq!(panes[0].geometry.window_layout.minimum_width(None), 1);
         assert_eq!(panes[0].title.as_deref(), Some("kmux"));
         assert_eq!(panes[0].current_command.as_deref(), Some("nvim"));
-        assert_eq!(panes[0].current_path.as_deref(), Some("/repo/feature"));
-        assert!(panes[0].pane_active);
-        assert!(!panes[0].pane_last);
-        assert!(panes[0].window_active);
-        assert!(!panes[0].window_last);
-        assert!(panes[0].session_attached);
+        assert_eq!(
+            panes[0].placement.current_path.as_deref(),
+            Some("/repo/feature")
+        );
+        assert!(panes[0].activity.pane_active);
+        assert!(!panes[0].activity.pane_last);
+        assert!(panes[0].activity.window_active);
+        assert!(!panes[0].activity.window_last);
+        assert!(panes[0].activity.session_attached);
         assert_eq!(panes[0].kmux_role.as_deref(), Some("sidebar"));
         assert_eq!(panes[1].title, None);
         assert_eq!(panes[1].current_command, None);
-        assert!(!panes[1].pane_active);
-        assert!(panes[1].pane_last);
-        assert!(!panes[1].window_active);
-        assert!(panes[1].window_last);
-        assert!(!panes[1].session_attached);
+        assert!(!panes[1].activity.pane_active);
+        assert!(panes[1].activity.pane_last);
+        assert!(!panes[1].activity.window_active);
+        assert!(panes[1].activity.window_last);
+        assert!(!panes[1].activity.session_attached);
         assert_eq!(panes[1].kmux_role, None);
         Ok(())
     }
@@ -1216,7 +1258,7 @@ mod tests {
     fn malformed_pane_snapshot_geometry_reports_field_context() {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
-            "project{separator}@1{separator}1{separator}kmux-feature{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}0{separator}1{separator}0{separator}2{separator}sidebar"
+            "$1{separator}project{separator}@1{separator}kmux-feature{separator}1{separator}%2{separator}1{separator}0{separator}wide{separator}120{separator}b25d,120x24,0,0,2{separator}kmux{separator}nvim{separator}/repo/feature{separator}1{separator}0{separator}1{separator}0{separator}2{separator}sidebar"
         );
 
         let error = parse_pane_snapshots(&output)
@@ -1319,10 +1361,10 @@ mod tests {
         );
 
         let project_session_id = tmux
-            .list_session_snapshots()?
+            .list_panes()?
             .into_iter()
-            .find(|session| session.session_name == "project")
-            .map(|session| session.session_id)
+            .find(|pane| pane.placement.session_name == "project")
+            .map(|pane| pane.identity.session_id)
             .ok_or_else(|| anyhow::anyhow!("expected project session"))?;
         let pane_id = tmux.create_window_by_id(&project_session_id, "feature-auth", temp.path())?;
         let context = tmux.pane_context(&pane_id)?;
@@ -1339,11 +1381,11 @@ mod tests {
         let snapshot = tmux
             .list_pane_snapshots()?
             .into_iter()
-            .find(|pane| pane.pane_id == pane_id)
+            .find(|pane| pane.identity.pane_id == pane_id)
             .ok_or_else(|| anyhow::anyhow!("expected created pane in tmux snapshot"))?;
-        assert_eq!(snapshot.session_name, "project");
-        assert_eq!(snapshot.window_id, context.window_id);
-        assert_eq!(snapshot.window_name, "feature-auth");
+        assert_eq!(snapshot.placement.session_name, "project");
+        assert_eq!(snapshot.identity.window_id, context.window_id);
+        assert_eq!(snapshot.placement.window_name, "feature-auth");
 
         tmux.select_window_id_in_session(&context.session_name, &context.window_id)?;
         tmux.select_pane(&pane_id)?;
@@ -1351,7 +1393,7 @@ mod tests {
         let updated_snapshot = tmux
             .list_pane_snapshots()?
             .into_iter()
-            .find(|pane| pane.pane_id == pane_id)
+            .find(|pane| pane.identity.pane_id == pane_id)
             .ok_or_else(|| anyhow::anyhow!("expected updated pane in tmux snapshot"))?;
         assert_eq!(updated_snapshot.title.as_deref(), Some("kmux"));
         assert!(!tmux.pane_visibility(&pane_id)?.pane_has_focus);
@@ -1370,6 +1412,16 @@ mod tests {
     }
 
     #[test]
+    fn lightweight_pane_listing_treats_missing_server_as_empty() -> Result<()> {
+        let Some(fixture) = TmuxFixture::new()? else {
+            return Ok(());
+        };
+
+        assert!(fixture.tmux.list_panes()?.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn project_session_window_commands_use_opaque_session_ids() -> Result<()> {
         let Some(fixture) = TmuxFixture::new()? else {
             return Ok(());
@@ -1378,17 +1430,17 @@ mod tests {
         let tmux = &fixture.tmux;
 
         create_test_session(tmux, "project alpha", temp.path())?;
-        let snapshots = tmux.list_session_snapshots()?;
-        let session = snapshots
+        let panes = tmux.list_panes()?;
+        let session_id = panes
             .iter()
-            .find(|session| session.session_name == "project alpha")
-            .cloned()
-            .ok_or_else(|| anyhow::anyhow!("expected hostile-name test session: {snapshots:?}"))?;
+            .find(|pane| pane.placement.session_name == "project alpha")
+            .map(|pane| pane.identity.session_id.clone())
+            .ok_or_else(|| anyhow::anyhow!("expected hostile-name test session: {panes:?}"))?;
 
-        let pane_id = tmux.create_window_by_id(&session.session_id, "feature-auth", temp.path())?;
-        assert!(tmux.window_exists_by_name_by_id(&session.session_id, "feature-auth")?);
+        let pane_id = tmux.create_window_by_id(&session_id, "feature-auth", temp.path())?;
+        assert!(tmux.window_exists_by_name_by_id(&session_id, "feature-auth")?);
         let window_id = tmux.pane_context(&pane_id)?.window_id;
-        tmux.kill_window_id_in_session(&session.session_id, &window_id)?;
+        tmux.kill_window_id_in_session(&session_id, &window_id)?;
         Ok(())
     }
 
@@ -1402,10 +1454,10 @@ mod tests {
 
         create_test_session(tmux, "project", temp.path())?;
         let session_id = tmux
-            .list_session_snapshots()?
+            .list_panes()?
             .into_iter()
-            .find(|session| session.session_name == "project")
-            .map(|session| session.session_id)
+            .find(|pane| pane.placement.session_name == "project")
+            .map(|pane| pane.identity.session_id)
             .ok_or_else(|| anyhow::anyhow!("expected project session"))?;
         let first_pane = tmux.create_window_by_id(&session_id, "duplicate", temp.path())?;
         let second_pane = tmux.create_window_by_id(&session_id, "duplicate", temp.path())?;
@@ -1439,10 +1491,10 @@ mod tests {
 
         create_test_session(tmux, "project", temp.path())?;
         let session_id = tmux
-            .list_session_snapshots()?
+            .list_panes()?
             .into_iter()
-            .find(|session| session.session_name == "project")
-            .map(|session| session.session_id)
+            .find(|pane| pane.placement.session_name == "project")
+            .map(|pane| pane.identity.session_id)
             .ok_or_else(|| anyhow::anyhow!("expected project session"))?;
         let pane_id = tmux.create_window_by_id(&session_id, "feature-auth", temp.path())?;
         tmux.send_literal_command(&pane_id, "touch startup-ran")?;

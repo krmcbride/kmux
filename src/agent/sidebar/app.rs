@@ -648,7 +648,7 @@ mod tests {
             .tmux
             .list_pane_snapshots()?
             .into_iter()
-            .find(|pane| pane.session_name == "project")
+            .find(|pane| pane.placement.session_name == "project")
             .ok_or_else(|| anyhow::anyhow!("expected test sidebar pane"))?;
 
         let state_base = temp.path().join("state");
@@ -668,8 +668,8 @@ mod tests {
             actions,
             Vec::new(),
             None,
-            Some(pane.window_id),
-            Some(pane.pane_id),
+            Some(pane.identity.window_id),
+            Some(pane.identity.pane_id),
         );
         app.window_visible = true;
         app.sidebar_has_focus = true;
