@@ -162,7 +162,7 @@ impl SidebarRow {
             secondary: row.secondary.clone(),
             secondary_right: row.display_context.clone(),
             title: row.display_title.clone(),
-            elapsed: compact_elapsed(row.elapsed_secs(now)),
+            elapsed: format_elapsed(row.elapsed_secs(now), state),
             session_name,
             window_id,
             pane_id,
@@ -206,6 +206,14 @@ pub(super) fn row_index_by_identity(
     rows.iter().position(|row| &row.identity == identity)
 }
 
+fn format_elapsed(seconds: u64, state: SidebarRowState) -> String {
+    if state.is_idle() {
+        compact_elapsed(seconds)
+    } else {
+        detailed_elapsed(seconds)
+    }
+}
+
 fn compact_elapsed(seconds: u64) -> String {
     if seconds < 60 {
         "<1m".to_owned()
@@ -215,6 +223,23 @@ fn compact_elapsed(seconds: u64) -> String {
         format!("{}h", seconds / (60 * 60))
     } else {
         format!("{}d", seconds / (60 * 60 * 24))
+    }
+}
+
+fn detailed_elapsed(seconds: u64) -> String {
+    if seconds < 60 {
+        "<1m".to_owned()
+    } else if seconds < 60 * 60 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 60 * 60 * 24 {
+        let hours = seconds / (60 * 60);
+        let minutes = (seconds % (60 * 60)) / 60;
+        format!("{hours}h{minutes}m")
+    } else {
+        let days = seconds / (60 * 60 * 24);
+        let hours = (seconds % (60 * 60 * 24)) / (60 * 60);
+        let minutes = (seconds % (60 * 60)) / 60;
+        format!("{days}d{hours}h{minutes}m")
     }
 }
 
@@ -236,6 +261,30 @@ mod tests {
         let icons = test_icons();
         let activities = workspace_activities_from_sessions(views.to_vec());
         build_rows_with_working_icon(&activities, now, &icons, None, idle_after_seconds)
+    }
+
+    #[test]
+    fn non_idle_elapsed_includes_available_lower_units() {
+        for state in [
+            SidebarRowState::Working,
+            SidebarRowState::Waiting,
+            SidebarRowState::Done,
+        ] {
+            assert_eq!(format_elapsed(60 * 60, state), "1h0m");
+            assert_eq!(format_elapsed(70 * 60, state), "1h10m");
+            assert_eq!(format_elapsed(24 * 60 * 60, state), "1d0h0m");
+            assert_eq!(format_elapsed(27 * 60 * 60 + 7 * 60, state), "1d3h7m");
+        }
+    }
+
+    #[test]
+    fn idle_elapsed_uses_compact_largest_unit() {
+        assert_eq!(format_elapsed(30 * 60, SidebarRowState::Idle), "30m");
+        assert_eq!(format_elapsed(70 * 60, SidebarRowState::Idle), "1h");
+        assert_eq!(
+            format_elapsed(27 * 60 * 60 + 7 * 60, SidebarRowState::Idle),
+            "1d"
+        );
     }
 
     #[test]
