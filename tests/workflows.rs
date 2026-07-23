@@ -10,9 +10,9 @@ use anyhow::Result;
 use predicates::prelude::*;
 
 use support::{
-    TmuxFixture, git, git_stdout, init_repo, kmux, kmux_detached, kmux_process_detached,
-    kmux_process_with_pane, kmux_with_pane, run, wait_for_nonempty_file, wait_for_path,
-    write_config,
+    ChildGuard, ReleaseFile, TmuxFixture, git, git_stdout, init_repo, kmux, kmux_detached,
+    kmux_process_detached, kmux_process_with_pane, kmux_with_pane, run, wait_for_nonempty_file,
+    wait_for_path, write_config,
 };
 
 fn run_concurrently(
@@ -140,8 +140,7 @@ fn detached_create_rejects_split_project_and_never_focuses_another_client() -> R
         return Ok(());
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
-    let repo_path = repo.display().to_string();
-    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+    tmux.create_session("project-copy", &repo)?;
 
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "create", "feature/ambiguous", "--background"])
@@ -175,18 +174,7 @@ fn detached_create_rejects_split_project_and_never_focuses_another_client() -> R
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/malformed-context"]).is_err());
 
     let neutral = tempfile::tempdir()?;
-    let neutral_path = neutral.path().display().to_string();
-    let neutral_pane = tmux.tmux_output(&[
-        "new-session",
-        "-d",
-        "-s",
-        "neutral",
-        "-c",
-        &neutral_path,
-        "-P",
-        "-F",
-        "#{pane_id}",
-    ])?;
+    let neutral_pane = tmux.create_session("neutral", neutral.path())?;
     kmux_with_pane(&repo, &config_home, &tmux, &neutral_pane)?
         .args(["workspace", "create", "feature/wrong-session"])
         .assert()
@@ -204,17 +192,7 @@ fn detached_create_rejects_mixed_project_session_before_mutation() -> Result<()>
         return Ok(());
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
-    let other_path = other_repo.display().to_string();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        "other-project",
-        "-c",
-        &other_path,
-    ])?;
+    tmux.create_window("project:", "other-project", &other_repo)?;
 
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "create", "feature/mixed", "--background"])
@@ -235,15 +213,7 @@ fn detached_create_rejects_project_window_linked_across_sessions() -> Result<()>
         return Ok(());
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
-    let neutral_path = neutral.path().display().to_string();
-    tmux.tmux_output(&[
-        "new-session",
-        "-d",
-        "-s",
-        "project-copy",
-        "-c",
-        &neutral_path,
-    ])?;
+    tmux.create_session("project-copy", neutral.path())?;
     let project_window = tmux.current_window_id()?;
     tmux.tmux_output(&["link-window", "-s", &project_window, "-t", "project-copy:"])?;
 
@@ -341,17 +311,7 @@ fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Res
         .success();
     tmux.tmux_output(&["kill-window", "-t", window_name])?;
 
-    let other_path = other_repo.display().to_string();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        "other-project",
-        "-c",
-        &other_path,
-    ])?;
+    tmux.create_window("project:", "other-project", &other_repo)?;
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "restore"])
         .assert()
@@ -362,8 +322,7 @@ fn restore_rejects_no_evidence_mixed_and_split_topology_before_mutation() -> Res
     assert!(!tmux.window_exists(window_name)?);
     tmux.tmux_output(&["kill-window", "-t", "other-project"])?;
 
-    let repo_path = repo.display().to_string();
-    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+    tmux.create_session("project-copy", &repo)?;
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "restore"])
         .assert()
@@ -415,17 +374,7 @@ fn remove_rejects_mixed_and_split_topology_before_git_mutation() -> Result<()> {
         .assert()
         .success();
 
-    let other_path = other_repo.display().to_string();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        "other-project",
-        "-c",
-        &other_path,
-    ])?;
+    tmux.create_window("project:", "other-project", &other_repo)?;
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "remove", "feature-remove-guard", "--force"])
         .assert()
@@ -438,8 +387,7 @@ fn remove_rejects_mixed_and_split_topology_before_git_mutation() -> Result<()> {
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/remove-guard"]).is_ok());
     tmux.tmux_output(&["kill-window", "-t", "other-project"])?;
 
-    let repo_path = repo.display().to_string();
-    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
+    tmux.create_session("project-copy", &repo)?;
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "remove", "feature-remove-guard", "--force"])
         .assert()
@@ -466,17 +414,7 @@ fn detached_remove_blocks_scratch_panes_and_is_safe_without_a_session() -> Resul
         .args(["workspace", "create", "feature/remove-live", "--background"])
         .assert()
         .success();
-    let worktree_text = worktree.display().to_string();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        "scratch-remove-live",
-        "-c",
-        &worktree_text,
-    ])?;
+    tmux.create_window("project:", "scratch-remove-live", &worktree)?;
     kmux_detached(&repo, &config_home, &tmux)?
         .args(["workspace", "remove", "feature-remove-live", "--force"])
         .assert()
@@ -526,7 +464,8 @@ fn concurrent_waiter_resnapshots_topology_after_project_lock() -> Result<()> {
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let first = first.spawn()?;
+    let first = ChildGuard::spawn(&mut first)?;
+    let mut hook_release = ReleaseFile::new(hook_release);
     wait_for_path(&hook_ready)?;
 
     let mut second = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
@@ -541,16 +480,15 @@ fn concurrent_waiter_resnapshots_topology_after_project_lock() -> Result<()> {
         ])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut second = second.spawn()?;
+    let mut second = ChildGuard::spawn(&mut second)?;
     wait_for_nonempty_file(&second_telemetry)?;
     assert!(
         second.try_wait()?.is_none(),
         "second add should wait while the first owns the project lifecycle lock"
     );
 
-    let repo_path = repo.display().to_string();
-    tmux.tmux_output(&["new-session", "-d", "-s", "project-copy", "-c", &repo_path])?;
-    fs::write(&hook_release, "release\n")?;
+    tmux.create_session("project-copy", &repo)?;
+    hook_release.release()?;
 
     let first = first.wait_with_output()?;
     let second = second.wait_with_output()?;
@@ -736,29 +674,45 @@ fn set_parent_waits_for_create_before_updating_shared_workspace_state() -> Resul
         .success();
 
     let hook_ready = temp.path().join("hook-ready");
+    let hook_release = temp.path().join("hook-release");
     write_config(
         temp.path(),
         &format!(
-            "window_prefix: kmux-\npost_create:\n  - 'touch \"{}\"; sleep 0.2'\n",
-            hook_ready.display()
+            "window_prefix: kmux-\npost_create:\n  - 'touch \"{}\"; while [ ! -e \"{}\" ]; do sleep 0.01; done'\n",
+            hook_ready.display(),
+            hook_release.display()
         ),
     )?;
     let mut add = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
     add.args(["workspace", "create", "feature/sibling", "--background"])
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let add = add.spawn()?;
+    let add = ChildGuard::spawn(&mut add)?;
+    let mut hook_release = ReleaseFile::new(hook_release);
     wait_for_path(&hook_ready)?;
 
     let mut parent = kmux_process_with_pane(&repo, &config_home, &tmux, &tmux.pane_id);
-    let parent = parent
+    let parent_started = temp.path().join("parent-telemetry.jsonl");
+    parent
+        .env("KMUX_TELEMETRY", "1")
+        .env("KMUX_TELEMETRY_PATH", &parent_started)
         .args([
             "workspace",
             "set-parent",
             "feature/sibling",
             "feature/child",
         ])
-        .output()?;
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut parent = ChildGuard::spawn(&mut parent)?;
+    wait_for_nonempty_file(&parent_started)?;
+    assert!(
+        parent.try_wait()?.is_none(),
+        "set-parent should wait while create owns the project lifecycle lock"
+    );
+    hook_release.release()?;
+
+    let parent = parent.wait_with_output()?;
     let add = add.wait_with_output()?;
     assert!(
         add.status.success(),
@@ -800,14 +754,14 @@ fn create_waits_for_delayed_shell_before_starting_launcher() -> Result<()> {
 window_prefix: kmux-
 window: {default_launcher: editor}
 launchers:
-  editor: {command: /bin/true}
+  editor: {command: true}
 "#,
     )?;
     tmux.tmux_output(&[
         "set-option",
         "-g",
         "default-command",
-        "sleep 2; exec /bin/sh",
+        "sleep 1; exec /bin/sh",
     ])?;
 
     kmux(&repo, &config_home, &tmux)?
@@ -844,12 +798,12 @@ fn launcher_uses_home_state_when_xdg_state_is_unset() -> Result<()> {
         r#"
 window_prefix: kmux-
 launchers:
-  example-launcher: {command: /bin/true}
+  example-launcher: {command: true}
 "#,
     )?;
     let home = temp.path().join("home");
     let runtime = temp.path().join("runtime");
-    fs::create_dir(&home)?;
+    fs::create_dir_all(&home)?;
     fs::create_dir(&runtime)?;
     fs::set_permissions(&runtime, fs::Permissions::from_mode(0o700))?;
 
@@ -892,7 +846,7 @@ fn launcher_fails_closed_when_state_storage_is_unusable() -> Result<()> {
         r#"
 window_prefix: kmux-
 launchers:
-  example-launcher: {command: /bin/true}
+  example-launcher: {command: true}
 "#,
     )?;
     let state_blocker = temp.path().join("state-blocker");
@@ -1408,7 +1362,7 @@ fn restore_ingress_timeout_keeps_first_window_and_stops_before_later_workspaces(
 window_prefix: kmux-
 window: {default_launcher: editor}
 launchers:
-  editor: {command: /bin/true}
+  editor: {command: true}
 "#,
     )?;
 
@@ -1739,17 +1693,7 @@ fn create_rejects_window_only_partial_workspace() -> Result<()> {
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
     let worktree = temp.path().join("project__worktrees/feature-window-only");
-    let repo_path = repo.display().to_string();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        "kmux-feature-window-only",
-        "-c",
-        &repo_path,
-    ])?;
+    tmux.create_window("project:", "kmux-feature-window-only", &repo)?;
 
     kmux(&repo, &config_home, &tmux)?
         .args(["workspace", "create", "feature/window-only"])
@@ -1802,22 +1746,12 @@ fn restore_rejects_duplicate_expected_window_names() -> Result<()> {
     };
     let config_home = write_config(temp.path(), "window_prefix: kmux-\n")?;
     let worktree = temp.path().join("project__worktrees/feature-duplicate");
-    let worktree_path = worktree.display().to_string();
 
     kmux(&repo, &config_home, &tmux)?
         .args(["workspace", "create", "feature/duplicate", "--background"])
         .assert()
         .success();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        "kmux-feature-duplicate",
-        "-c",
-        &worktree_path,
-    ])?;
+    tmux.create_window("project:", "kmux-feature-duplicate", &worktree)?;
 
     kmux(&repo, &config_home, &tmux)?
         .args(["workspace", "restore"])
@@ -1839,7 +1773,6 @@ fn remove_rejects_duplicate_expected_windows_before_git_mutation() -> Result<()>
     let worktree = temp
         .path()
         .join("project__worktrees/feature-remove-duplicate");
-    let worktree_path = worktree.display().to_string();
     let window_name = "kmux-feature-remove-duplicate";
 
     kmux(&repo, &config_home, &tmux)?
@@ -1851,16 +1784,7 @@ fn remove_rejects_duplicate_expected_windows_before_git_mutation() -> Result<()>
         ])
         .assert()
         .success();
-    tmux.tmux_output(&[
-        "new-window",
-        "-d",
-        "-t",
-        "project:",
-        "-n",
-        window_name,
-        "-c",
-        &worktree_path,
-    ])?;
+    tmux.create_window("project:", window_name, &worktree)?;
 
     kmux(&repo, &config_home, &tmux)?
         .args(["workspace", "remove", "feature-remove-duplicate", "--force"])

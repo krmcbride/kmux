@@ -29,6 +29,7 @@
             nativeCheckInputs = [
               pkgs.fish
               pkgs.git
+              pkgs.tmux
             ];
             postInstall = ''
               export HOME=$TMPDIR
@@ -69,6 +70,7 @@
               bun
               cargo
               clippy
+              fish
               git
               jq
               just

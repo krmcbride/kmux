@@ -284,16 +284,7 @@ fn sidebar_on_reuses_unmarked_sidebar_in_linked_window() -> Result<()> {
         "#{pane_id}",
         IDLE_PANE_COMMAND,
     ])?;
-    let cwd_path = cwd.path().to_string_lossy().into_owned();
-    tmux.tmux_output(&[
-        "new-session",
-        "-d",
-        "-s",
-        "linked-project",
-        "-c",
-        &cwd_path,
-        IDLE_PANE_COMMAND,
-    ])?;
+    tmux.create_session_with_command("linked-project", cwd.path(), Some(IDLE_PANE_COMMAND))?;
     tmux.tmux_output(&[
         "link-window",
         "-d",

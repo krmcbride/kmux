@@ -10,16 +10,14 @@ use tempfile::TempDir;
 
 use support::{
     TmuxFixture, agent_observations_dir, delete_opencode_agent_observation_args, git, init_repo,
-    kmux, raw_key_capture_command, set_opencode_status_args, wait_for_nonempty_file, wait_for_path,
-    write_config,
+    kmux, kmux_command_for, raw_key_capture_command, set_opencode_status_args,
+    wait_for_nonempty_file, wait_for_path, write_config,
 };
 
 fn kmux_without_tmux(cwd: &Path, config_home: &Path) -> Result<Command> {
-    let mut command = Command::cargo_bin("kmux")?;
+    let mut command = kmux_command_for(config_home)?;
     command
         .current_dir(cwd)
-        .env("XDG_CONFIG_HOME", config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
         .env_remove("KMUX_TMUX_SOCKET_NAME")

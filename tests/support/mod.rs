@@ -1,17 +1,19 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::fs;
+use std::ops::{Deref, DerefMut};
 use std::path::{Path, PathBuf};
-use std::process::Command as ProcessCommand;
+use std::process::{Child, Command as ProcessCommand, Output};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
 use assert_cmd::Command;
 use tempfile::TempDir;
 
-const WAIT_TIMEOUT: Duration = Duration::from_secs(3);
+const WAIT_TIMEOUT: Duration = Duration::from_secs(10);
 const WAIT_INTERVAL: Duration = Duration::from_millis(25);
+const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
 
 #[derive(Debug)]
 struct SidebarTopology {
@@ -36,18 +38,110 @@ pub struct TmuxFixture {
     pub pane_id: String,
 }
 
+/// A kmux command that owns its isolated HOME/XDG directory until execution ends.
+pub struct IsolatedKmuxCommand {
+    command: Command,
+    _environment: TempDir,
+}
+
+/// A spawned test process that is killed and reaped if an assertion returns early.
+pub struct ChildGuard {
+    child: Option<Child>,
+}
+
+impl ChildGuard {
+    pub fn spawn(command: &mut ProcessCommand) -> Result<Self> {
+        Ok(Self {
+            child: Some(command.spawn()?),
+        })
+    }
+
+    pub fn try_wait(&mut self) -> Result<Option<std::process::ExitStatus>> {
+        self.child
+            .as_mut()
+            .ok_or_else(|| anyhow!("test child has already been reaped"))?
+            .try_wait()
+            .context("failed to inspect test child")
+    }
+
+    pub fn wait_with_output(mut self) -> Result<Output> {
+        self.child
+            .take()
+            .ok_or_else(|| anyhow!("test child has already been reaped"))?
+            .wait_with_output()
+            .context("failed to wait for test child")
+    }
+}
+
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+/// A marker that releases a file-synchronized child even when the test returns early.
+pub struct ReleaseFile {
+    path: PathBuf,
+    released: bool,
+}
+
+impl ReleaseFile {
+    pub fn new(path: PathBuf) -> Self {
+        Self {
+            path,
+            released: false,
+        }
+    }
+
+    pub fn release(&mut self) -> Result<()> {
+        fs::write(&self.path, "release\n")?;
+        self.released = true;
+        Ok(())
+    }
+}
+
+impl Drop for ReleaseFile {
+    fn drop(&mut self) {
+        if !self.released {
+            let _ = fs::write(&self.path, "release\n");
+        }
+    }
+}
+
+impl Deref for IsolatedKmuxCommand {
+    type Target = Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl DerefMut for IsolatedKmuxCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
+
 impl TmuxFixture {
     pub fn new(cwd: &Path) -> Result<Option<Self>> {
         if !tmux_available() {
-            return Ok(None);
+            bail!("tmux is required to run this integration test");
         }
 
         let socket_dir = TempDir::new()?;
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let socket_name = format!("kmux-cli-test-{}-{nanos}", std::process::id());
-        let output = ProcessCommand::new("tmux")
+        let socket_name = "kmux-cli-test".to_owned();
+        prepare_external_environment(socket_dir.path())?;
+        let mut command = ProcessCommand::new("tmux");
+        apply_external_environment(&mut command, socket_dir.path());
+        let output = command
             .env("TMUX_TMPDIR", socket_dir.path())
             .args([
+                "-u",
+                "-f",
+                "/dev/null",
                 "-L",
                 &socket_name,
                 "new-session",
@@ -78,8 +172,11 @@ impl TmuxFixture {
     }
 
     pub fn tmux_output(&self, args: &[&str]) -> Result<String> {
-        let output = ProcessCommand::new("tmux")
+        let mut command = ProcessCommand::new("tmux");
+        apply_external_environment(&mut command, self.socket_dir.path());
+        let output = command
             .env("TMUX_TMPDIR", self.socket_dir.path())
+            .arg("-u")
             .arg("-L")
             .arg(&self.socket_name)
             .args(args)
@@ -101,34 +198,84 @@ impl TmuxFixture {
         Ok(output.lines().any(|line| line == window_name))
     }
 
+    /// Create a detached session and wait until its shell reports the requested cwd.
+    pub fn create_session(&self, session_name: &str, cwd: &Path) -> Result<String> {
+        self.create_session_with_command(session_name, cwd, None)
+    }
+
+    /// Create a detached session running a command and wait for its requested cwd.
+    pub fn create_session_with_command(
+        &self,
+        session_name: &str,
+        cwd: &Path,
+        command: Option<&str>,
+    ) -> Result<String> {
+        let cwd_text = cwd.display().to_string();
+        let mut args = vec![
+            "new-session",
+            "-d",
+            "-s",
+            session_name,
+            "-c",
+            &cwd_text,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ];
+        if let Some(command) = command {
+            args.push(command);
+        }
+        let pane_id = self.tmux_output(&args)?;
+        self.wait_for_pane_current_path(&pane_id, cwd)?;
+        Ok(pane_id)
+    }
+
+    /// Create a detached window and wait until its shell reports the requested cwd.
+    pub fn create_window(&self, target: &str, window_name: &str, cwd: &Path) -> Result<String> {
+        let cwd_text = cwd.display().to_string();
+        let pane_id = self.tmux_output(&[
+            "new-window",
+            "-d",
+            "-t",
+            target,
+            "-n",
+            window_name,
+            "-c",
+            &cwd_text,
+            "-P",
+            "-F",
+            "#{pane_id}",
+        ])?;
+        self.wait_for_pane_current_path(&pane_id, cwd)?;
+        Ok(pane_id)
+    }
+
     pub fn sidebar_pane_count(&self) -> Result<usize> {
         let output = self.tmux_output(&["list-panes", "-a", "-F", "#{@kmux_role}"])?;
         Ok(output.lines().filter(|line| *line == "sidebar").count())
     }
 
     pub fn sidebar_pane_titles(&self) -> Result<Vec<String>> {
-        let output =
-            self.tmux_output(&["list-panes", "-a", "-F", "#{@kmux_role}\t#{pane_title}"])?;
+        let format = format!("#{{@kmux_role}}{TMUX_FIELD_SEPARATOR}#{{pane_title}}");
+        let output = self.tmux_output(&["list-panes", "-a", "-F", &format])?;
         Ok(output
             .lines()
             .filter_map(|line| {
-                let (role, title) = line.split_once('\t')?;
+                let (role, title) = line.split_once(TMUX_FIELD_SEPARATOR)?;
                 (role == "sidebar").then(|| title.to_owned())
             })
             .collect())
     }
 
     fn sidebar_topology(&self) -> Result<SidebarTopology> {
-        let output = self.tmux_output(&[
-            "list-panes",
-            "-a",
-            "-F",
-            "#{window_id}\t#{@kmux_role}\t#{pane_id}",
-        ])?;
+        let format = format!(
+            "#{{window_id}}{TMUX_FIELD_SEPARATOR}#{{@kmux_role}}{TMUX_FIELD_SEPARATOR}#{{pane_id}}"
+        );
+        let output = self.tmux_output(&["list-panes", "-a", "-F", &format])?;
         let mut sidebar_counts = BTreeMap::new();
         let mut seen_panes = BTreeSet::new();
         for line in output.lines() {
-            let mut fields = line.splitn(3, '\t');
+            let mut fields = line.splitn(3, TMUX_FIELD_SEPARATOR);
             let (Some(window_id), Some(role), Some(pane_id)) =
                 (fields.next(), fields.next(), fields.next())
             else {
@@ -146,15 +293,10 @@ impl TmuxFixture {
     }
 
     pub fn sidebar_pane_for_window(&self, window_id: &str) -> Result<String> {
-        let output = self.tmux_output(&[
-            "list-panes",
-            "-t",
-            window_id,
-            "-F",
-            "#{pane_id}\t#{@kmux_role}",
-        ])?;
+        let format = format!("#{{pane_id}}{TMUX_FIELD_SEPARATOR}#{{@kmux_role}}");
+        let output = self.tmux_output(&["list-panes", "-t", window_id, "-F", &format])?;
         for line in output.lines() {
-            if let Some((pane_id, role)) = line.split_once('\t')
+            if let Some((pane_id, role)) = line.split_once(TMUX_FIELD_SEPARATOR)
                 && role == "sidebar"
             {
                 return Ok(pane_id.to_owned());
@@ -214,8 +356,18 @@ impl TmuxFixture {
     }
 
     pub fn wait_for_pane_current_path(&self, pane_id: &str, path: &Path) -> Result<()> {
-        let expected = path.display().to_string();
-        self.wait_for_pane_format(pane_id, "#{pane_current_path}", &expected)
+        wait_until(
+            &format!(
+                "tmux pane {pane_id} current path to equal {}",
+                path.display()
+            ),
+            || self.pane_format_if_present(pane_id, "#{pane_current_path}"),
+            |value| {
+                value
+                    .as_deref()
+                    .is_some_and(|value| same_filesystem_path(Path::new(value), path))
+            },
+        )
     }
 
     pub fn wait_for_pane_format(&self, pane_id: &str, format: &str, expected: &str) -> Result<()> {
@@ -236,9 +388,10 @@ impl TmuxFixture {
     }
 
     pub fn pane_for_window(&self, window_name: &str) -> Result<String> {
-        let output = self.tmux_output(&["list-panes", "-a", "-F", "#{window_name}\t#{pane_id}"])?;
+        let format = format!("#{{window_name}}{TMUX_FIELD_SEPARATOR}#{{pane_id}}");
+        let output = self.tmux_output(&["list-panes", "-a", "-F", &format])?;
         for line in output.lines() {
-            if let Some((name, pane_id)) = line.split_once('\t')
+            if let Some((name, pane_id)) = line.split_once(TMUX_FIELD_SEPARATOR)
                 && name == window_name
             {
                 return Ok(pane_id.to_owned());
@@ -252,10 +405,10 @@ impl TmuxFixture {
     }
 
     fn pane_format_if_present(&self, pane_id: &str, format: &str) -> Result<Option<String>> {
-        let pane_format = format!("#{{pane_id}}\t{format}");
+        let pane_format = format!("#{{pane_id}}{TMUX_FIELD_SEPARATOR}{format}");
         let output = self.tmux_output(&["list-panes", "-a", "-F", &pane_format])?;
         Ok(output.lines().find_map(|line| {
-            let (observed_pane_id, value) = line.split_once('\t')?;
+            let (observed_pane_id, value) = line.split_once(TMUX_FIELD_SEPARATOR)?;
             (observed_pane_id == pane_id).then(|| value.to_owned())
         }))
     }
@@ -288,8 +441,11 @@ impl TmuxFixture {
 
 impl Drop for TmuxFixture {
     fn drop(&mut self) {
-        let _ = ProcessCommand::new("tmux")
+        let mut command = ProcessCommand::new("tmux");
+        apply_external_environment(&mut command, self.socket_dir.path());
+        let _ = command
             .env("TMUX_TMPDIR", self.socket_dir.path())
+            .arg("-u")
             .arg("-L")
             .arg(&self.socket_name)
             .arg("kill-server")
@@ -305,7 +461,9 @@ fn tmux_available() -> bool {
 }
 
 pub fn run(cwd: &Path, program: &str, args: &[&str]) -> Result<()> {
-    let output = ProcessCommand::new(program)
+    let mut command = ProcessCommand::new(program);
+    apply_git_environment(&mut command, cwd);
+    let output = command
         .args(args)
         .current_dir(cwd)
         .output()
@@ -327,7 +485,9 @@ pub fn git(cwd: &Path, args: &[&str]) -> Result<()> {
 }
 
 pub fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
-    let output = ProcessCommand::new("git")
+    let mut command = ProcessCommand::new("git");
+    apply_git_environment(&mut command, cwd);
+    let output = command
         .args(args)
         .current_dir(cwd)
         .output()
@@ -343,14 +503,40 @@ pub fn git_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
 }
 
 pub fn kmux_stdout(cwd: &Path, args: &[&str]) -> Result<String> {
-    let assert = Command::cargo_bin("kmux")?
-        .current_dir(cwd)
-        .args(args)
-        .assert()
-        .success();
+    let config_home = cwd.parent().unwrap_or(cwd).join("kmux-test-config-home");
+    prepare_test_environment(&config_home)?;
+    let mut command = Command::cargo_bin("kmux")?;
+    apply_kmux_environment(&mut command, &config_home);
+    let assert = command.current_dir(cwd).args(args).assert().success();
     Ok(String::from_utf8_lossy(&assert.get_output().stdout)
         .trim()
         .to_owned())
+}
+
+/// Build kmux with a private empty HOME and XDG environment.
+pub fn kmux_command() -> Result<IsolatedKmuxCommand> {
+    let environment = TempDir::new()?;
+    let config_home = write_config(environment.path(), "")?;
+    let command = kmux_command_for(&config_home)?;
+    Ok(IsolatedKmuxCommand {
+        command,
+        _environment: environment,
+    })
+}
+
+/// Build kmux against a caller-owned isolated config environment.
+pub fn kmux_command_for(config_home: &Path) -> Result<Command> {
+    let mut command = Command::cargo_bin("kmux")?;
+    apply_kmux_environment(&mut command, config_home);
+    Ok(command)
+}
+
+/// Build an external tool command with only the test's minimal shell environment.
+pub fn isolated_process_command(program: &str, root: &Path) -> Result<ProcessCommand> {
+    prepare_external_environment(root)?;
+    let mut command = ProcessCommand::new(program);
+    apply_external_environment(&mut command, root);
+    Ok(command)
 }
 
 pub fn init_repo() -> Result<(TempDir, PathBuf)> {
@@ -368,8 +554,8 @@ pub fn init_repo() -> Result<(TempDir, PathBuf)> {
 
 pub fn write_config(root: &Path, content: &str) -> Result<PathBuf> {
     let config_home = root.join("config-home");
+    prepare_test_environment(&config_home)?;
     let config_dir = config_home.join("kmux");
-    fs::create_dir_all(&config_dir)?;
     fs::write(config_dir.join("config.yaml"), content)?;
     Ok(config_home)
 }
@@ -412,21 +598,15 @@ pub fn kmux_with_pane(
     tmux: &TmuxFixture,
     pane_id: &str,
 ) -> Result<Command> {
-    let mut command = Command::cargo_bin("kmux")?;
-    command
-        .current_dir(repo)
-        .env("XDG_CONFIG_HOME", config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"));
+    let mut command = kmux_command_for(config_home)?;
+    command.current_dir(repo);
     tmux.apply_env_with_pane(&mut command, pane_id);
     Ok(command)
 }
 
 pub fn kmux_detached(repo: &Path, config_home: &Path, tmux: &TmuxFixture) -> Result<Command> {
-    let mut command = Command::cargo_bin("kmux")?;
-    command
-        .current_dir(repo)
-        .env("XDG_CONFIG_HOME", config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"));
+    let mut command = kmux_command_for(config_home)?;
+    command.current_dir(repo);
     tmux.apply_env_without_pane(&mut command);
     Ok(command)
 }
@@ -438,10 +618,9 @@ pub fn kmux_process_with_pane(
     pane_id: &str,
 ) -> ProcessCommand {
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_kmux"));
+    apply_kmux_process_environment(&mut command, config_home);
     command
         .current_dir(repo)
-        .env("XDG_CONFIG_HOME", config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
         .env("KMUX_TMUX_SOCKET_NAME", &tmux.socket_name)
         .env("KMUX_TMUX_TMPDIR", tmux.socket_dir.path())
         .env("TMUX_PANE", pane_id);
@@ -454,10 +633,9 @@ pub fn kmux_process_detached(
     tmux: &TmuxFixture,
 ) -> ProcessCommand {
     let mut command = ProcessCommand::new(env!("CARGO_BIN_EXE_kmux"));
+    apply_kmux_process_environment(&mut command, config_home);
     command
         .current_dir(repo)
-        .env("XDG_CONFIG_HOME", config_home)
-        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
         .env("KMUX_TMUX_SOCKET_NAME", &tmux.socket_name)
         .env("KMUX_TMUX_TMPDIR", tmux.socket_dir.path())
         .env_remove("TMUX")
@@ -527,6 +705,143 @@ pub fn agent_observations_dir(config_home: &Path) -> PathBuf {
         .with_file_name("state-home")
         .join("kmux")
         .join("agent-observations")
+}
+
+fn prepare_test_environment(config_home: &Path) -> Result<()> {
+    for path in [
+        config_home.join("kmux"),
+        config_home.with_file_name("home"),
+        config_home.with_file_name("state-home"),
+        config_home.with_file_name("cache-home"),
+        config_home.with_file_name("data-home"),
+        config_home.with_file_name("runtime-dir"),
+        config_home.with_file_name("tmp"),
+        config_home.with_file_name("empty-hooks"),
+    ] {
+        fs::create_dir_all(path)?;
+    }
+    set_private_directory_permissions(&config_home.with_file_name("runtime-dir"))?;
+    let hooks_path = config_home.with_file_name("empty-hooks");
+    fs::write(
+        config_home.with_file_name("gitconfig"),
+        format!(
+            "[commit]\n\tgpgSign = false\n[core]\n\thooksPath = {}\n",
+            hooks_path.display()
+        ),
+    )?;
+    Ok(())
+}
+
+fn prepare_external_environment(root: &Path) -> Result<()> {
+    for path in [
+        root.join("home"),
+        root.join("config-home"),
+        root.join("state-home"),
+        root.join("cache-home"),
+        root.join("data-home"),
+        root.join("runtime-dir"),
+        root.join("tmp"),
+    ] {
+        fs::create_dir_all(path)?;
+    }
+    set_private_directory_permissions(&root.join("runtime-dir"))?;
+    fs::write(root.join("gitconfig"), "[commit]\n\tgpgSign = false\n")?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_private_directory_permissions(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn set_private_directory_permissions(_path: &Path) -> Result<()> {
+    Ok(())
+}
+
+fn apply_base_environment(command: &mut ProcessCommand, home: &Path) {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    command
+        .env_clear()
+        .env("HOME", home)
+        .env("PATH", path)
+        .env("SHELL", "/bin/sh")
+        .env("LANG", "C")
+        .env("LC_ALL", "C");
+}
+
+fn apply_external_environment(command: &mut ProcessCommand, root: &Path) {
+    apply_base_environment(command, &root.join("home"));
+    command
+        .env("XDG_CONFIG_HOME", root.join("config-home"))
+        .env("XDG_STATE_HOME", root.join("state-home"))
+        .env("XDG_CACHE_HOME", root.join("cache-home"))
+        .env("XDG_DATA_HOME", root.join("data-home"))
+        .env("XDG_RUNTIME_DIR", root.join("runtime-dir"))
+        .env("TMPDIR", root.join("tmp"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", root.join("gitconfig"));
+}
+
+fn apply_git_environment(command: &mut ProcessCommand, cwd: &Path) {
+    apply_base_environment(command, cwd);
+    command
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_AUTHOR_NAME", "Test User")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test User")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid");
+}
+
+fn apply_kmux_environment(command: &mut Command, config_home: &Path) {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    command
+        .env_clear()
+        .env("HOME", config_home.with_file_name("home"))
+        .env("PATH", path)
+        .env("SHELL", "/bin/sh")
+        .env("LANG", "C")
+        .env("LC_ALL", "C")
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("XDG_CACHE_HOME", config_home.with_file_name("cache-home"))
+        .env("XDG_DATA_HOME", config_home.with_file_name("data-home"))
+        .env("XDG_RUNTIME_DIR", config_home.with_file_name("runtime-dir"))
+        .env("TMPDIR", config_home.with_file_name("tmp"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", config_home.with_file_name("gitconfig"))
+        .env("GIT_AUTHOR_NAME", "Test User")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test User")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid");
+}
+
+fn apply_kmux_process_environment(command: &mut ProcessCommand, config_home: &Path) {
+    apply_base_environment(command, &config_home.with_file_name("home"));
+    command
+        .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", config_home.with_file_name("state-home"))
+        .env("XDG_CACHE_HOME", config_home.with_file_name("cache-home"))
+        .env("XDG_DATA_HOME", config_home.with_file_name("data-home"))
+        .env("XDG_RUNTIME_DIR", config_home.with_file_name("runtime-dir"))
+        .env("TMPDIR", config_home.with_file_name("tmp"))
+        .env("GIT_CONFIG_NOSYSTEM", "1")
+        .env("GIT_CONFIG_GLOBAL", config_home.with_file_name("gitconfig"))
+        .env("GIT_AUTHOR_NAME", "Test User")
+        .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+        .env("GIT_COMMITTER_NAME", "Test User")
+        .env("GIT_COMMITTER_EMAIL", "test@example.invalid");
+}
+
+fn same_filesystem_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || fs::canonicalize(left)
+            .and_then(|left| fs::canonicalize(right).map(|right| left == right))
+            .unwrap_or(false)
 }
 
 fn wait_until<T>(

@@ -16,12 +16,18 @@
 
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
 use std::path::Path;
 use std::process::{Command, ExitStatus};
+use std::thread;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 
 use crate::telemetry;
+
+const PANE_START_TIMEOUT: Duration = Duration::from_secs(5);
+const PANE_START_POLL_INTERVAL: Duration = Duration::from_millis(10);
 
 #[derive(Debug, Clone, Default)]
 /// Thin adapter for running tmux commands, optionally against a specific socket.
@@ -353,6 +359,9 @@ impl Tmux {
             },
             || {
                 let mut command = Command::new("tmux");
+                // Tmux otherwise sanitizes control separators in format output when
+                // the caller's locale is unset or non-UTF-8.
+                command.arg("-u");
                 if let Some(socket_name) = &self.socket_name {
                     command.arg("-L").arg(socket_name);
                 }
@@ -738,6 +747,7 @@ impl Tmux {
             OsString::from("#{pane_id}"),
         ];
         let pane_id = self.stdout(args)?;
+        self.wait_for_pane_current_path(&pane_id, cwd)?;
         self.stdout([
             "set-option",
             "-w",
@@ -747,6 +757,36 @@ impl Tmux {
             "off",
         ])?;
         Ok(pane_id)
+    }
+
+    // `new-window` can return before the pane child has changed into `-c`.
+    // Do not expose that transient parent cwd to topology snapshots or launcher handoff.
+    fn wait_for_pane_current_path(&self, pane_id: &str, expected: &Path) -> Result<()> {
+        let started = Instant::now();
+        let format = format!("#{{pane_current_path}}{TMUX_FIELD_SEPARATOR}#{{pane_dead}}");
+        loop {
+            let observed = self.stdout(["display-message", "-p", "-t", pane_id, &format])?;
+            let (observed_path, pane_dead) = observed
+                .split_once(TMUX_FIELD_SEPARATOR)
+                .with_context(|| format!("invalid tmux pane readiness record {observed:?}"))?;
+            if pane_dead == "1" {
+                bail!(
+                    "tmux pane {pane_id} exited before entering {}",
+                    expected.display()
+                );
+            }
+            if same_filesystem_path(Path::new(observed_path), expected) {
+                return Ok(());
+            }
+            let elapsed = started.elapsed();
+            if elapsed >= PANE_START_TIMEOUT {
+                bail!(
+                    "timed out after {elapsed:?} waiting for tmux pane {pane_id} to enter {}; last reported cwd was {observed_path:?}",
+                    expected.display(),
+                );
+            }
+            thread::sleep(PANE_START_POLL_INTERVAL.min(PANE_START_TIMEOUT - elapsed));
+        }
     }
 
     /// Create an adapter pinned to a named tmux socket.
@@ -784,6 +824,13 @@ impl Tmux {
         };
         parse_context(&output)
     }
+}
+
+fn same_filesystem_path(left: &Path, right: &Path) -> bool {
+    left == right
+        || fs::canonicalize(left)
+            .and_then(|left| fs::canonicalize(right).map(|right| left == right))
+            .unwrap_or(false)
 }
 
 fn exact_session_target(session_target: &str) -> String {

@@ -1,17 +1,17 @@
 pub mod support;
 
 use std::fs;
-use std::process::Command as ProcessCommand;
 
 use anyhow::Result;
-use assert_cmd::Command;
 use predicates::prelude::*;
 
-use support::{git, init_repo, kmux_stdout, run, write_config};
+use support::{
+    git, init_repo, isolated_process_command, kmux_command, kmux_stdout, run, write_config,
+};
 
 #[test]
 fn help_shows_current_commands() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .arg("--help")
         .assert()
@@ -29,7 +29,7 @@ fn help_shows_current_commands() {
 
 #[test]
 fn workspace_help_shows_lifecycle_commands() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["workspace", "--help"])
         .assert()
@@ -48,7 +48,7 @@ fn long_help_is_capped_at_80_columns() {
         ["workspace", "create", "--help"].as_slice(),
         ["set-agent-status", "--help"].as_slice(),
     ] {
-        let output = Command::cargo_bin("kmux")
+        let output = kmux_command()
             .expect("kmux binary should be available")
             .env("COLUMNS", "200")
             .args(args)
@@ -71,7 +71,7 @@ fn long_help_is_capped_at_80_columns() {
 #[test]
 fn removed_root_lifecycle_commands_and_aliases_fail() {
     for command in ["add", "list", "ls", "remove", "rm", "parent", "restore"] {
-        Command::cargo_bin("kmux")
+        kmux_command()
             .expect("kmux binary should be available")
             .arg(command)
             .assert()
@@ -83,7 +83,7 @@ fn removed_root_lifecycle_commands_and_aliases_fail() {
 #[test]
 fn workspace_rejects_old_lifecycle_names_and_aliases() {
     for command in ["add", "ls", "rm", "parent"] {
-        Command::cargo_bin("kmux")
+        kmux_command()
             .expect("kmux binary should be available")
             .args(["workspace", command])
             .assert()
@@ -94,7 +94,7 @@ fn workspace_rejects_old_lifecycle_names_and_aliases() {
 
 #[test]
 fn config_help_exposes_json_option() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["config", "--help"])
         .assert()
@@ -136,7 +136,7 @@ sidebar:
 "#,
     )?;
 
-    let yaml_output = Command::cargo_bin("kmux")?
+    let yaml_output = kmux_command()?
         .current_dir(temp.path())
         .env("XDG_CONFIG_HOME", &config_home)
         .env_remove("TMUX")
@@ -148,7 +148,7 @@ sidebar:
         .get_output()
         .stdout
         .clone();
-    let json_output = Command::cargo_bin("kmux")?
+    let json_output = kmux_command()?
         .current_dir(temp.path())
         .env("XDG_CONFIG_HOME", &config_home)
         .env_remove("TMUX")
@@ -209,7 +209,7 @@ fn config_reports_invalid_launcher_descriptions() -> Result<()> {
         "launchers: {example: {description: '  ', command: example-agent}}\n",
     )?;
 
-    Command::cargo_bin("kmux")?
+    kmux_command()?
         .current_dir(temp.path())
         .env("XDG_CONFIG_HOME", config_home)
         .arg("config")
@@ -224,7 +224,7 @@ fn config_reports_invalid_launcher_descriptions() -> Result<()> {
 #[test]
 fn help_subcommands_are_disabled() {
     for args in [["help"].as_slice(), ["sidebar", "help"].as_slice()] {
-        Command::cargo_bin("kmux")
+        kmux_command()
             .expect("kmux binary should be available")
             .args(args)
             .assert()
@@ -235,7 +235,7 @@ fn help_subcommands_are_disabled() {
 
 #[test]
 fn set_parent_help_uses_stable_parent_then_child_order() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["workspace", "set-parent", "--help"])
         .assert()
@@ -247,7 +247,7 @@ fn set_parent_help_uses_stable_parent_then_child_order() {
 
 #[test]
 fn create_help_exposes_launcher_options_without_hidden_ingress() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["workspace", "create", "--help"])
         .assert()
@@ -264,7 +264,7 @@ fn lifecycle_help_omits_project_session_override() {
         ["workspace", "restore", "--help"].as_slice(),
         ["workspace", "remove", "--help"].as_slice(),
     ] {
-        Command::cargo_bin("kmux")
+        kmux_command()
             .expect("kmux binary should be available")
             .args(args)
             .assert()
@@ -275,7 +275,7 @@ fn lifecycle_help_omits_project_session_override() {
 
 #[test]
 fn sidebar_help_exposes_only_public_explicit_commands() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["sidebar", "--help"])
         .assert()
@@ -293,7 +293,7 @@ fn sidebar_help_exposes_only_public_explicit_commands() {
 #[test]
 fn private_sidebar_entrypoints_require_underscore_names() {
     for command in ["_refresh", "_run", "_wake"] {
-        Command::cargo_bin("kmux")
+        kmux_command()
             .expect("kmux binary should be available")
             .args(["sidebar", command, "--help"])
             .assert()
@@ -304,7 +304,7 @@ fn private_sidebar_entrypoints_require_underscore_names() {
     }
 
     for command in ["refresh", "run", "wake"] {
-        Command::cargo_bin("kmux")
+        kmux_command()
             .expect("kmux binary should be available")
             .args(["sidebar", command])
             .assert()
@@ -315,7 +315,7 @@ fn private_sidebar_entrypoints_require_underscore_names() {
 
 #[test]
 fn sidebar_requires_an_explicit_command() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .arg("sidebar")
         .assert()
@@ -325,7 +325,7 @@ fn sidebar_requires_an_explicit_command() {
 
 #[test]
 fn workspace_requires_an_explicit_command() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .arg("workspace")
         .assert()
@@ -335,7 +335,7 @@ fn workspace_requires_an_explicit_command() {
 
 #[test]
 fn status_help_exposes_global_export_options() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["status", "--help"])
         .assert()
@@ -346,7 +346,7 @@ fn status_help_exposes_global_export_options() {
 
 #[test]
 fn set_agent_status_help_exposes_integration_options() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["set-agent-status", "--help"])
         .assert()
@@ -371,7 +371,7 @@ fn set_agent_status_help_exposes_integration_options() {
 
 #[test]
 fn completions_command_emits_shell_completion() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["completions", "bash"])
         .assert()
@@ -390,19 +390,18 @@ fn completions_command_emits_shell_completion() {
 
 #[test]
 fn fish_completions_handle_nested_dynamic_values_and_command_like_names() -> Result<()> {
-    if ProcessCommand::new("fish")
-        .arg("--version")
-        .output()
-        .is_err()
-    {
-        return Ok(());
-    }
-
     let temp = tempfile::tempdir()?;
-    let completion_path = temp.path().join("kmux.fish");
-    let output = Command::cargo_bin("kmux")?
-        .args(["completions", "fish"])
+    let output = isolated_process_command("fish", temp.path())?
+        .arg("--version")
         .output()?;
+    assert!(
+        output.status.success(),
+        "fish is required for completion integration tests: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let completion_path = temp.path().join("kmux.fish");
+    let output = kmux_command()?.args(["completions", "fish"]).output()?;
     assert!(output.status.success());
     fs::write(&completion_path, output.stdout)?;
 
@@ -423,7 +422,7 @@ function kmux
 end
 complete -C $argv[2]
 "#;
-        let output = ProcessCommand::new("fish")
+        let output = isolated_process_command("fish", temp.path())?
             .args([
                 "--no-config",
                 "-c",
@@ -468,7 +467,7 @@ launchers:
 "#,
     )?;
 
-    let output = Command::cargo_bin("kmux")?
+    let output = kmux_command()?
         .current_dir(temp.path())
         .env("XDG_CONFIG_HOME", &config_home)
         .arg("_complete-launchers")
@@ -483,7 +482,7 @@ launchers:
         config_home.join("kmux/config.yaml"),
         "launchers: [invalid]\n",
     )?;
-    Command::cargo_bin("kmux")?
+    kmux_command()?
         .current_dir(temp.path())
         .env("XDG_CONFIG_HOME", &config_home)
         .arg("_complete-launchers")
@@ -573,7 +572,7 @@ fn completion_helpers_emit_contextual_worktrees_and_branches() -> Result<()> {
 
 #[test]
 fn unknown_commands_fail_clearly() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .arg("not-a-command")
         .assert()
@@ -583,7 +582,7 @@ fn unknown_commands_fail_clearly() {
 
 #[test]
 fn status_rejects_positional_arguments() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args(["status", "feature/example"])
         .assert()
@@ -593,7 +592,7 @@ fn status_rejects_positional_arguments() {
 
 #[test]
 fn set_agent_status_rejects_unknown_options() {
-    Command::cargo_bin("kmux")
+    kmux_command()
         .expect("kmux binary should be available")
         .args([
             "set-agent-status",
