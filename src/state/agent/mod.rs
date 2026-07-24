@@ -13,8 +13,9 @@ pub use model::{
 pub use store::{StateStore, now_unix_seconds};
 pub use timing::next_observation_timing;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "internal-adapter-contract-tests"))]
 pub(super) mod test_support {
+    #[cfg(test)]
     pub use super::model::test_support::observation_state;
 
     /// Open an agent state store at a caller-provided path for tests.

@@ -14,6 +14,10 @@ pub(crate) mod tmux;
 pub(crate) mod workflows;
 pub(crate) mod workspace;
 
+#[cfg(feature = "internal-adapter-contract-tests")]
+#[doc(hidden)]
+pub mod contract_tests;
+
 pub(crate) const LIFECYCLE_ACTIVE_ENV: &str = "KMUX_INTERNAL_LIFECYCLE_ACTIVE";
 
 use anyhow::Result;

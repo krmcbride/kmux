@@ -5,6 +5,8 @@
 //! compact primary/secondary text for the renderer.
 
 use crate::agent::sessions::AgentTmuxTarget;
+#[cfg(feature = "internal-adapter-contract-tests")]
+use crate::agent::sessions::AgentTmuxWindowCandidate;
 use crate::agent::workspace_activity::WorkspaceActivity;
 use crate::config::StatusIcons;
 use crate::state::{AgentSessionKey, AgentStatus};
@@ -123,6 +125,42 @@ impl SidebarRow {
     /// Return whether this row is currently working and should use spinner frames.
     pub(super) fn is_working(&self) -> bool {
         self.state.is_working()
+    }
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_row(
+    workspace_key: &str,
+    session_key: AgentSessionKey,
+    session_name: &str,
+    window_id: &str,
+    pane_ids: Vec<String>,
+) -> SidebarRow {
+    SidebarRow {
+        identity: SidebarRowIdentity {
+            key: format!("workspace:{workspace_key}"),
+        },
+        selection: SidebarRowSelection {
+            workspace_key: workspace_key.to_owned(),
+            member_session_keys: vec![session_key],
+        },
+        state: SidebarRowState::Working,
+        icon: "?".to_owned(),
+        primary: "Project alpha".to_owned(),
+        secondary: "feature/sidebar".to_owned(),
+        secondary_right: String::new(),
+        title: "Example task".to_owned(),
+        elapsed: "<1m".to_owned(),
+        session_name: session_name.to_owned(),
+        window_id: window_id.to_owned(),
+        pane_id: pane_ids.first().cloned(),
+        jump_target: AgentTmuxTarget::Windows {
+            session_name: session_name.to_owned(),
+            candidates: vec![AgentTmuxWindowCandidate {
+                window_id: window_id.to_owned(),
+                pane_ids,
+            }],
+        },
     }
 }
 

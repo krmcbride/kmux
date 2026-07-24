@@ -15,13 +15,15 @@ use support::{
 };
 
 fn kmux_without_tmux(cwd: &Path, config_home: &Path) -> Result<Command> {
+    let tmux_tmpdir = config_home.with_file_name("no-tmux");
+    fs::create_dir_all(&tmux_tmpdir)?;
     let mut command = kmux_command_for(config_home)?;
     command
         .current_dir(cwd)
         .env_remove("TMUX")
         .env_remove("TMUX_PANE")
-        .env_remove("KMUX_TMUX_SOCKET_NAME")
-        .env_remove("KMUX_TMUX_TMPDIR")
+        .env("KMUX_TMUX_SOCKET_NAME", "kmux-no-server")
+        .env("KMUX_TMUX_TMPDIR", tmux_tmpdir)
         .env_remove("KMUX_DISABLE_SET_AGENT_STATUS");
     Ok(command)
 }
@@ -161,15 +163,28 @@ fn disabled_set_agent_status_does_not_write_observation() -> Result<()> {
 }
 
 #[test]
-fn set_agent_status_ignores_stale_ambient_tmux_environment() -> Result<()> {
+fn set_agent_status_does_not_mutate_ambient_tmux_server() -> Result<()> {
     let temp = TempDir::new()?;
     let config_home = write_config(temp.path(), "")?;
     let cwd = temp.path().join("workspace");
     fs::create_dir(&cwd)?;
+    let Some(ambient_tmux) = TmuxFixture::new(&cwd)? else {
+        return Ok(());
+    };
+    ambient_tmux.tmux_output(&[
+        "set-option",
+        "-w",
+        "-t",
+        &ambient_tmux.pane_id,
+        "@kmux_status",
+        "sentinel",
+    ])?;
+    let ambient_socket = ambient_tmux.pane_format(&ambient_tmux.pane_id, "#{socket_path}")?;
+    let ambient_client = format!("{ambient_socket},1,0");
 
     kmux_without_tmux(&cwd, &config_home)?
-        .env("TMUX", "/tmp/missing-tmux-socket,1,0")
-        .env("TMUX_PANE", "%999")
+        .env("TMUX", &ambient_client)
+        .env("TMUX_PANE", &ambient_tmux.pane_id)
         .args(set_opencode_status_args(
             Some("working"),
             "ses_stale_tmux",
@@ -181,8 +196,8 @@ fn set_agent_status_ignores_stale_ambient_tmux_environment() -> Result<()> {
         .success();
 
     kmux_without_tmux(&cwd, &config_home)?
-        .env("TMUX", "/tmp/missing-tmux-socket,1,0")
-        .env("TMUX_PANE", "%999")
+        .env("TMUX", &ambient_client)
+        .env("TMUX_PANE", &ambient_tmux.pane_id)
         .args(delete_opencode_agent_observation_args(
             "ses_stale_tmux",
             "integration",
@@ -190,6 +205,13 @@ fn set_agent_status_ignores_stale_ambient_tmux_environment() -> Result<()> {
         ))
         .assert()
         .success();
+
+    assert_eq!(
+        ambient_tmux
+            .window_option(&ambient_tmux.pane_id, "@kmux_status")?
+            .as_deref(),
+        Some("sentinel")
+    );
 
     assert!(
         agent_observations_dir(&config_home)

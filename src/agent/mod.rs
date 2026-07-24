@@ -9,6 +9,48 @@ mod status_badges;
 mod test_support;
 mod workspace;
 
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_repo_root_resolves_to_canonical_git_worktree_root() -> anyhow::Result<()> {
+    workspace::contract_tests::repo_root_resolves_to_canonical_git_worktree_root()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_subdirectory_resolves_to_git_worktree_root() -> anyhow::Result<()> {
+    workspace::contract_tests::subdirectory_resolves_to_git_worktree_root()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_linked_worktree_root_is_distinct_from_main_root() -> anyhow::Result<()> {
+    workspace::contract_tests::linked_worktree_root_is_distinct_from_main_root()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_non_git_directory_does_not_attach() -> anyhow::Result<()> {
+    workspace::contract_tests::non_git_directory_does_not_attach()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_selection_options_round_trip_restore_and_cleanup() -> anyhow::Result<()> {
+    sidebar::contract_selection_options_round_trip_restore_and_cleanup()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_stale_jump_candidate_falls_back_and_focuses_content_pane()
+-> anyhow::Result<()> {
+    sidebar::contract_stale_jump_candidate_falls_back_and_focuses_content_pane()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_failed_detached_jump_restores_previous_selection() -> anyhow::Result<()> {
+    sidebar::contract_failed_detached_jump_restores_previous_selection()
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub(super) fn contract_delete_refreshes_badge_and_sidebar_surfaces_on_private_server()
+-> anyhow::Result<()> {
+    sidebar::contract_delete_refreshes_badge_and_sidebar_surfaces_on_private_server()
+}
+
 pub mod observations;
 pub mod query;
 pub mod sidebar;

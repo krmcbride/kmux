@@ -33,6 +33,7 @@ const PANE_START_POLL_INTERVAL: Duration = Duration::from_millis(10);
 /// Thin adapter for running tmux commands, optionally against a specific socket.
 pub struct Tmux {
     socket_name: Option<OsString>,
+    clear_environment: bool,
     clear_client_env: bool,
     env: Vec<(OsString, OsString)>,
 }
@@ -348,6 +349,11 @@ impl Tmux {
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
     {
+        if cfg!(test) {
+            bail!(
+                "tmux subprocesses are unavailable in library unit tests; use typed pane/window facts or an adapter contract target"
+            );
+        }
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
         let display_args = display_args(&args);
         let command_name = command_name(&args);
@@ -359,6 +365,9 @@ impl Tmux {
             },
             || {
                 let mut command = Command::new("tmux");
+                if self.clear_environment {
+                    command.env_clear();
+                }
                 // Tmux otherwise sanitizes control separators in format output when
                 // the caller's locale is unset or non-UTF-8.
                 command.arg("-u");
@@ -796,6 +805,7 @@ impl Tmux {
     fn with_socket_name(socket_name: impl Into<OsString>) -> Self {
         Self {
             socket_name: Some(socket_name.into()),
+            clear_environment: false,
             clear_client_env: true,
             env: Vec::new(),
         }
@@ -804,6 +814,12 @@ impl Tmux {
     /// Add one environment override to every tmux subprocess.
     fn with_env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Self {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    #[cfg(feature = "internal-adapter-contract-tests")]
+    fn with_clean_environment(mut self) -> Self {
+        self.clear_environment = true;
         self
     }
 
@@ -1111,64 +1127,6 @@ fn bail_tmux<T>(output: TmuxOutput) -> Result<T> {
 #[cfg(test)]
 pub mod test_support {
     use super::*;
-    use std::time::{SystemTime, UNIX_EPOCH};
-
-    use tempfile::TempDir;
-
-    /// Create an adapter pinned to a unique socket with no running tmux server.
-    pub fn disconnected_adapter() -> Tmux {
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_or(0, |duration| duration.as_nanos());
-        Tmux::with_socket_name(format!("kmux-missing-test-{}-{nanos}", std::process::id()))
-    }
-
-    /// Isolated tmux server fixture for adapter and sidebar tests.
-    pub struct TmuxFixture {
-        pub tmux: Tmux,
-        _socket_dir: TempDir,
-    }
-
-    impl TmuxFixture {
-        /// Create an isolated tmux server fixture when tmux is available.
-        pub fn new() -> Result<Option<Self>> {
-            if !Command::new("tmux")
-                .arg("-V")
-                .output()
-                .is_ok_and(|output| output.status.success())
-            {
-                return Ok(None);
-            }
-
-            let nanos = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-            let socket_name = format!("kmux-test-{}-{nanos}", std::process::id());
-            let socket_dir = TempDir::new()?;
-            let socket_dir_value = socket_dir.path().as_os_str().to_os_string();
-            Ok(Some(Self {
-                tmux: Tmux::with_socket_name(socket_name).with_env("TMUX_TMPDIR", socket_dir_value),
-                _socket_dir: socket_dir,
-            }))
-        }
-    }
-
-    impl Drop for TmuxFixture {
-        fn drop(&mut self) {
-            let _ = self.tmux.output(["kill-server"]);
-        }
-    }
-
-    /// Create a detached test session in the fixture's tmux server.
-    pub fn create_test_session(tmux: &Tmux, session_name: &str, cwd: &Path) -> Result<()> {
-        tmux.stdout(vec![
-            OsString::from("new-session"),
-            OsString::from("-d"),
-            OsString::from("-s"),
-            OsString::from(session_name),
-            OsString::from("-c"),
-            cwd.as_os_str().to_os_string(),
-        ])?;
-        Ok(())
-    }
 
     /// Build a horizontal window layout for pane-snapshot tests.
     pub fn test_window_layout(pane_ids: &[&str]) -> TmuxWindowLayout {
@@ -1184,25 +1142,99 @@ pub mod test_support {
     }
 }
 
+#[cfg(feature = "internal-adapter-contract-tests")]
+/// Crate-wide exception: sidebar contracts need the same owned tmux server
+/// fixture as adapter contracts, and no narrower visibility spans those modules.
+pub(crate) mod contract_support {
+    use tempfile::TempDir;
+
+    use super::*;
+
+    /// Isolated tmux server and process environment for adapter contracts.
+    pub(crate) struct TmuxFixture {
+        pub(crate) tmux: Tmux,
+        _environment: TempDir,
+    }
+
+    impl TmuxFixture {
+        pub(crate) fn new() -> Result<Self> {
+            let environment = TempDir::new()?;
+            let root = environment.path();
+            let home = root.join("home");
+            let config_home = root.join("config-home");
+            let state_home = root.join("state-home");
+            let cache_home = root.join("cache-home");
+            let data_home = root.join("data-home");
+            let runtime_dir = root.join("runtime-dir");
+            let tmp = root.join("tmp");
+            let socket_dir = root.join("tmux-socket");
+            for directory in [
+                &home,
+                &config_home,
+                &state_home,
+                &cache_home,
+                &data_home,
+                &runtime_dir,
+                &tmp,
+                &socket_dir,
+            ] {
+                fs::create_dir_all(directory)?;
+            }
+
+            let tmux = Tmux::with_socket_name("kmux-adapter-contract")
+                .with_clean_environment()
+                .with_env("HOME", home.as_os_str())
+                .with_env("PATH", std::env::var_os("PATH").unwrap_or_default())
+                .with_env("SHELL", "/bin/sh")
+                .with_env("LANG", "C")
+                .with_env("LC_ALL", "C")
+                .with_env("XDG_CONFIG_HOME", config_home.as_os_str())
+                .with_env("XDG_STATE_HOME", state_home.as_os_str())
+                .with_env("XDG_CACHE_HOME", cache_home.as_os_str())
+                .with_env("XDG_DATA_HOME", data_home.as_os_str())
+                .with_env("XDG_RUNTIME_DIR", runtime_dir.as_os_str())
+                .with_env("TMPDIR", tmp.as_os_str())
+                .with_env("TMUX_TMPDIR", socket_dir.as_os_str());
+
+            Ok(Self {
+                tmux,
+                _environment: environment,
+            })
+        }
+    }
+
+    impl Drop for TmuxFixture {
+        fn drop(&mut self) {
+            let _ = self.tmux.output(["kill-server"]);
+        }
+    }
+
+    pub(crate) fn create_test_session(
+        tmux: &Tmux,
+        session_name: &str,
+        cwd: &Path,
+    ) -> Result<String> {
+        let pane_id = tmux.stdout(vec![
+            OsString::from("-f"),
+            OsString::from("/dev/null"),
+            OsString::from("new-session"),
+            OsString::from("-d"),
+            OsString::from("-s"),
+            OsString::from(session_name),
+            OsString::from("-c"),
+            cwd.as_os_str().to_os_string(),
+            OsString::from("-P"),
+            OsString::from("-F"),
+            OsString::from("#{pane_id}"),
+        ])?;
+        tmux.wait_for_pane_current_path(&pane_id, cwd)?;
+        Ok(pane_id)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tmux::test_support::{TmuxFixture, create_test_session};
-    use std::thread;
-    use std::time::{Duration, Instant};
-
-    use tempfile::TempDir;
-
-    fn wait_for_path(path: &Path) -> bool {
-        let deadline = Instant::now() + Duration::from_secs(2);
-        while Instant::now() < deadline {
-            if path.exists() {
-                return true;
-            }
-            thread::sleep(Duration::from_millis(25));
-        }
-        false
-    }
 
     #[test]
     fn validates_opaque_tmux_ids() -> Result<()> {
@@ -1392,10 +1424,62 @@ mod tests {
     }
 
     #[test]
-    fn creates_selects_lists_and_kills_windows_on_isolated_socket() -> Result<()> {
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(());
-        };
+    fn parses_pane_visibility_from_tmux_flags() -> Result<()> {
+        assert_eq!(
+            parse_pane_visibility("1\t1\t1")?,
+            TmuxPaneVisibility {
+                pane_has_focus: true,
+                window_visible: true,
+            }
+        );
+        assert_eq!(
+            parse_pane_visibility("0\t1\t1")?,
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: true,
+            }
+        );
+        assert_eq!(
+            parse_pane_visibility("1\t0\t1")?,
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            }
+        );
+        assert_eq!(
+            parse_pane_visibility("1\t1\t0")?,
+            TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: false,
+            }
+        );
+        Ok(())
+    }
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub mod contract_tests {
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    use tempfile::TempDir;
+
+    use super::contract_support::{TmuxFixture, create_test_session};
+    use super::*;
+
+    fn wait_for_path(path: &Path) -> bool {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if path.exists() {
+                return true;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+        false
+    }
+
+    pub fn creates_selects_lists_and_kills_windows_on_isolated_socket() -> Result<()> {
+        let fixture = TmuxFixture::new()?;
         let temp = TempDir::new()?;
         let tmux = &fixture.tmux;
 
@@ -1458,21 +1542,14 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn lightweight_pane_listing_treats_missing_server_as_empty() -> Result<()> {
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(());
-        };
-
+    pub fn lightweight_pane_listing_treats_missing_server_as_empty() -> Result<()> {
+        let fixture = TmuxFixture::new()?;
         assert!(fixture.tmux.list_panes()?.is_empty());
         Ok(())
     }
 
-    #[test]
-    fn project_session_window_commands_use_opaque_session_ids() -> Result<()> {
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(());
-        };
+    pub fn project_session_window_commands_use_opaque_session_ids() -> Result<()> {
+        let fixture = TmuxFixture::new()?;
         let temp = TempDir::new()?;
         let tmux = &fixture.tmux;
 
@@ -1491,11 +1568,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn physical_window_id_disambiguates_duplicate_names() -> Result<()> {
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(());
-        };
+    pub fn physical_window_id_disambiguates_duplicate_names() -> Result<()> {
+        let fixture = TmuxFixture::new()?;
         let temp = TempDir::new()?;
         let tmux = &fixture.tmux;
 
@@ -1527,11 +1601,8 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn literal_command_runs_inside_shell_and_window_survives_exit() -> Result<()> {
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(());
-        };
+    pub fn literal_command_runs_inside_shell_and_window_survives_exit() -> Result<()> {
+        let fixture = TmuxFixture::new()?;
         let temp = TempDir::new()?;
         let tmux = &fixture.tmux;
         let marker = temp.path().join("startup-ran");
@@ -1548,39 +1619,6 @@ mod tests {
 
         assert!(wait_for_path(&marker));
         assert!(tmux.window_exists_by_name_by_id(&session_id, "feature-auth")?);
-        Ok(())
-    }
-
-    #[test]
-    fn parses_pane_visibility_from_tmux_flags() -> Result<()> {
-        assert_eq!(
-            parse_pane_visibility("1\t1\t1")?,
-            TmuxPaneVisibility {
-                pane_has_focus: true,
-                window_visible: true,
-            }
-        );
-        assert_eq!(
-            parse_pane_visibility("0\t1\t1")?,
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: true,
-            }
-        );
-        assert_eq!(
-            parse_pane_visibility("1\t0\t1")?,
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: false,
-            }
-        );
-        assert_eq!(
-            parse_pane_visibility("1\t1\t0")?,
-            TmuxPaneVisibility {
-                pane_has_focus: false,
-                window_visible: false,
-            }
-        );
         Ok(())
     }
 }

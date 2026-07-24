@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 description = "Lean tmux and git worktree workflow helper"
 
+[features]
+internal-adapter-contract-tests = []
+
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.5", features = ["derive", "env", "string", "wrap_help"] }
@@ -24,6 +27,26 @@ yaml_serde = "0.10"
 [dev-dependencies]
 assert_cmd = "2.0"
 predicates = "3.1"
+
+[[test]]
+name = "git_adapter_contracts"
+path = "tests/contracts/git_adapter.rs"
+required-features = ["internal-adapter-contract-tests"]
+
+[[test]]
+name = "tmux_adapter_contracts"
+path = "tests/contracts/tmux_adapter.rs"
+required-features = ["internal-adapter-contract-tests"]
+
+[[test]]
+name = "launcher_adapter_contracts"
+path = "tests/contracts/launcher_adapter.rs"
+required-features = ["internal-adapter-contract-tests"]
+
+[[test]]
+name = "sidebar_action_contracts"
+path = "tests/contracts/sidebar_actions.rs"
+required-features = ["internal-adapter-contract-tests"]
 
 [lints.clippy]
 await_holding_invalid_type = "deny"

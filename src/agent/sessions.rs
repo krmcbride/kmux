@@ -245,9 +245,8 @@ pub fn resolved_agent_sessions(
                 });
             }
 
-            let panes_result = tmux.list_pane_snapshots();
-            let tmux_snapshot_ok = panes_result.is_ok();
-            let panes = panes_result.unwrap_or_default();
+            let (panes, tmux_snapshot_ok) =
+                pane_snapshots_or_empty(tmux.list_pane_snapshots());
             let pane_count = panes.len();
             let mut workspace_resolver = AgentWorkspaceResolver::default();
             let sessions = reconcile_agent_sessions(
@@ -272,6 +271,13 @@ pub fn resolved_agent_sessions(
     );
 
     result.map(|telemetry_result| telemetry_result.sessions)
+}
+
+fn pane_snapshots_or_empty(panes: Result<Vec<TmuxPaneSnapshot>>) -> (Vec<TmuxPaneSnapshot>, bool) {
+    match panes {
+        Ok(panes) => (panes, true),
+        Err(_) => (Vec::new(), false),
+    }
 }
 
 struct ResolvedSessionsTelemetry {
@@ -324,18 +330,6 @@ fn is_candidate_for_tmux_instance(observation: &AgentObservationState, instance_
         .tmux_instance
         .as_deref()
         .is_none_or(|target_instance| target_instance == instance_id)
-}
-
-// Group observations by logical agent session after assigning each reported
-// directory to a Git worktree root.
-#[cfg(test)]
-fn reconcile_resolved_sessions(
-    observations: Vec<AgentObservationState>,
-    panes: &[TmuxPaneSnapshot],
-    tmux_instance: &str,
-) -> Vec<ResolvedAgentSession> {
-    let mut workspace_resolver = AgentWorkspaceResolver::default();
-    reconcile_agent_sessions(observations, panes, tmux_instance, &mut workspace_resolver)
 }
 
 // Pure session reconciliation policy over observation, tmux pane, and workspace
@@ -790,7 +784,6 @@ fn enrich_missing_repo_metadata(target: &mut ResolvedAgentTarget) {
 mod tests {
     use super::*;
     use crate::agent::workspace_activity::workspace_activities_from_sessions;
-    use crate::git::test_support::GitRepoFixture;
     use crate::state::{AgentObservationKey, AgentObservationState};
     use crate::tmux::{TmuxPaneActivity, TmuxPaneGeometry, TmuxPaneIdentity, TmuxPanePlacement};
     use std::collections::HashMap;
@@ -802,9 +795,14 @@ mod tests {
 
     impl FakeWorkspaceResolver {
         fn with_path(path: &str) -> Self {
+            Self::with_paths(&[path])
+        }
+
+        fn with_paths(paths: &[&str]) -> Self {
             Self {
-                attachments: [(path.to_owned(), AgentWorkspaceAttachment::for_test(path))]
-                    .into_iter()
+                attachments: paths
+                    .iter()
+                    .map(|path| ((*path).to_owned(), AgentWorkspaceAttachment::for_test(path)))
                     .collect(),
             }
         }
@@ -826,6 +824,16 @@ mod tests {
         }
     }
 
+    fn reconcile_with_fake_workspace_resolver(
+        observations: Vec<AgentObservationState>,
+        panes: &[TmuxPaneSnapshot],
+        tmux_instance: &str,
+        workspace_paths: &[&str],
+    ) -> Vec<ResolvedAgentSession> {
+        let mut resolver = FakeWorkspaceResolver::with_paths(workspace_paths);
+        reconcile_agent_sessions(observations, panes, tmux_instance, &mut resolver)
+    }
+
     #[test]
     fn pure_reconciliation_returns_no_sessions_without_observations() {
         let mut resolver = FakeWorkspaceResolver::with_path("/repo/project");
@@ -833,6 +841,15 @@ mod tests {
         let views = reconcile_agent_sessions(Vec::new(), &[], "default", &mut resolver);
 
         assert!(views.is_empty());
+    }
+
+    #[test]
+    fn tmux_snapshot_failure_becomes_an_empty_snapshot() {
+        let (panes, snapshot_ok) =
+            pane_snapshots_or_empty(Err(anyhow::anyhow!("tmux unavailable")));
+
+        assert!(panes.is_empty());
+        assert!(!snapshot_ok);
     }
 
     #[test]
@@ -966,14 +983,14 @@ mod tests {
 
     #[test]
     fn merges_multiple_reporters_into_one_resolved_session() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let first = observation(
             "reporter-a",
             "instance-1",
             Some(AgentStatus::Done),
             100,
             Some("First title"),
-            &directory,
+            directory,
         );
         let mut second = observation(
             "reporter-b",
@@ -981,14 +998,15 @@ mod tests {
             Some(AgentStatus::Waiting),
             200,
             Some("Second title"),
-            &directory,
+            directory,
         );
         second.context = Some("55.2K".to_owned());
 
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![first, second],
-            &[pane_snapshot("%1", "@1", &directory, None)],
+            &[pane_snapshot("%1", "@1", directory, None)],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1001,26 +1019,27 @@ mod tests {
 
     #[test]
     fn workspace_activity_collapses_multiple_sessions_by_canonical_root() {
-        let (_root_temp, root) = git_repo_path();
-        let (_feature_temp, feature) = git_repo_path();
+        let root = "/repo/project-alpha";
+        let feature = "/repo/project-beta";
         let observations = [
-            observation_for_session("ses_a", "reporter-a", "instance-1", &root, "A"),
-            observation_for_session("ses_a", "reporter-b", "instance-2", &root, "A second"),
-            observation_for_session("ses_b", "reporter-a", "instance-1", &root, "B"),
-            observation_for_session("ses_b", "reporter-b", "instance-2", &root, "B second"),
-            observation_for_session("ses_c", "reporter-a", "instance-1", &feature, "C"),
-            observation_for_session("ses_c", "reporter-b", "instance-2", &feature, "C second"),
-            observation_for_session("ses_d", "reporter-a", "instance-1", &feature, "D"),
-            observation_for_session("ses_d", "reporter-b", "instance-2", &feature, "D second"),
+            observation_for_session("ses_a", "reporter-a", "instance-1", root, "A"),
+            observation_for_session("ses_a", "reporter-b", "instance-2", root, "A second"),
+            observation_for_session("ses_b", "reporter-a", "instance-1", root, "B"),
+            observation_for_session("ses_b", "reporter-b", "instance-2", root, "B second"),
+            observation_for_session("ses_c", "reporter-a", "instance-1", feature, "C"),
+            observation_for_session("ses_c", "reporter-b", "instance-2", feature, "C second"),
+            observation_for_session("ses_d", "reporter-a", "instance-1", feature, "D"),
+            observation_for_session("ses_d", "reporter-b", "instance-2", feature, "D second"),
         ];
 
-        let sessions = reconcile_resolved_sessions(
+        let sessions = reconcile_with_fake_workspace_resolver(
             observations.into_iter().collect(),
             &[
-                pane_snapshot("%1", "@1", &root, None),
-                pane_snapshot("%2", "@2", &feature, None),
+                pane_snapshot("%1", "@1", root, None),
+                pane_snapshot("%2", "@2", feature, None),
             ],
             "default",
+            &[root, feature],
         );
         let views = workspace_activities_from_sessions(sessions);
 
@@ -1069,14 +1088,14 @@ mod tests {
 
     #[test]
     fn live_pane_precision_keeps_newer_directory_observation_fields() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let first = observation(
             "reporter-a",
             "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("First"),
-            &directory,
+            directory,
         );
         let second = observation(
             "reporter-b",
@@ -1084,12 +1103,13 @@ mod tests {
             Some(AgentStatus::Working),
             200,
             Some("Second"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![first, second],
-            &[pane_snapshot("%1", "@1", &directory, None)],
+            &[pane_snapshot("%1", "@1", directory, None)],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1104,19 +1124,20 @@ mod tests {
 
     #[test]
     fn directory_only_observation_attaches_to_matching_kmux_window() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
-            &[pane_snapshot("%1", "@1", &directory, None)],
+            &[pane_snapshot("%1", "@1", directory, None)],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1130,22 +1151,23 @@ mod tests {
 
     #[test]
     fn directory_observation_attaches_to_unmarked_single_pane_window() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[
-                pane_snapshot("%sidebar", "@1", "/tmp/kmux", Some("sidebar")),
-                pane_snapshot("%1", "@1", &directory, None),
+                pane_snapshot("%sidebar", "@1", "/repo/sidebar", Some("sidebar")),
+                pane_snapshot("%1", "@1", directory, None),
             ],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1155,22 +1177,23 @@ mod tests {
 
     #[test]
     fn codex_like_directory_only_observation_attaches_by_window_path() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let mut server = observation(
             "server",
             "codex-app-server",
             Some(AgentStatus::Waiting),
             100,
             Some("Codex task"),
-            &directory,
+            directory,
         );
         server.key.session.agent_kind = "codex".to_owned();
         server.key.session.session_id = "thread_123".to_owned();
 
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
-            &[pane_snapshot("%1", "@1", &directory, None)],
+            &[pane_snapshot("%1", "@1", directory, None)],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1182,22 +1205,23 @@ mod tests {
 
     #[test]
     fn duplicate_windows_for_workspace_choose_a_matching_window() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[
-                pane_snapshot("%1", "@1", &directory, None),
-                pane_snapshot("%2", "@2", &directory, None),
+                pane_snapshot("%1", "@1", directory, None),
+                pane_snapshot("%2", "@2", directory, None),
             ],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1207,16 +1231,21 @@ mod tests {
 
     #[test]
     fn current_matching_window_precedes_previous_and_index_order() {
-        let (_directory_temp, directory) = git_repo_path();
-        let server = directory_only_observation(&directory);
-        let mut previous = pane_snapshot("%1", "@1", &directory, None);
+        let directory = "/repo/project-alpha";
+        let server = directory_only_observation(directory);
+        let mut previous = pane_snapshot("%1", "@1", directory, None);
         previous.activity.window_active = false;
         previous.activity.window_last = true;
         previous.placement.window_index = "1".to_owned();
-        let mut current = pane_snapshot("%2", "@2", &directory, None);
+        let mut current = pane_snapshot("%2", "@2", directory, None);
         current.placement.window_index = "9".to_owned();
 
-        let views = reconcile_resolved_sessions(vec![server], &[previous, current], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![server],
+            &[previous, current],
+            "default",
+            &[directory],
+        );
 
         assert_window_candidates(&views[0], "project", &["@2", "@1"]);
         assert_eq!(views[0].tmux_window_id(), Some("@2"));
@@ -1224,23 +1253,24 @@ mod tests {
 
     #[test]
     fn scratch_window_sidebar_does_not_override_previous_matching_window() {
-        let (_directory_temp, directory) = git_repo_path();
-        let (_scratch_temp, scratch) = git_repo_path();
-        let server = directory_only_observation(&directory);
-        let mut current_scratch = pane_snapshot("%scratch", "@9", &scratch, None);
+        let directory = "/repo/project-alpha";
+        let scratch = "/repo/project-beta";
+        let server = directory_only_observation(directory);
+        let mut current_scratch = pane_snapshot("%scratch", "@9", scratch, None);
         current_scratch.placement.window_index = "9".to_owned();
-        let mut lowest = pane_snapshot("%1", "@1", &directory, None);
+        let mut lowest = pane_snapshot("%1", "@1", directory, None);
         lowest.activity.window_active = false;
         lowest.placement.window_index = "1".to_owned();
-        let mut previous = pane_snapshot("%2", "@2", &directory, None);
+        let mut previous = pane_snapshot("%2", "@2", directory, None);
         previous.activity.window_active = false;
         previous.activity.window_last = true;
         previous.placement.window_index = "8".to_owned();
 
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[current_scratch, lowest, previous],
             "default",
+            &[directory, scratch],
         );
 
         assert_window_candidates(&views[0], "project", &["@2", "@1"]);
@@ -1249,20 +1279,24 @@ mod tests {
 
     #[test]
     fn matching_windows_fall_back_by_parsed_index_then_window_id() {
-        let (_directory_temp, directory) = git_repo_path();
-        let server = directory_only_observation(&directory);
-        let mut high = pane_snapshot("%2", "@2", &directory, None);
+        let directory = "/repo/project-alpha";
+        let server = directory_only_observation(directory);
+        let mut high = pane_snapshot("%2", "@2", directory, None);
         high.activity.window_active = false;
         high.placement.window_index = "70000".to_owned();
-        let mut tied_later = pane_snapshot("%9", "@9", &directory, None);
+        let mut tied_later = pane_snapshot("%9", "@9", directory, None);
         tied_later.activity.window_active = false;
         tied_later.placement.window_index = "65536".to_owned();
-        let mut tied_first = pane_snapshot("%1", "@1", &directory, None);
+        let mut tied_first = pane_snapshot("%1", "@1", directory, None);
         tied_first.activity.window_active = false;
         tied_first.placement.window_index = "65536".to_owned();
 
-        let views =
-            reconcile_resolved_sessions(vec![server], &[high, tied_later, tied_first], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![server],
+            &[high, tied_later, tied_first],
+            "default",
+            &[directory],
+        );
 
         assert_window_candidates(&views[0], "project", &["@1", "@9", "@2"]);
         assert_eq!(views[0].tmux_window_id(), Some("@1"));
@@ -1270,19 +1304,20 @@ mod tests {
 
     #[test]
     fn linked_windows_are_deduplicated_before_common_session_selection() {
-        let (_directory_temp, directory) = git_repo_path();
-        let server = directory_only_observation(&directory);
-        let mut project_link = pane_snapshot_in_session("project", "%1", "@1", &directory, None);
+        let directory = "/repo/project-alpha";
+        let server = directory_only_observation(directory);
+        let mut project_link = pane_snapshot_in_session("project", "%1", "@1", directory, None);
         project_link.activity.window_active = false;
-        let mut linked_copy = pane_snapshot_in_session("linked", "%1", "@1", &directory, None);
+        let mut linked_copy = pane_snapshot_in_session("linked", "%1", "@1", directory, None);
         linked_copy.activity.window_active = false;
-        let mut project_only = pane_snapshot_in_session("project", "%2", "@2", &directory, None);
+        let mut project_only = pane_snapshot_in_session("project", "%2", "@2", directory, None);
         project_only.activity.window_active = false;
 
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[project_link, linked_copy, project_only],
             "default",
+            &[directory],
         );
 
         assert_window_candidates(&views[0], "project", &["@1", "@2"]);
@@ -1290,24 +1325,25 @@ mod tests {
 
     #[test]
     fn mixed_single_and_multi_root_windows_choose_a_matching_window() {
-        let (_directory_temp, directory) = git_repo_path();
-        let (_other_temp, other) = git_repo_path();
+        let directory = "/repo/project-alpha";
+        let other = "/repo/project-beta";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[
-                pane_snapshot("%1", "@1", &directory, None),
-                pane_snapshot("%2", "@2", &directory, None),
-                pane_snapshot("%3", "@2", &other, None),
+                pane_snapshot("%1", "@1", directory, None),
+                pane_snapshot("%2", "@2", directory, None),
+                pane_snapshot("%3", "@2", other, None),
             ],
             "default",
+            &[directory, other],
         );
 
         assert_eq!(views.len(), 1);
@@ -1317,24 +1353,25 @@ mod tests {
 
     #[test]
     fn mixed_matching_windows_across_sessions_use_no_jump_target() {
-        let (_directory_temp, directory) = git_repo_path();
-        let (_other_temp, other) = git_repo_path();
+        let directory = "/repo/project-alpha";
+        let other = "/repo/project-beta";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[
-                pane_snapshot("%1", "@1", &directory, None),
-                pane_snapshot_in_session("other", "%2", "@2", &directory, None),
-                pane_snapshot_in_session("other", "%3", "@2", &other, None),
+                pane_snapshot("%1", "@1", directory, None),
+                pane_snapshot_in_session("other", "%2", "@2", directory, None),
+                pane_snapshot_in_session("other", "%3", "@2", other, None),
             ],
             "default",
+            &[directory, other],
         );
 
         assert_eq!(views.len(), 1);
@@ -1350,22 +1387,23 @@ mod tests {
 
     #[test]
     fn duplicate_unmarked_windows_choose_deterministic_live_target() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let pane_report = observation(
             "reporter-a",
             "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Example report"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![pane_report],
             &[
-                pane_snapshot("%1", "@1", &directory, None),
-                pane_snapshot("%2", "@2", &directory, None),
+                pane_snapshot("%1", "@1", directory, None),
+                pane_snapshot("%2", "@2", directory, None),
             ],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1376,19 +1414,20 @@ mod tests {
 
     #[test]
     fn single_matching_workspace_window_gets_exact_window_target() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
-            &[pane_snapshot("%2", "@2", &directory, None)],
+            &[pane_snapshot("%2", "@2", directory, None)],
             "default",
+            &[directory],
         );
 
         assert_eq!(views.len(), 1);
@@ -1402,23 +1441,24 @@ mod tests {
 
     #[test]
     fn multi_root_window_uses_matching_live_pane_without_reporter_hint() {
-        let (_directory_temp, directory) = git_repo_path();
-        let (_other_temp, other) = git_repo_path();
+        let directory = "/repo/project-alpha";
+        let other = "/repo/project-beta";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(
+        let views = reconcile_with_fake_workspace_resolver(
             vec![server],
             &[
-                pane_snapshot("%1", "@1", &directory, None),
-                pane_snapshot("%2", "@1", &other, None),
+                pane_snapshot("%1", "@1", directory, None),
+                pane_snapshot("%2", "@1", other, None),
             ],
             "default",
+            &[directory, other],
         );
 
         assert_eq!(views.len(), 1);
@@ -1432,26 +1472,31 @@ mod tests {
 
     #[test]
     fn multi_pane_window_uses_active_matching_non_sidebar_pane() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let mut first = pane_snapshot("%1", "@1", &directory, None);
+        let mut first = pane_snapshot("%1", "@1", directory, None);
         first.activity.pane_active = false;
         first.placement.pane_index = "1".to_owned();
-        let mut second = pane_snapshot("%2", "@1", &directory, None);
+        let mut second = pane_snapshot("%2", "@1", directory, None);
         second.activity.pane_active = true;
         second.placement.pane_index = "2".to_owned();
-        let mut sidebar = pane_snapshot("%sidebar", "@1", "/tmp/kmux", Some("sidebar"));
+        let mut sidebar = pane_snapshot("%sidebar", "@1", "/repo/sidebar", Some("sidebar"));
         sidebar.activity.pane_active = false;
         sidebar.placement.pane_index = "0".to_owned();
 
-        let views = reconcile_resolved_sessions(vec![server], &[sidebar, first, second], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![server],
+            &[sidebar, first, second],
+            "default",
+            &[directory],
+        );
 
         assert_eq!(views.len(), 1);
         assert!(matches!(
@@ -1464,20 +1509,24 @@ mod tests {
 
     #[test]
     fn active_sidebar_yields_to_previous_matching_content_pane() {
-        let (_directory_temp, directory) = git_repo_path();
-        let server = directory_only_observation(&directory);
-        let mut first = pane_snapshot("%1", "@1", &directory, None);
+        let directory = "/repo/project-alpha";
+        let server = directory_only_observation(directory);
+        let mut first = pane_snapshot("%1", "@1", directory, None);
         first.activity.pane_active = false;
         first.placement.pane_index = "1".to_owned();
-        let mut previous = pane_snapshot("%2", "@1", &directory, None);
+        let mut previous = pane_snapshot("%2", "@1", directory, None);
         previous.activity.pane_active = false;
         previous.activity.pane_last = true;
         previous.placement.pane_index = "8".to_owned();
-        let mut sidebar = pane_snapshot("%sidebar", "@1", &directory, Some("sidebar"));
+        let mut sidebar = pane_snapshot("%sidebar", "@1", directory, Some("sidebar"));
         sidebar.placement.pane_index = "0".to_owned();
 
-        let views =
-            reconcile_resolved_sessions(vec![server], &[sidebar, first, previous], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![server],
+            &[sidebar, first, previous],
+            "default",
+            &[directory],
+        );
 
         assert_candidate_panes(&views[0], "@1", &["%2", "%1"]);
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%2"));
@@ -1485,20 +1534,24 @@ mod tests {
 
     #[test]
     fn matching_panes_fall_back_by_parsed_index_then_pane_id() {
-        let (_directory_temp, directory) = git_repo_path();
-        let server = directory_only_observation(&directory);
-        let mut high = pane_snapshot("%2", "@1", &directory, None);
+        let directory = "/repo/project-alpha";
+        let server = directory_only_observation(directory);
+        let mut high = pane_snapshot("%2", "@1", directory, None);
         high.activity.pane_active = false;
         high.placement.pane_index = "70000".to_owned();
-        let mut tied_later = pane_snapshot("%9", "@1", &directory, None);
+        let mut tied_later = pane_snapshot("%9", "@1", directory, None);
         tied_later.activity.pane_active = false;
         tied_later.placement.pane_index = "65536".to_owned();
-        let mut tied_first = pane_snapshot("%1", "@1", &directory, None);
+        let mut tied_first = pane_snapshot("%1", "@1", directory, None);
         tied_first.activity.pane_active = false;
         tied_first.placement.pane_index = "65536".to_owned();
 
-        let views =
-            reconcile_resolved_sessions(vec![server], &[high, tied_later, tied_first], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![server],
+            &[high, tied_later, tied_first],
+            "default",
+            &[directory],
+        );
 
         assert_candidate_panes(&views[0], "@1", &["%1", "%9", "%2"]);
         assert_eq!(views[0].target.tmux_pane_id.as_deref(), Some("%1"));
@@ -1506,16 +1559,17 @@ mod tests {
 
     #[test]
     fn observation_without_matching_tmux_window_uses_no_jump_target() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let server = observation(
             "server",
             "http://127.0.0.1:4096",
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            &directory,
+            directory,
         );
-        let views = reconcile_resolved_sessions(vec![server], &[], "default");
+        let views =
+            reconcile_with_fake_workspace_resolver(vec![server], &[], "default", &[directory]);
 
         assert_eq!(views.len(), 1);
         assert_eq!(
@@ -1533,23 +1587,23 @@ mod tests {
             Some(AgentStatus::Working),
             100,
             Some("Server only"),
-            "/tmp/does-not-exist/kmux-agent",
+            "/repo/unresolved",
         );
-        let views = reconcile_resolved_sessions(vec![server], &[], "default");
+        let views = reconcile_with_fake_workspace_resolver(vec![server], &[], "default", &[]);
 
         assert!(views.is_empty());
     }
 
     #[test]
     fn latest_observation_must_resolve_to_live_window() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let old = observation(
             "reporter-a",
             "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Old"),
-            &directory,
+            directory,
         );
         let newest = observation(
             "reporter-b",
@@ -1557,24 +1611,25 @@ mod tests {
             Some(AgentStatus::Working),
             200,
             Some("Newest"),
-            "/tmp/does-not-exist/kmux-agent",
+            "/repo/unresolved",
         );
 
-        let views = reconcile_resolved_sessions(vec![old, newest], &[], "default");
+        let views =
+            reconcile_with_fake_workspace_resolver(vec![old, newest], &[], "default", &[directory]);
 
         assert!(views.is_empty());
     }
 
     #[test]
     fn statusless_observations_can_update_title() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let status = observation(
             "reporter-a",
             "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Old"),
-            &directory,
+            directory,
         );
         let update = observation(
             "reporter-b",
@@ -1582,10 +1637,15 @@ mod tests {
             None,
             200,
             Some("Renamed"),
-            &directory,
+            directory,
         );
 
-        let views = reconcile_resolved_sessions(vec![status, update], &[], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![status, update],
+            &[],
+            "default",
+            &[directory],
+        );
 
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, AgentStatus::Working);
@@ -1594,14 +1654,14 @@ mod tests {
 
     #[test]
     fn statusless_update_does_not_refresh_status_precedence() {
-        let (_directory_temp, directory) = git_repo_path();
+        let directory = "/repo/project-alpha";
         let mut stale_working = observation(
             "reporter-a",
             "instance-1",
             Some(AgentStatus::Working),
             100,
             Some("Renamed"),
-            &directory,
+            directory,
         );
         stale_working.observed_at = 300;
         let waiting = observation(
@@ -1610,10 +1670,15 @@ mod tests {
             Some(AgentStatus::Waiting),
             200,
             Some("Waiting"),
-            &directory,
+            directory,
         );
 
-        let views = reconcile_resolved_sessions(vec![stale_working, waiting], &[], "default");
+        let views = reconcile_with_fake_workspace_resolver(
+            vec![stale_working, waiting],
+            &[],
+            "default",
+            &[directory],
+        );
 
         assert_eq!(views.len(), 1);
         assert_eq!(views[0].status, AgentStatus::Waiting);
@@ -1672,12 +1737,6 @@ mod tests {
         observation.key.session.session_id = session_id.to_owned();
         observation.target.directory = Some(directory.to_owned());
         observation
-    }
-
-    fn git_repo_path() -> (GitRepoFixture, String) {
-        let fixture = GitRepoFixture::new().expect("Git fixture should be created");
-        let path = fixture.path().display().to_string();
-        (fixture, path)
     }
 
     fn pane_snapshot(

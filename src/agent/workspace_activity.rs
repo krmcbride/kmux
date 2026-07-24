@@ -327,17 +327,11 @@ fn compact_session_id(session_id: &str) -> &str {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
-
-    use anyhow::Result;
-
     use super::*;
     use crate::agent::sessions::{
         AgentTmuxTarget, AgentTmuxUnavailableReason, AgentTmuxWindowCandidate,
     };
     use crate::agent::test_support::resolved_agent_session;
-    use crate::git::test_support::GitRepoFixture;
-    use crate::state::test_support::{StateStoreFixture, observation_state};
 
     #[test]
     fn workspace_activity_uses_repo_branch_title_and_context_labels() {
@@ -435,27 +429,23 @@ mod tests {
     }
 
     #[test]
-    fn tmux_snapshot_failure_keeps_workspace_activity_visible() -> Result<()> {
-        let repo = GitRepoFixture::new()?;
-        let state = StateStoreFixture::new()?;
-        let store = state.store();
-        let mut observation = observation_state();
-        observation.target.directory = Some(repo.path().display().to_string());
-        store.upsert_observation(&observation)?;
-        let tmux = crate::tmux::test_support::disconnected_adapter();
+    fn unavailable_tmux_target_keeps_workspace_activity_visible() {
+        let mut session = session_view();
+        session.tmux_target = AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing);
+        session.target.tmux_session_name = None;
+        session.target.tmux_window_id = None;
+        session.target.tmux_window_name = None;
+        session.target.tmux_pane_id = None;
+        let workspace_key = session.workspace_key().to_owned();
 
-        let activities = workspace_activities(store, &tmux)?;
+        let activities = workspace_activities_from_sessions(vec![session]);
 
         assert_eq!(activities.len(), 1);
-        assert_eq!(
-            activities[0].workspace_key(),
-            fs::canonicalize(repo.path())?.to_string_lossy()
-        );
+        assert_eq!(activities[0].workspace_key(), workspace_key);
         assert!(matches!(
             activities[0].tmux_target(),
             AgentTmuxTarget::Unavailable(AgentTmuxUnavailableReason::Missing)
         ));
-        Ok(())
     }
 
     fn session_view() -> ResolvedAgentSession {

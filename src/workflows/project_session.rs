@@ -48,10 +48,30 @@ struct SelectedSession {
     is_ambient: bool,
 }
 
+#[derive(Debug)]
 struct SessionEvidence {
     session_name: String,
     session_id: String,
     projects: Vec<ProjectIdentity>,
+}
+
+#[derive(Clone)]
+struct WorkspacePaneFacts {
+    pane: TmuxPane,
+    project: Option<ProjectIdentity>,
+    matches_workspace: bool,
+}
+
+trait WorkspaceRemovalSnapshotSource {
+    fn snapshot_workspace_panes(&self, workspace: &Path) -> Result<Vec<WorkspacePaneFacts>>;
+}
+
+impl WorkspaceRemovalSnapshotSource for Tmux {
+    fn snapshot_workspace_panes(&self, workspace: &Path) -> Result<Vec<WorkspacePaneFacts>> {
+        // The adapter read belongs here so every removal evaluation receives a
+        // snapshot taken after project-session resolution and lifecycle locking.
+        Ok(inspect_workspace_panes(self.list_panes()?, workspace))
+    }
 }
 
 /// Resolve the current Git project to one existing tmux session.
@@ -61,7 +81,7 @@ pub(super) fn resolve(paths: &RepoPaths) -> Result<ProjectSessionResolution> {
     let lifecycle_lock = lock_project_lifecycle(paths)?;
     let panes = tmux.list_panes()?;
     let ambient = tmux.current_context_for_session_resolution()?;
-    let evidence = collect_evidence(&panes)?;
+    let evidence = collect_live_evidence(&panes)?;
     let selected = select_session(
         &project,
         &evidence,
@@ -114,71 +134,12 @@ impl ProjectSessionResolution {
         workspace: &Path,
         expected_window_name: &str,
     ) -> Result<Option<String>> {
-        let panes = self.tmux.list_panes()?;
-        let evidence = collect_evidence(&panes)?;
-        let fresh_selected = select_session(&self.project, &evidence, None)?;
-        let original_id = self
-            .selected
-            .as_ref()
-            .map(|session| session.session_id.as_str());
-        let selected_id = fresh_selected
-            .as_ref()
-            .map(|session| session.session_id.as_str());
-        if original_id != selected_id {
-            bail!(
-                "project session topology changed while preparing to remove workspace at {}; retry after tmux settles",
-                workspace.display()
-            );
-        }
-        let mut matching_sessions = BTreeSet::new();
-        let expected_window_ids = panes
-            .iter()
-            .filter(|pane| selected_id == Some(pane.identity.session_id.as_str()))
-            .filter(|pane| pane.placement.window_name == expected_window_name)
-            .map(|pane| pane.identity.window_id.clone())
-            .collect::<BTreeSet<_>>();
-        if expected_window_ids.len() > 1 {
-            let selected_name = fresh_selected
-                .as_ref()
-                .map(|session| session.session_name.as_str())
-                .unwrap_or("<none>");
-            bail!(
-                "tmux session {selected_name:?} has multiple windows named {expected_window_name:?}; close duplicate windows before removing the workspace"
-            );
-        }
-        let expected_window_id = expected_window_ids.into_iter().next();
-
-        for session in &evidence {
-            let has_external_match = panes
-                .iter()
-                .filter(|pane| pane.identity.session_id == session.session_id)
-                .any(|pane| {
-                    if pane.kmux_role.as_deref() == Some("sidebar") {
-                        return false;
-                    }
-                    let matches_workspace =
-                        pane.placement.current_path.as_deref().is_some_and(|path| {
-                            RepoPaths::discover(path)
-                                .is_ok_and(|paths| same_path(&paths.current_worktree, workspace))
-                        });
-                    if !matches_workspace {
-                        return false;
-                    }
-                    selected_id != Some(session.session_id.as_str())
-                        || expected_window_id.as_deref() != Some(pane.identity.window_id.as_str())
-                });
-            if has_external_match {
-                matching_sessions.insert(session.session_name.clone());
-            }
-        }
-
-        if matching_sessions.is_empty() {
-            return Ok(expected_window_id);
-        }
-        bail!(
-            "workspace at {} still has a live tmux pane outside its managed window in: {}; close or move those windows before removing it",
-            workspace.display(),
-            display_session_names(matching_sessions.iter().map(String::as_str))
+        prepare_workspace_removal_from_source(
+            &self.tmux,
+            &self.project,
+            self.selected.as_ref(),
+            workspace,
+            expected_window_name,
         )
     }
 
@@ -192,9 +153,26 @@ impl ProjectSessionResolution {
     }
 }
 
-fn collect_evidence(panes: &[TmuxPane]) -> Result<Vec<SessionEvidence>> {
+fn collect_live_evidence(panes: &[TmuxPane]) -> Result<Vec<SessionEvidence>> {
+    collect_evidence(panes.iter().map(|pane| {
+        let project = if pane.kmux_role.as_deref() == Some("sidebar") {
+            None
+        } else {
+            pane.placement
+                .current_path
+                .as_deref()
+                .and_then(|path| discover_project_identity(path).ok())
+        };
+        (pane, project)
+    }))
+}
+
+/// Aggregate topology from pane records whose project identities were resolved at the edge.
+fn collect_evidence<'a>(
+    pane_projects: impl IntoIterator<Item = (&'a TmuxPane, Option<ProjectIdentity>)>,
+) -> Result<Vec<SessionEvidence>> {
     let mut sessions = HashMap::<String, SessionEvidence>::new();
-    for pane in panes {
+    for (pane, project) in pane_projects {
         let session = sessions
             .entry(pane.identity.session_id.clone())
             .or_insert_with(|| SessionEvidence {
@@ -211,8 +189,7 @@ fn collect_evidence(panes: &[TmuxPane]) -> Result<Vec<SessionEvidence>> {
         if pane.kmux_role.as_deref() == Some("sidebar") {
             continue;
         }
-        if let Some(path) = pane.placement.current_path.as_deref()
-            && let Ok(candidate) = discover_project_identity(path)
+        if let Some(candidate) = project
             && !session.projects.contains(&candidate)
         {
             session.projects.push(candidate);
@@ -231,6 +208,124 @@ fn collect_evidence(panes: &[TmuxPane]) -> Result<Vec<SessionEvidence>> {
             .then_with(|| left.session_id.cmp(&right.session_id))
     });
     Ok(sessions)
+}
+
+fn inspect_workspace_panes(panes: Vec<TmuxPane>, workspace: &Path) -> Vec<WorkspacePaneFacts> {
+    panes
+        .into_iter()
+        .map(|pane| {
+            if pane.kmux_role.as_deref() == Some("sidebar") {
+                return WorkspacePaneFacts {
+                    pane,
+                    project: None,
+                    matches_workspace: false,
+                };
+            }
+
+            let paths = pane
+                .placement
+                .current_path
+                .as_deref()
+                .and_then(|path| RepoPaths::discover(path).ok());
+            let matches_workspace = paths
+                .as_ref()
+                .is_some_and(|paths| same_path(&paths.current_worktree, workspace));
+            let project = paths.and_then(|paths| paths.project_identity().ok());
+            WorkspacePaneFacts {
+                pane,
+                project,
+                matches_workspace,
+            }
+        })
+        .collect()
+}
+
+/// Decide removal safety from one already-refreshed pane snapshot and its resolved facts.
+fn evaluate_workspace_removal(
+    project: &ProjectIdentity,
+    original_selected: Option<&SelectedSession>,
+    workspace: &Path,
+    expected_window_name: &str,
+    panes: &[WorkspacePaneFacts],
+) -> Result<Option<String>> {
+    let evidence = collect_evidence(
+        panes
+            .iter()
+            .map(|facts| (&facts.pane, facts.project.clone())),
+    )?;
+    let fresh_selected = select_session(project, &evidence, None)?;
+    let original_id = original_selected.map(|session| session.session_id.as_str());
+    let selected_id = fresh_selected
+        .as_ref()
+        .map(|session| session.session_id.as_str());
+    if original_id != selected_id {
+        bail!(
+            "project session topology changed while preparing to remove workspace at {} (original selected session id: {original_id:?}, fresh selected session id: {selected_id:?}); retry after tmux settles",
+            workspace.display()
+        );
+    }
+
+    let mut matching_sessions = BTreeSet::new();
+    let expected_window_ids = panes
+        .iter()
+        .map(|facts| &facts.pane)
+        .filter(|pane| selected_id == Some(pane.identity.session_id.as_str()))
+        .filter(|pane| pane.placement.window_name == expected_window_name)
+        .map(|pane| pane.identity.window_id.clone())
+        .collect::<BTreeSet<_>>();
+    if expected_window_ids.len() > 1 {
+        let selected_name = fresh_selected
+            .as_ref()
+            .map(|session| session.session_name.as_str())
+            .unwrap_or("<none>");
+        bail!(
+            "tmux session {selected_name:?} has multiple windows named {expected_window_name:?}; close duplicate windows before removing the workspace"
+        );
+    }
+    let expected_window_id = expected_window_ids.into_iter().next();
+
+    for session in &evidence {
+        let has_external_match = panes
+            .iter()
+            .filter(|facts| facts.pane.identity.session_id == session.session_id)
+            .any(|facts| {
+                let pane = &facts.pane;
+                if pane.kmux_role.as_deref() == Some("sidebar") || !facts.matches_workspace {
+                    return false;
+                }
+                selected_id != Some(session.session_id.as_str())
+                    || expected_window_id.as_deref() != Some(pane.identity.window_id.as_str())
+            });
+        if has_external_match {
+            matching_sessions.insert(session.session_name.clone());
+        }
+    }
+
+    if matching_sessions.is_empty() {
+        return Ok(expected_window_id);
+    }
+    bail!(
+        "workspace at {} still has a live tmux pane outside its managed window in: {}; close or move those windows before removing it",
+        workspace.display(),
+        display_session_names(matching_sessions.iter().map(String::as_str))
+    )
+}
+
+fn prepare_workspace_removal_from_source(
+    source: &impl WorkspaceRemovalSnapshotSource,
+    project: &ProjectIdentity,
+    original_selected: Option<&SelectedSession>,
+    workspace: &Path,
+    expected_window_name: &str,
+) -> Result<Option<String>> {
+    let facts = source.snapshot_workspace_panes(workspace)?;
+    evaluate_workspace_removal(
+        project,
+        original_selected,
+        workspace,
+        expected_window_name,
+        &facts,
+    )
 }
 
 fn select_session(
@@ -294,9 +389,9 @@ fn display_project_roots(projects: &[ProjectIdentity]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
-    use crate::git::test_support::GitRepoFixture;
-    use crate::tmux::test_support::{TmuxFixture, create_test_session};
     use crate::tmux::{TmuxPaneIdentity, TmuxPanePlacement};
 
     fn project(root: &str) -> ProjectIdentity {
@@ -313,21 +408,41 @@ mod tests {
         }
     }
 
-    fn pane(index: u16, path: Option<&Path>, role: Option<&str>) -> TmuxPane {
+    fn pane(
+        session_name: &str,
+        session_id: &str,
+        window_name: &str,
+        window_id: &str,
+        pane_id: &str,
+        path: Option<&str>,
+        role: Option<&str>,
+    ) -> TmuxPane {
         TmuxPane {
             identity: TmuxPaneIdentity {
-                session_id: "$1".to_owned(),
-                window_id: "@1".to_owned(),
-                pane_id: format!("%{index}"),
+                session_id: session_id.to_owned(),
+                window_id: window_id.to_owned(),
+                pane_id: pane_id.to_owned(),
             },
             placement: TmuxPanePlacement {
-                session_name: "project-alpha".to_owned(),
-                window_name: "main".to_owned(),
+                session_name: session_name.to_owned(),
+                window_name: window_name.to_owned(),
                 window_index: "1".to_owned(),
-                pane_index: index.to_string(),
-                current_path: path.map(|path| path.display().to_string()),
+                pane_index: pane_id.trim_start_matches('%').to_owned(),
+                current_path: path.map(str::to_owned),
             },
             kmux_role: role.map(str::to_owned),
+        }
+    }
+
+    struct TestRemovalSnapshotSource {
+        calls: Cell<usize>,
+        facts: Vec<WorkspacePaneFacts>,
+    }
+
+    impl WorkspaceRemovalSnapshotSource for TestRemovalSnapshotSource {
+        fn snapshot_workspace_panes(&self, _workspace: &Path) -> Result<Vec<WorkspacePaneFacts>> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(self.facts.clone())
         }
     }
 
@@ -347,12 +462,21 @@ mod tests {
         let other_ambient = select_session(&target, &sessions, Some("$9"))?
             .expect("unrelated ambient context should not change resolution");
 
-        assert_eq!(detached.session_id, "$1");
-        assert!(!detached.is_ambient);
-        assert_eq!(attached.session_id, detached.session_id);
-        assert!(attached.is_ambient);
-        assert_eq!(other_ambient.session_id, detached.session_id);
-        assert!(!other_ambient.is_ambient);
+        assert_eq!(detached.session_id, "$1", "detached: {detached:?}");
+        assert!(!detached.is_ambient, "detached: {detached:?}");
+        assert_eq!(
+            attached.session_id, detached.session_id,
+            "attached: {attached:?}, detached: {detached:?}"
+        );
+        assert!(attached.is_ambient, "attached: {attached:?}");
+        assert_eq!(
+            other_ambient.session_id, detached.session_id,
+            "other ambient: {other_ambient:?}, detached: {detached:?}"
+        );
+        assert!(
+            !other_ambient.is_ambient,
+            "other ambient: {other_ambient:?}"
+        );
         Ok(())
     }
 
@@ -367,8 +491,14 @@ mod tests {
         let error = select_session(&target, &sessions, Some("$2"))
             .expect_err("ambient context must not override split topology");
         let message = error.to_string();
-        assert!(message.contains("live panes in multiple tmux sessions"));
-        assert!(message.contains("\"alpha\", \"zeta\""));
+        assert!(
+            message.contains("live panes in multiple tmux sessions"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("\"alpha\", \"zeta\""),
+            "unexpected session ordering: {message}"
+        );
     }
 
     #[test]
@@ -380,8 +510,14 @@ mod tests {
         let error = select_session(&target, &sessions, None)
             .expect_err("a mixed-project session should fail closed");
         let message = error.to_string();
-        assert!(message.contains("contains panes from multiple Git projects"));
-        assert!(message.contains("/repo/project-alpha, /repo/project-beta"));
+        assert!(
+            message.contains("contains panes from multiple Git projects"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("/repo/project-alpha, /repo/project-beta"),
+            "unexpected project roots: {message}"
+        );
     }
 
     #[test]
@@ -396,7 +532,7 @@ mod tests {
 
         let selected = select_session(&target, &sessions, None)?
             .expect("unrelated inconsistency should not block the target");
-        assert_eq!(selected.session_id, "$1");
+        assert_eq!(selected.session_id, "$1", "selected: {selected:?}");
         Ok(())
     }
 
@@ -406,113 +542,248 @@ mod tests {
         let other = project("/repo/project-beta");
         let sessions = [evidence("project-beta", "$1", &[other])];
 
-        assert!(select_session(&target, &sessions, None)?.is_none());
-        Ok(())
-    }
-
-    #[test]
-    fn topology_collapses_linked_worktrees_and_ignores_neutral_and_sidebar_panes() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let worktree_base = fixture.root().join("project-alpha__worktrees");
-        let linked = worktree_base.join("feature-auth");
-        std::fs::create_dir(&worktree_base)?;
-        let linked_text = linked
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("linked worktree path should be UTF-8"))?;
-        fixture.git(&["worktree", "add", "-b", "feature/auth", linked_text])?;
-        let other = GitRepoFixture::new()?;
-        let neutral = tempfile::tempdir()?;
-        let panes = vec![
-            pane(1, Some(fixture.path()), None),
-            pane(2, Some(&linked), None),
-            pane(3, Some(neutral.path()), None),
-            pane(4, Some(other.path()), Some("sidebar")),
-        ];
-
-        let topology = collect_evidence(&panes)?;
-        let expected = RepoPaths::discover(fixture.path())?.project_identity()?;
-
-        assert_eq!(topology.len(), 1);
-        assert_eq!(topology[0].projects, vec![expected]);
-        Ok(())
-    }
-
-    #[test]
-    fn topology_detects_two_projects_in_one_session() -> Result<()> {
-        let first = GitRepoFixture::new()?;
-        let second = GitRepoFixture::new()?;
-        let panes = vec![
-            pane(1, Some(first.path()), None),
-            pane(2, Some(second.path()), None),
-        ];
-
-        let topology = collect_evidence(&panes)?;
-
-        assert_eq!(topology[0].projects.len(), 2);
-        Ok(())
-    }
-
-    #[test]
-    fn topology_preserves_linked_window_rows_as_distinct_sessions() -> Result<()> {
-        let repo = GitRepoFixture::new()?;
-        let first = pane(1, Some(repo.path()), None);
-        let mut linked = first.clone();
-        linked.identity.session_id = "$2".to_owned();
-        linked.placement.session_name = "linked-project".to_owned();
-
-        let topology = collect_evidence(&[first, linked])?;
-        let project = RepoPaths::discover(repo.path())?.project_identity()?;
-        let error = select_session(&project, &topology, None)
-            .expect_err("one physical window linked into two sessions must remain ambiguous");
-
+        let selected = select_session(&target, &sessions, None)?;
         assert!(
-            error
-                .to_string()
-                .contains("live panes in multiple tmux sessions")
+            selected.is_none(),
+            "unexpected selected session: {selected:?}"
         );
         Ok(())
     }
 
     #[test]
-    fn removal_check_refreshes_panes_created_after_resolution() -> Result<()> {
-        let repo = GitRepoFixture::new()?;
-        let worktree_base = repo.root().join("project-alpha__worktrees");
-        let workspace = worktree_base.join("feature-auth");
-        std::fs::create_dir(&worktree_base)?;
-        let workspace_text = workspace
-            .to_str()
-            .ok_or_else(|| anyhow::anyhow!("test workspace path should be UTF-8"))?;
-        repo.git(&["worktree", "add", "-b", "feature/auth", workspace_text])?;
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(());
+    fn topology_collapses_linked_worktrees_and_ignores_neutral_and_sidebar_panes() -> Result<()> {
+        let target = project("/repo/project-alpha");
+        let other = project("/repo/project-beta");
+        let main = pane(
+            "project-alpha",
+            "$1",
+            "main",
+            "@1",
+            "%1",
+            Some("/repo/project-alpha"),
+            None,
+        );
+        let linked = pane(
+            "project-alpha",
+            "$1",
+            "feature-sidebar",
+            "@2",
+            "%2",
+            Some("/repo/project-alpha__worktrees/feature-sidebar"),
+            None,
+        );
+        let neutral = pane(
+            "project-alpha",
+            "$1",
+            "notes",
+            "@3",
+            "%3",
+            Some("/scratch/notes"),
+            None,
+        );
+        let sidebar = pane(
+            "project-alpha",
+            "$1",
+            "sidebar",
+            "@4",
+            "%4",
+            Some("/repo/project-beta"),
+            Some("sidebar"),
+        );
+
+        let topology = collect_evidence([
+            (&main, Some(target.clone())),
+            (&linked, Some(target.clone())),
+            (&neutral, None),
+            (&sidebar, Some(other)),
+        ])?;
+
+        assert_eq!(topology.len(), 1, "unexpected topology: {topology:#?}");
+        assert_eq!(
+            topology[0].projects,
+            vec![target],
+            "unexpected topology: {topology:#?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn topology_detects_two_projects_in_one_session() -> Result<()> {
+        let first_project = project("/repo/project-alpha");
+        let second_project = project("/repo/project-beta");
+        let first = pane(
+            "mixed",
+            "$1",
+            "alpha",
+            "@1",
+            "%1",
+            Some("/repo/project-alpha"),
+            None,
+        );
+        let second = pane(
+            "mixed",
+            "$1",
+            "beta",
+            "@2",
+            "%2",
+            Some("/repo/project-beta"),
+            None,
+        );
+
+        let topology = collect_evidence([
+            (&first, Some(first_project)),
+            (&second, Some(second_project)),
+        ])?;
+
+        assert_eq!(topology.len(), 1, "unexpected topology: {topology:#?}");
+        assert_eq!(
+            topology[0].projects.len(),
+            2,
+            "unexpected topology: {topology:#?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn topology_preserves_linked_window_rows_as_distinct_sessions() -> Result<()> {
+        let target = project("/repo/project-alpha");
+        let first = pane(
+            "project-alpha",
+            "$1",
+            "main",
+            "@1",
+            "%1",
+            Some("/repo/project-alpha"),
+            None,
+        );
+        let mut linked = first.clone();
+        linked.identity.session_id = "$2".to_owned();
+        linked.placement.session_name = "linked-project".to_owned();
+
+        let topology = collect_evidence([
+            (&first, Some(target.clone())),
+            (&linked, Some(target.clone())),
+        ])?;
+        let error = select_session(&target, &topology, None)
+            .expect_err("one physical window linked into two sessions must remain ambiguous");
+        let message = error.to_string();
+
+        assert!(
+            message.contains("live panes in multiple tmux sessions"),
+            "unexpected error for topology {topology:#?}: {message}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn removal_preparation_reads_fresh_snapshot_after_resolution() -> Result<()> {
+        let target = project("/repo/project-alpha");
+        let workspace = Path::new("/repo/project-alpha__worktrees/feature-sidebar");
+        let managed = pane(
+            "project-alpha",
+            "$1",
+            "kmux-feature-sidebar",
+            "@1",
+            "%1",
+            Some("/repo/project-alpha__worktrees/feature-sidebar"),
+            None,
+        );
+        let late_external = pane(
+            "project-alpha",
+            "$1",
+            "scratch",
+            "@2",
+            "%2",
+            Some("/repo/project-alpha__worktrees/feature-sidebar"),
+            None,
+        );
+        let source = TestRemovalSnapshotSource {
+            calls: Cell::new(0),
+            facts: vec![
+                WorkspacePaneFacts {
+                    pane: managed,
+                    project: Some(target.clone()),
+                    matches_workspace: true,
+                },
+                WorkspacePaneFacts {
+                    pane: late_external,
+                    project: Some(target.clone()),
+                    matches_workspace: true,
+                },
+            ],
         };
-        create_test_session(&fixture.tmux, "primary", repo.path())?;
-        let primary = fixture
-            .tmux
-            .list_panes()?
-            .into_iter()
-            .find(|pane| pane.placement.session_name == "primary")
-            .ok_or_else(|| anyhow::anyhow!("expected primary test session"))?;
-        let resolution = ProjectSessionResolution {
-            tmux: fixture.tmux.clone(),
-            project: RepoPaths::discover(repo.path())?.project_identity()?,
-            selected: Some(SelectedSession {
-                session_name: primary.placement.session_name,
-                session_id: primary.identity.session_id,
-                is_ambient: false,
-            }),
-            lifecycle_lock: WorkspaceStateStore::new(
-                &RepoPaths::discover(repo.path())?.git_common_dir,
-            )
-            .lock_lifecycle()?,
+        let original_selected = SelectedSession {
+            session_name: "project-alpha".to_owned(),
+            session_id: "$1".to_owned(),
+            is_ambient: false,
         };
 
-        create_test_session(&fixture.tmux, "late-external", &workspace)?;
+        let error = prepare_workspace_removal_from_source(
+            &source,
+            &target,
+            Some(&original_selected),
+            workspace,
+            "kmux-feature-sidebar",
+        )
+        .expect_err("the fresh snapshot should expose the late external pane");
+        assert_eq!(source.calls.get(), 1, "fresh snapshot call count");
+        let message = error.to_string();
+        assert!(
+            message.contains("outside its managed window"),
+            "unexpected error: {message}"
+        );
+        assert!(
+            message.contains("\"project-alpha\""),
+            "missing observed session in error: {message}"
+        );
+        assert!(
+            message.contains(&workspace.display().to_string()),
+            "missing workspace path in error: {message}"
+        );
+        Ok(())
+    }
 
-        let error = resolution
-            .prepare_workspace_removal(&workspace, "kmux-feature-auth")
-            .expect_err("fresh removal scan should detect a newly-created external pane");
-        assert!(error.to_string().contains("late-external"));
+    #[test]
+    fn removal_policy_reports_original_and_fresh_selected_session_ids() -> Result<()> {
+        let target = project("/repo/project-alpha");
+        let workspace = Path::new("/repo/project-alpha__worktrees/feature-sidebar");
+        let fresh = pane(
+            "replacement",
+            "$2",
+            "kmux-feature-sidebar",
+            "@2",
+            "%2",
+            Some("/repo/project-alpha__worktrees/feature-sidebar"),
+            None,
+        );
+        let fresh_facts = [WorkspacePaneFacts {
+            pane: fresh,
+            project: Some(target.clone()),
+            matches_workspace: true,
+        }];
+        let original_selected = SelectedSession {
+            session_name: "original".to_owned(),
+            session_id: "$1".to_owned(),
+            is_ambient: false,
+        };
+
+        let error = evaluate_workspace_removal(
+            &target,
+            Some(&original_selected),
+            workspace,
+            "kmux-feature-sidebar",
+            &fresh_facts,
+        )
+        .expect_err("a changed selected session should fail closed");
+        let message = error.to_string();
+        assert!(
+            message.contains("original selected session id: Some(\"$1\")"),
+            "missing original selection in error: {message}"
+        );
+        assert!(
+            message.contains("fresh selected session id: Some(\"$2\")"),
+            "missing fresh selection in error: {message}"
+        );
         Ok(())
     }
 }

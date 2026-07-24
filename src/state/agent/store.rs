@@ -235,7 +235,7 @@ impl StateStore {
     }
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "internal-adapter-contract-tests"))]
 pub(super) fn state_store_with_path(base_path: impl Into<PathBuf>) -> Result<StateStore> {
     StateStore::with_path(base_path)
 }

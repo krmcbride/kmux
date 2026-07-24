@@ -11,6 +11,14 @@ pub use agent::{
     AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey, AgentStatus,
     StateStore, next_observation_timing, now_unix_seconds,
 };
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+/// Crate-wide exception for opening an owned state root from sidebar contracts.
+pub(crate) fn contract_store_with_path(
+    base_path: impl Into<std::path::PathBuf>,
+) -> anyhow::Result<StateStore> {
+    agent::test_support::store_with_path(base_path)
+}
 #[cfg(test)]
 pub mod test_support {
     pub use super::agent::test_support::observation_state;

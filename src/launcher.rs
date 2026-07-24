@@ -91,7 +91,7 @@ impl PendingLaunch {
         Self::create_in_directory(launcher, cwd, directory)
     }
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "internal-adapter-contract-tests"))]
     fn create_under(launcher: &ResolvedLauncher, cwd: &Path, base: &Path) -> Result<Self> {
         validate_resolved_launcher(launcher, cwd)?;
         let directory = create_request_directory_under(base)?;
@@ -261,6 +261,11 @@ fn run_ingress_inner(request_path: &Path, own_signals: bool) -> Result<i32> {
     #[cfg(not(unix))]
     let _ = own_signals;
 
+    if cfg!(test) {
+        bail!(
+            "launcher child processes are unavailable in library unit tests; use an adapter contract target"
+        );
+    }
     let mut command = Command::new(&request.executable);
     command
         .args(&request.static_args)
@@ -295,7 +300,7 @@ fn run_ingress_inner(request_path: &Path, own_signals: bool) -> Result<i32> {
     Ok(shell_exit_code(status))
 }
 
-#[cfg(test)]
+#[cfg(any(test, feature = "internal-adapter-contract-tests"))]
 fn run_ingress_for_test(request_path: &Path) -> Result<i32> {
     run_ingress_inner(request_path, false)
 }
@@ -796,69 +801,6 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn request_round_trip_preserves_exact_argv_and_cleans_up() -> Result<()> {
-        let cwd = tempfile::tempdir()?;
-        let output = cwd.path().join("argv");
-        let output_arg = output.display().to_string();
-        let input = " spaces ' quotes \" Unicode λ\n--leading ;$() * > sentinel ";
-        let launcher = resolved(
-            "/bin/sh",
-            &[
-                "-c",
-                "output=$1; shift; printf '%s\\0' \"$@\" > \"$output\"",
-                "launcher",
-                &output_arg,
-                "static two words",
-                "",
-                "--static",
-            ],
-            Some(input),
-        );
-        let pending = create_pending(&launcher, cwd.path())?;
-        let request_path = pending.request_path.clone();
-        let directory = request_path.parent().expect("request parent").to_path_buf();
-        let ingress_path = request_path;
-        let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
-
-        pending.wait_for_spawn()?;
-        assert_eq!(ingress.join().expect("ingress thread")?, 0);
-        assert!(!directory.exists());
-        let bytes = fs::read(output)?;
-        let mut argv = bytes
-            .split(|byte| *byte == 0)
-            .map(|argument| String::from_utf8(argument.to_vec()))
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        if argv.last().is_some_and(String::is_empty) {
-            argv.pop();
-        }
-        assert_eq!(argv, ["static two words", "", "--static", input]);
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn absent_and_empty_input_remain_distinct() -> Result<()> {
-        for (input, expected_count) in [(None, "0"), (Some(""), "1")] {
-            let cwd = tempfile::tempdir()?;
-            let output = cwd.path().join("count");
-            let script = format!(
-                "printf '%s' \"$#\" > {}",
-                shell_quote(&output.display().to_string())
-            );
-            let launcher = resolved("/bin/sh", &["-c", &script, "launcher"], input);
-            let pending = create_pending(&launcher, cwd.path())?;
-            let ingress_path = pending.request_path.clone();
-            let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
-
-            pending.wait_for_spawn()?;
-            assert_eq!(ingress.join().expect("ingress thread")?, 0);
-            assert_eq!(fs::read_to_string(output)?, expected_count);
-        }
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
     fn request_paths_are_private_atomic_and_unique() -> Result<()> {
         use std::os::unix::fs::MetadataExt;
 
@@ -903,31 +845,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn concurrent_requests_do_not_collide_or_cross_acknowledgments() -> Result<()> {
-        let cwd = tempfile::tempdir()?;
-        let launcher = resolved("/bin/sh", &["-c", "exit 0"], None);
-        let pending = (0..8)
-            .map(|_| create_pending(&launcher, cwd.path()))
-            .collect::<Result<Vec<_>>>()?;
-        let ingress = pending
-            .iter()
-            .map(|pending| {
-                let path = pending.request_path.clone();
-                thread::spawn(move || run_ingress_for_test(&path))
-            })
-            .collect::<Vec<_>>();
-
-        for launch in pending {
-            launch.wait_for_spawn()?;
-        }
-        for ingress in ingress {
-            assert_eq!(ingress.join().expect("ingress thread")?, 0);
-        }
-        Ok(())
-    }
-
     #[test]
     fn ingress_command_contains_only_controlled_capability_data() -> Result<()> {
         let cwd = tempfile::tempdir()?;
@@ -943,34 +860,6 @@ mod tests {
         assert!(!command.contains(sentinel));
         assert!(!command.contains("static-sentinel"));
         assert!(!command.contains("example-command"));
-        Ok(())
-    }
-
-    #[test]
-    fn spawn_failure_acknowledgment_and_diagnostics_are_sanitized() -> Result<()> {
-        let cwd = tempfile::tempdir()?;
-        let command_sentinel = "missing-command-sentinel";
-        let input_sentinel = "opaque-input-sentinel";
-        let pending = create_pending(
-            &resolved(command_sentinel, &[], Some(input_sentinel)),
-            cwd.path(),
-        )?;
-        let ingress_path = pending.request_path.clone();
-        let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
-
-        let parent_error = pending
-            .wait_for_spawn()
-            .expect_err("spawn failure should be acknowledged")
-            .to_string();
-        let ingress_error = ingress
-            .join()
-            .expect("ingress thread")
-            .expect_err("ingress should fail")
-            .to_string();
-        for message in [parent_error, ingress_error] {
-            assert!(!message.contains(command_sentinel));
-            assert!(!message.contains(input_sentinel));
-        }
         Ok(())
     }
 
@@ -1088,45 +977,6 @@ mod tests {
         Ok(())
     }
 
-    #[cfg(unix)]
-    #[test]
-    fn acknowledgment_delivery_failure_keeps_waiting_and_leaves_spawn_state_unknown() -> Result<()>
-    {
-        let cwd = tempfile::tempdir()?;
-        let marker = cwd.path().join("launcher-ran");
-        let script = format!("touch {}", shell_quote(&marker.display().to_string()));
-        let pending = create_pending(&resolved("/bin/sh", &["-c", &script], None), cwd.path())?;
-        fs::create_dir(
-            pending
-                .request_path
-                .parent()
-                .expect("request parent")
-                .join(ACK_TEMP_FILE),
-        )?;
-        let ingress_path = pending.request_path.clone();
-        let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
-
-        let error = pending
-            .wait_for_spawn_timeouts(Duration::from_millis(200), Duration::from_millis(50))
-            .expect_err("missing acknowledgment should time out");
-        assert!(
-            error
-                .to_string()
-                .contains("waiting for launcher process spawn acknowledgment")
-        );
-        let ingress_error = ingress
-            .join()
-            .expect("ingress thread")
-            .expect_err("acknowledgment delivery should fail after child reaping");
-        assert!(
-            ingress_error
-                .to_string()
-                .contains("failed to deliver launcher process spawn acknowledgment")
-        );
-        assert!(marker.exists());
-        Ok(())
-    }
-
     #[test]
     fn malformed_acknowledgment_is_rejected_and_cleaned_up() -> Result<()> {
         let cwd = tempfile::tempdir()?;
@@ -1145,26 +995,6 @@ mod tests {
             .expect_err("malformed acknowledgment should fail");
         drop(pending);
         assert!(!directory.exists());
-        Ok(())
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn relative_executable_paths_resolve_from_launcher_cwd() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-
-        let cwd = tempfile::tempdir()?;
-        let marker = cwd.path().join("relative-ran");
-        let executable = cwd.path().join("relative-launcher");
-        fs::write(&executable, "#!/bin/sh\ntouch relative-ran\n")?;
-        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
-        let pending = create_pending(&resolved("./relative-launcher", &[], None), cwd.path())?;
-        let ingress_path = pending.request_path.clone();
-        let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
-
-        pending.wait_for_spawn()?;
-        assert_eq!(ingress.join().expect("ingress thread")?, 0);
-        assert!(marker.exists());
         Ok(())
     }
 
@@ -1204,6 +1034,217 @@ mod tests {
 
         assert!(!stale.exists());
         assert!(foreign.exists());
+        Ok(())
+    }
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub mod contract_tests {
+    use super::*;
+
+    fn resolved(
+        executable: impl Into<String>,
+        args: &[&str],
+        input: Option<&str>,
+    ) -> ResolvedLauncher {
+        ResolvedLauncher {
+            name: "example-launcher".to_owned(),
+            executable: executable.into(),
+            static_args: args.iter().map(|argument| (*argument).to_owned()).collect(),
+            input: input.map(str::to_owned),
+        }
+    }
+
+    fn create_pending(launcher: &ResolvedLauncher, cwd: &Path) -> Result<PendingLaunch> {
+        PendingLaunch::create_under(launcher, cwd, &cwd.join("launcher-state"))
+    }
+
+    fn join_ingress(ingress: thread::JoinHandle<Result<i32>>) -> Result<i32> {
+        ingress
+            .join()
+            .map_err(|_| anyhow::anyhow!("launcher ingress thread panicked"))?
+    }
+
+    fn expected_error<T>(result: Result<T>, expectation: &str) -> Result<anyhow::Error> {
+        match result {
+            Ok(_) => bail!("{expectation}"),
+            Err(error) => Ok(error),
+        }
+    }
+
+    #[cfg(unix)]
+    pub fn request_round_trip_preserves_exact_argv_and_cleans_up() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let output = cwd.path().join("argv");
+        let output_arg = output.display().to_string();
+        let input = " spaces ' quotes \" Unicode λ\n--leading ;$() * > sentinel ";
+        let launcher = resolved(
+            "/bin/sh",
+            &[
+                "-c",
+                "output=$1; shift; printf '%s\\0' \"$@\" > \"$output\"",
+                "launcher",
+                &output_arg,
+                "static two words",
+                "",
+                "--static",
+            ],
+            Some(input),
+        );
+        let pending = create_pending(&launcher, cwd.path())?;
+        let request_path = pending.request_path.clone();
+        let directory = request_path
+            .parent()
+            .context("launcher request should have a parent")?
+            .to_path_buf();
+        let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
+
+        pending.wait_for_spawn()?;
+        assert_eq!(join_ingress(ingress)?, 0);
+        assert!(!directory.exists());
+        let bytes = fs::read(output)?;
+        let mut argv = bytes
+            .split(|byte| *byte == 0)
+            .map(|argument| String::from_utf8(argument.to_vec()))
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        if argv.last().is_some_and(String::is_empty) {
+            argv.pop();
+        }
+        assert_eq!(argv, ["static two words", "", "--static", input]);
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub fn absent_and_empty_input_remain_distinct() -> Result<()> {
+        for (input, expected_count) in [(None, "0"), (Some(""), "1")] {
+            let cwd = tempfile::tempdir()?;
+            let output = cwd.path().join("count");
+            let script = format!(
+                "printf '%s' \"$#\" > {}",
+                shell_quote(&output.display().to_string())
+            );
+            let launcher = resolved("/bin/sh", &["-c", &script, "launcher"], input);
+            let pending = create_pending(&launcher, cwd.path())?;
+            let request_path = pending.request_path.clone();
+            let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
+
+            pending.wait_for_spawn()?;
+            assert_eq!(join_ingress(ingress)?, 0);
+            assert_eq!(fs::read_to_string(output)?, expected_count);
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub fn concurrent_requests_do_not_collide_or_cross_acknowledgments() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let launcher = resolved("/bin/sh", &["-c", "exit 0"], None);
+        let pending = (0..8)
+            .map(|_| create_pending(&launcher, cwd.path()))
+            .collect::<Result<Vec<_>>>()?;
+        let ingress = pending
+            .iter()
+            .map(|pending| {
+                let path = pending.request_path.clone();
+                thread::spawn(move || run_ingress_for_test(&path))
+            })
+            .collect::<Vec<_>>();
+
+        for launch in pending {
+            launch.wait_for_spawn()?;
+        }
+        for ingress in ingress {
+            assert_eq!(join_ingress(ingress)?, 0);
+        }
+        Ok(())
+    }
+
+    pub fn spawn_failure_acknowledgment_and_diagnostics_are_sanitized() -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let missing = cwd.path().join("missing-launcher");
+        let command_sentinel = missing.display().to_string();
+        let input_sentinel = "opaque-input-sentinel";
+        let pending = create_pending(
+            &resolved(&command_sentinel, &[], Some(input_sentinel)),
+            cwd.path(),
+        )?;
+        let request_path = pending.request_path.clone();
+        let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
+
+        let parent_error = expected_error(
+            pending.wait_for_spawn(),
+            "spawn failure should be acknowledged",
+        )?
+        .to_string();
+        let ingress_error = expected_error(
+            ingress
+                .join()
+                .map_err(|_| anyhow::anyhow!("launcher ingress thread panicked"))?,
+            "ingress should fail",
+        )?
+        .to_string();
+        for message in [parent_error, ingress_error] {
+            assert!(!message.contains(&command_sentinel));
+            assert!(!message.contains(input_sentinel));
+        }
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub fn acknowledgment_delivery_failure_keeps_waiting_and_leaves_spawn_state_unknown()
+    -> Result<()> {
+        let cwd = tempfile::tempdir()?;
+        let marker = cwd.path().join("launcher-ran");
+        let script = format!("touch {}", shell_quote(&marker.display().to_string()));
+        let pending = create_pending(&resolved("/bin/sh", &["-c", &script], None), cwd.path())?;
+        let request_parent = pending
+            .request_path
+            .parent()
+            .context("launcher request should have a parent")?;
+        fs::create_dir(request_parent.join(ACK_TEMP_FILE))?;
+        let request_path = pending.request_path.clone();
+        let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
+
+        let error = expected_error(
+            pending.wait_for_spawn_timeouts(Duration::from_millis(200), Duration::from_millis(50)),
+            "missing acknowledgment should time out",
+        )?;
+        assert!(
+            error
+                .to_string()
+                .contains("waiting for launcher process spawn acknowledgment")
+        );
+        let ingress_error = expected_error(
+            ingress
+                .join()
+                .map_err(|_| anyhow::anyhow!("launcher ingress thread panicked"))?,
+            "acknowledgment delivery should fail after child reaping",
+        )?;
+        assert!(
+            ingress_error
+                .to_string()
+                .contains("failed to deliver launcher process spawn acknowledgment")
+        );
+        assert!(marker.exists());
+        Ok(())
+    }
+
+    #[cfg(unix)]
+    pub fn relative_executable_paths_resolve_from_launcher_cwd() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let cwd = tempfile::tempdir()?;
+        let marker = cwd.path().join("relative-ran");
+        let executable = cwd.path().join("relative-launcher");
+        fs::write(&executable, "#!/bin/sh\ntouch relative-ran\n")?;
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o700))?;
+        let pending = create_pending(&resolved("./relative-launcher", &[], None), cwd.path())?;
+        let request_path = pending.request_path.clone();
+        let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
+
+        pending.wait_for_spawn()?;
+        assert_eq!(join_ingress(ingress)?, 0);
+        assert!(marker.exists());
         Ok(())
     }
 }

@@ -71,6 +71,13 @@ impl AgentWorkspaceResolver {
 }
 
 fn resolve_path(path: &str) -> Option<AgentWorkspaceAttachment> {
+    resolve_path_with(path, |resolved| Git::new(resolved).worktree_root())
+}
+
+fn resolve_path_with(
+    path: &str,
+    worktree_root: impl FnOnce(&Path) -> anyhow::Result<PathBuf>,
+) -> Option<AgentWorkspaceAttachment> {
     let (result, elapsed_ms) = telemetry::timed(|| {
         let Some(resolved) = normalize_existing(Path::new(path)) else {
             return WorkspaceResolveTelemetry::unattached("missing");
@@ -79,7 +86,7 @@ fn resolve_path(path: &str) -> Option<AgentWorkspaceAttachment> {
             return WorkspaceResolveTelemetry::unattached("not_dir");
         }
 
-        match Git::new(&resolved).worktree_root() {
+        match worktree_root(&resolved) {
             Ok(root) => WorkspaceResolveTelemetry::attached(attachment(path, root)),
             Err(_) => WorkspaceResolveTelemetry::unattached("not_git"),
         }
@@ -146,93 +153,19 @@ fn clean_path(path: &str) -> Option<&str> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::test_support::GitRepoFixture;
     use anyhow::Result;
     use std::fs;
     use tempfile::TempDir;
 
     #[test]
-    fn repo_root_resolves_to_canonical_git_worktree_root() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let repo = fixture.path();
-        let mut resolver = AgentWorkspaceResolver::default();
-
-        let attachment = resolver
-            .attachment_for_path(&repo.display().to_string())
-            .expect("repo root should resolve");
-
-        assert_eq!(
-            attachment.path(),
-            repo.canonicalize()?.display().to_string()
-        );
-        assert_eq!(attachment.reported_path(), repo.display().to_string());
-        Ok(())
-    }
-
-    #[test]
-    fn subdirectory_resolves_to_git_worktree_root() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let repo = fixture.path();
-        let nested = repo.join("src/bin");
-        fs::create_dir_all(&nested)?;
-        let mut resolver = AgentWorkspaceResolver::default();
-
-        let attachment = resolver
-            .attachment_for_path(&nested.display().to_string())
-            .expect("repo subdirectory should resolve");
-
-        assert_eq!(
-            attachment.path(),
-            repo.canonicalize()?.display().to_string()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn linked_worktree_root_is_distinct_from_main_root() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let repo = fixture.path();
-        let worktree = fixture.root().join("project-alpha__worktrees/feature");
-        fs::create_dir_all(worktree.parent().expect("worktree should have parent"))?;
-        fixture.git(&[
-            "worktree",
-            "add",
-            "-b",
-            "feature",
-            worktree.to_str().unwrap(),
-        ])?;
-        let mut resolver = AgentWorkspaceResolver::default();
-
-        let main = resolver
-            .attachment_for_path(&repo.display().to_string())
-            .expect("main root should resolve");
-        let linked = resolver
-            .attachment_for_path(&worktree.display().to_string())
-            .expect("linked worktree should resolve");
-
-        assert_ne!(main.key(), linked.key());
-        assert_eq!(
-            linked.path(),
-            worktree.canonicalize()?.display().to_string()
-        );
-        Ok(())
-    }
-
-    #[test]
-    fn missing_and_non_git_directories_do_not_attach() -> Result<()> {
+    fn missing_path_does_not_attach() -> Result<()> {
         let temp = TempDir::new()?;
-        let non_git = temp.path().join("plain");
-        fs::create_dir(&non_git)?;
+        let missing = temp.path().join("missing");
         let mut resolver = AgentWorkspaceResolver::default();
 
         assert!(
             resolver
-                .attachment_for_path(&non_git.display().to_string())
-                .is_none()
-        );
-        assert!(
-            resolver
-                .attachment_for_path("/tmp/does-not-exist/kmux-agent")
+                .attachment_for_path(&missing.display().to_string())
                 .is_none()
         );
         Ok(())
@@ -250,6 +183,93 @@ mod tests {
                 .attachment_for_path(&file.display().to_string())
                 .is_none()
         );
+        Ok(())
+    }
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub mod contract_tests {
+    use std::fs;
+
+    use anyhow::Result;
+
+    use crate::git::contract_support::GitRepoFixture;
+
+    use super::*;
+
+    pub fn repo_root_resolves_to_canonical_git_worktree_root() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let reported = repo.display().to_string();
+        let attachment =
+            resolve_path_with(&reported, |path| fixture.adapter_at(path).worktree_root())
+                .ok_or_else(|| anyhow::anyhow!("repo root should resolve"))?;
+
+        assert_eq!(
+            attachment.path(),
+            repo.canonicalize()?.display().to_string()
+        );
+        assert_eq!(attachment.reported_path(), reported);
+        Ok(())
+    }
+
+    pub fn subdirectory_resolves_to_git_worktree_root() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let nested = repo.join("src/bin");
+        fs::create_dir_all(&nested)?;
+        let attachment = resolve_path_with(&nested.display().to_string(), |path| {
+            fixture.adapter_at(path).worktree_root()
+        })
+        .ok_or_else(|| anyhow::anyhow!("repo subdirectory should resolve"))?;
+
+        assert_eq!(
+            attachment.path(),
+            repo.canonicalize()?.display().to_string()
+        );
+        Ok(())
+    }
+
+    pub fn linked_worktree_root_is_distinct_from_main_root() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let worktree = fixture.root().join("project-alpha__worktrees/feature");
+        let worktree_parent = worktree
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("worktree should have a parent"))?;
+        fs::create_dir_all(worktree_parent)?;
+        let worktree_text = worktree
+            .to_str()
+            .ok_or_else(|| anyhow::anyhow!("test worktree path should be UTF-8"))?;
+        fixture.git(&["worktree", "add", "-b", "feature", worktree_text])?;
+
+        let main = resolve_path_with(&repo.display().to_string(), |path| {
+            fixture.adapter_at(path).worktree_root()
+        })
+        .ok_or_else(|| anyhow::anyhow!("main root should resolve"))?;
+        let linked = resolve_path_with(&worktree.display().to_string(), |path| {
+            fixture.adapter_at(path).worktree_root()
+        })
+        .ok_or_else(|| anyhow::anyhow!("linked worktree should resolve"))?;
+
+        assert_ne!(main.key(), linked.key());
+        assert_eq!(
+            linked.path(),
+            worktree.canonicalize()?.display().to_string()
+        );
+        Ok(())
+    }
+
+    pub fn non_git_directory_does_not_attach() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let plain = fixture.root().join("plain");
+        fs::create_dir(&plain)?;
+
+        let attachment = resolve_path_with(&plain.display().to_string(), |path| {
+            fixture.adapter_at(path).worktree_root()
+        });
+
+        assert!(attachment.is_none());
         Ok(())
     }
 }

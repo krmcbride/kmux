@@ -22,11 +22,16 @@
             version = self.shortRev or self.dirtyShortRev or "dev";
             src = ./.;
             cargoLock.lockFile = ./Cargo.lock;
+            checkFeatures = [
+              "internal-adapter-contract-tests"
+            ];
             nativeBuildInputs = [
               pkgs.installShellFiles
               pkgs.makeWrapper
             ];
             nativeCheckInputs = [
+              pkgs.bash
+              pkgs.coreutils
               pkgs.fish
               pkgs.git
               pkgs.tmux

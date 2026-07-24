@@ -89,7 +89,10 @@ pub fn path_basename(path: &str) -> Option<String> {
 }
 
 fn discover_repo_paths(cwd: &Path) -> Result<RepoPaths> {
-    let git = Git::new(cwd);
+    discover_repo_paths_with_git(Git::new(cwd))
+}
+
+fn discover_repo_paths_with_git(git: Git) -> Result<RepoPaths> {
     let repo_info = git.repo_info()?;
     let current_worktree = repo_info.current_worktree;
     let git_common_dir = repo_info.git_common_dir;
@@ -183,7 +186,6 @@ fn normalize_existing(path: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::test_support::GitRepoFixture;
 
     #[test]
     fn default_worktree_base_is_sibling_project_worktrees_dir() -> Result<()> {
@@ -194,12 +196,18 @@ mod tests {
         assert_eq!(base, PathBuf::from("/tmp/example/project__worktrees"));
         Ok(())
     }
+}
 
-    #[test]
-    fn discovers_paths_from_primary_worktree() -> Result<()> {
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub mod contract_tests {
+    use crate::git::contract_support::GitRepoFixture;
+
+    use super::*;
+
+    pub fn discovers_paths_from_primary_worktree() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
         let repo = fixture.path();
-        let paths = RepoPaths::discover(repo)?;
+        let paths = discover_repo_paths_with_git(fixture.adapter())?;
         let parent = paths
             .current_worktree
             .parent()
@@ -218,8 +226,7 @@ mod tests {
         Ok(())
     }
 
-    #[test]
-    fn discovers_main_worktree_from_linked_worktree() -> Result<()> {
+    pub fn discovers_main_worktree_from_linked_worktree() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
         let repo = fixture.path();
         let worktree_base = fixture.root().join("project-alpha__worktrees");
@@ -230,29 +237,29 @@ mod tests {
             .ok_or_else(|| anyhow::anyhow!("linked worktree path is not valid UTF-8"))?;
         fixture.git(&["worktree", "add", "-b", "feature/auth", linked_str])?;
 
-        let paths = RepoPaths::discover(&linked)?;
+        let paths = discover_repo_paths_with_git(fixture.adapter_at(&linked))?;
+        let primary = discover_repo_paths_with_git(fixture.adapter())?;
 
         assert_eq!(paths.current_worktree, linked);
         assert_eq!(paths.main_worktree, repo);
         assert_eq!(paths.worktree_base_dir, worktree_base);
-        assert_eq!(
-            paths.project_identity()?,
-            RepoPaths::discover(repo)?.project_identity()?
-        );
+        assert_eq!(paths.project_identity()?, primary.project_identity()?);
         Ok(())
     }
 
-    #[test]
-    fn project_identity_matches_subdirectories_but_not_other_repositories() -> Result<()> {
+    pub fn project_identity_matches_subdirectories_but_not_other_repositories() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
         let nested = fixture.path().join("src");
         std::fs::create_dir(&nested)?;
         let other = GitRepoFixture::new()?;
-        let project = RepoPaths::discover(fixture.path())?.project_identity()?;
+        let project = discover_repo_paths_with_git(fixture.adapter())?.project_identity()?;
+        let nested_project =
+            discover_repo_paths_with_git(fixture.adapter_at(&nested))?.project_identity()?;
+        let other_project = discover_repo_paths_with_git(other.adapter())?.project_identity()?;
 
         assert_eq!(project.main_worktree(), fixture.path());
-        assert_eq!(discover_project_identity(&nested)?, project);
-        assert_ne!(discover_project_identity(other.path())?, project);
+        assert_eq!(nested_project, project);
+        assert_ne!(other_project, project);
         Ok(())
     }
 }

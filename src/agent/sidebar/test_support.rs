@@ -1,39 +1,281 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
+use std::rc::Rc;
 
-use anyhow::Result;
-use tempfile::{TempDir, tempdir};
+use anyhow::{Result, anyhow};
 
 use crate::agent::sessions::{
     AgentTmuxTarget, AgentTmuxWindowCandidate, ResolvedAgentSession, ResolvedAgentWorkspace,
 };
 use crate::agent::sidebar::model::{SidebarIcons, SidebarRow, build_rows_with_working_icon};
-use crate::agent::sidebar::selection::{
-    SELECTED_TARGET_OPTION, decode_selected_target, encode_selected_target,
-};
 use crate::agent::test_support::resolved_agent_session;
 use crate::agent::workspace_activity::{WorkspaceActivity, workspace_activities_from_sessions};
 use crate::config::{DEFAULT_SIDEBAR_IDLE_AFTER_SECONDS, StatusIcons};
-use crate::state::test_support::StateStoreFixture;
-use crate::state::{AgentSessionKey, AgentStatus, StateStore};
-use crate::tmux::Tmux;
-use crate::tmux::test_support::{TmuxFixture, create_test_session};
+use crate::state::{AgentSessionKey, AgentStatus};
+use crate::tmux::TmuxPaneVisibility;
 
+use super::actions::{
+    SidebarDeleteWorkspaceRowIntent, SidebarDeleteWorkspaceRowOutcome, SidebarJumpExecution,
+    SidebarJumpFailure, SidebarJumpIntent, SidebarJumpOutcome,
+};
 use super::app::SidebarApp;
 use super::model::SidebarRowIdentity;
+use super::rows::{SidebarRefreshRowsIntent, SidebarRowsSnapshot};
 
 /// Sleeping icon used by sidebar tests to assert idle-row rendering.
 pub(super) const TEST_SLEEPING_ICON: &str = "z";
 
-/// Sidebar app test harness that owns its temporary state for the app lifetime.
+/// In-memory row source for sidebar application and presentation tests.
+pub(super) struct TestSidebarRows {
+    state: Rc<RefCell<TestSidebarRowsState>>,
+}
+
+/// Controls the next row-source observations returned to a sidebar app test.
+#[derive(Clone)]
+pub(super) struct TestSidebarRowsControl {
+    state: Rc<RefCell<TestSidebarRowsState>>,
+}
+
+struct TestSidebarRowsState {
+    visibility: TmuxPaneVisibility,
+    rows: Vec<SidebarRow>,
+    next_error: Option<String>,
+}
+
+impl TestSidebarRows {
+    /// Create a row source and a control handle sharing the same in-memory state.
+    pub fn new(rows: Vec<SidebarRow>) -> (Self, TestSidebarRowsControl) {
+        let state = Rc::new(RefCell::new(TestSidebarRowsState {
+            visibility: TmuxPaneVisibility {
+                pane_has_focus: false,
+                window_visible: true,
+            },
+            rows,
+            next_error: None,
+        }));
+        (
+            Self {
+                state: Rc::clone(&state),
+            },
+            TestSidebarRowsControl { state },
+        )
+    }
+
+    /// Return the configured pane visibility observation.
+    pub fn visibility(&self) -> TmuxPaneVisibility {
+        self.state.borrow().visibility
+    }
+
+    /// Return configured rows or the next injected refresh error.
+    pub fn load(
+        &self,
+        _intent: SidebarRefreshRowsIntent<'_>,
+        visibility: TmuxPaneVisibility,
+    ) -> Result<SidebarRowsSnapshot> {
+        let mut state = self.state.borrow_mut();
+        if let Some(error) = state.next_error.take() {
+            return Err(anyhow!(error));
+        }
+        let rows = state.rows.clone();
+        let activity_count = rows.len();
+        Ok(SidebarRowsSnapshot {
+            visibility,
+            rows,
+            activity_count,
+        })
+    }
+}
+
+impl TestSidebarRowsControl {
+    /// Set pane focus and window visibility for the next refresh.
+    pub fn set_visibility(&self, visibility: TmuxPaneVisibility) {
+        self.state.borrow_mut().visibility = visibility;
+    }
+
+    /// Replace the rows returned by subsequent successful refreshes.
+    pub fn set_rows(&self, rows: Vec<SidebarRow>) {
+        self.state.borrow_mut().rows = rows;
+    }
+
+    /// Make the next refresh fail with the provided message.
+    pub fn fail_next_refresh(&self, error: impl Into<String>) {
+        self.state.borrow_mut().next_error = Some(error.into());
+    }
+}
+
+/// In-memory action service for sidebar application and presentation tests.
+pub(super) struct TestSidebarActions {
+    state: Rc<RefCell<TestSidebarActionsState>>,
+}
+
+/// Controls action outcomes and persisted selections for a sidebar app test.
+#[derive(Clone)]
+pub(super) struct TestSidebarActionsControl {
+    state: Rc<RefCell<TestSidebarActionsState>>,
+}
+
+enum TestSelectionOption {
+    Valid(SidebarRowIdentity),
+    Malformed,
+}
+
+#[derive(Default)]
+struct TestSidebarActionsState {
+    selection_options: HashMap<String, TestSelectionOption>,
+    next_jump: Option<SidebarJumpExecution>,
+    next_delete_error: Option<String>,
+}
+
+impl TestSidebarActions {
+    /// Create an action service and a control handle sharing in-memory state.
+    pub fn new() -> (Self, TestSidebarActionsControl) {
+        let state = Rc::new(RefCell::new(TestSidebarActionsState::default()));
+        (
+            Self {
+                state: Rc::clone(&state),
+            },
+            TestSidebarActionsControl { state },
+        )
+    }
+
+    /// Return a valid persisted selection, ignoring malformed values.
+    pub fn persisted_selection_identity(&self, window_id: &str) -> Option<SidebarRowIdentity> {
+        match self.state.borrow().selection_options.get(window_id) {
+            Some(TestSelectionOption::Valid(identity)) => Some(identity.clone()),
+            Some(TestSelectionOption::Malformed) | None => None,
+        }
+    }
+
+    /// Return whether any persisted selection value exists for the window.
+    pub fn selection_option_exists(&self, window_id: &str) -> bool {
+        self.state
+            .borrow()
+            .selection_options
+            .contains_key(window_id)
+    }
+
+    /// Store the selected row identity for the window.
+    pub fn persist_selection_identity(
+        &self,
+        window_id: &str,
+        identity: &SidebarRowIdentity,
+    ) -> Result<()> {
+        self.state.borrow_mut().selection_options.insert(
+            window_id.to_owned(),
+            TestSelectionOption::Valid(identity.clone()),
+        );
+        Ok(())
+    }
+
+    /// Execute the configured jump outcome or succeed with the requested row.
+    pub fn execute_jump(&self, intent: SidebarJumpIntent) -> SidebarJumpExecution {
+        self.state.borrow_mut().next_jump.take().unwrap_or_else(|| {
+            SidebarJumpExecution::Succeeded(Box::new(SidebarJumpOutcome {
+                row: intent.row,
+                persistence_warning: None,
+            }))
+        })
+    }
+
+    /// Execute the configured deletion outcome or succeed with the request data.
+    pub fn execute_delete_workspace_row(
+        &self,
+        intent: SidebarDeleteWorkspaceRowIntent,
+    ) -> Result<SidebarDeleteWorkspaceRowOutcome> {
+        if let Some(error) = self.state.borrow_mut().next_delete_error.take() {
+            return Err(anyhow!(error));
+        }
+        Ok(SidebarDeleteWorkspaceRowOutcome {
+            index: intent.index,
+            row: intent.row,
+        })
+    }
+}
+
+impl TestSidebarActionsControl {
+    /// Store a valid selection as if another sidebar process had written it.
+    pub fn set_persisted_selection(&self, window_id: &str, identity: SidebarRowIdentity) {
+        self.state
+            .borrow_mut()
+            .selection_options
+            .insert(window_id.to_owned(), TestSelectionOption::Valid(identity));
+    }
+
+    /// Store an existing selection option whose payload cannot be decoded.
+    pub fn set_malformed_selection(&self, window_id: &str) {
+        self.state
+            .borrow_mut()
+            .selection_options
+            .insert(window_id.to_owned(), TestSelectionOption::Malformed);
+    }
+
+    /// Return the valid persisted selection for assertions.
+    pub fn persisted_selection(&self, window_id: &str) -> Option<SidebarRowIdentity> {
+        match self.state.borrow().selection_options.get(window_id) {
+            Some(TestSelectionOption::Valid(identity)) => Some(identity.clone()),
+            Some(TestSelectionOption::Malformed) | None => None,
+        }
+    }
+
+    /// Return whether a valid or malformed selection option exists.
+    pub fn selection_option_exists(&self, window_id: &str) -> bool {
+        self.state
+            .borrow()
+            .selection_options
+            .contains_key(window_id)
+    }
+
+    /// Configure the next jump with its resolved row and optional warning.
+    pub fn succeed_next_jump(&self, row: SidebarRow, persistence_warning: Option<String>) {
+        self.state.borrow_mut().next_jump = Some(SidebarJumpExecution::Succeeded(Box::new(
+            SidebarJumpOutcome {
+                row,
+                persistence_warning,
+            },
+        )));
+    }
+
+    /// Configure the next jump failure and optional rollback failure.
+    pub fn fail_next_jump(&self, error: impl Into<String>, rollback_error: Option<String>) {
+        self.state.borrow_mut().next_jump =
+            Some(SidebarJumpExecution::Failed(SidebarJumpFailure {
+                error: anyhow!(error.into()),
+                rollback_error: rollback_error.map(|error| anyhow!(error)),
+            }));
+    }
+
+    /// Configure the next workspace-row deletion to fail.
+    pub fn fail_next_delete(&self, error: impl Into<String>) {
+        self.state.borrow_mut().next_delete_error = Some(error.into());
+    }
+}
+
+/// Sidebar app test harness with controls for its in-memory services.
 pub(super) struct TestSidebarApp {
     app: SidebarApp,
-    _state: StateStoreFixture,
+    rows: TestSidebarRowsControl,
+    actions: TestSidebarActionsControl,
 }
 
 impl TestSidebarApp {
-    /// Wrap a sidebar app with the fixture that owns its backing state path.
-    pub fn new(app: SidebarApp, state: StateStoreFixture) -> Self {
-        Self { app, _state: state }
+    /// Wrap an app with controls for its injected in-memory services.
+    pub fn new(
+        app: SidebarApp,
+        rows: TestSidebarRowsControl,
+        actions: TestSidebarActionsControl,
+    ) -> Self {
+        Self { app, rows, actions }
+    }
+
+    /// Return the row-source control handle.
+    pub fn rows_control(&self) -> &TestSidebarRowsControl {
+        &self.rows
+    }
+
+    /// Return the action-service control handle.
+    pub fn actions_control(&self) -> &TestSidebarActionsControl {
+        &self.actions
     }
 }
 
@@ -48,86 +290,6 @@ impl Deref for TestSidebarApp {
 impl DerefMut for TestSidebarApp {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.app
-    }
-}
-
-/// Isolated tmux workspace shared by sidebar action and app unit tests.
-pub(super) struct SidebarTmuxFixture {
-    pub fixture: TmuxFixture,
-    pub window_id: String,
-    temp: TempDir,
-}
-
-impl SidebarTmuxFixture {
-    /// Create one test session and one workspace window on an isolated socket.
-    pub fn new() -> Result<Option<Self>> {
-        let Some(fixture) = TmuxFixture::new()? else {
-            return Ok(None);
-        };
-        let temp = tempdir()?;
-        create_test_session(&fixture.tmux, "project", temp.path())?;
-        let session_id = fixture
-            .tmux
-            .list_panes()?
-            .into_iter()
-            .find(|pane| pane.placement.session_name == "project")
-            .map(|pane| pane.identity.session_id)
-            .ok_or_else(|| anyhow::anyhow!("expected project test session"))?;
-        let pane_id =
-            fixture
-                .tmux
-                .create_window_by_id(&session_id, "feature-sidebar", temp.path())?;
-        let window_id = fixture
-            .tmux
-            .list_pane_snapshots()?
-            .into_iter()
-            .find(|pane| pane.identity.pane_id == pane_id)
-            .map(|pane| pane.identity.window_id)
-            .ok_or_else(|| anyhow::anyhow!("expected created pane in tmux snapshot"))?;
-
-        Ok(Some(Self {
-            fixture,
-            window_id,
-            temp,
-        }))
-    }
-
-    /// Clone the isolated tmux adapter for app construction.
-    pub fn tmux(&self) -> Tmux {
-        self.fixture.tmux.clone()
-    }
-
-    /// Open agent state under the fixture's owned temporary directory.
-    pub fn state_store(&self) -> Result<StateStore> {
-        crate::state::test_support::store_with_path(self.temp.path().join("state"))
-    }
-
-    /// Persist the selected-target representation for a sidebar row.
-    pub fn set_selected_row(&self, row: &SidebarRow) -> Result<()> {
-        let encoded = encode_selected_target(&row.identity)?;
-        self.set_raw_selected_target(&encoded)
-    }
-
-    /// Persist an exact selected-target payload for decoder and rollback tests.
-    pub fn set_raw_selected_target(&self, value: &str) -> Result<()> {
-        self.fixture
-            .tmux
-            .set_window_option(&self.window_id, SELECTED_TARGET_OPTION, value)
-    }
-
-    /// Read the exact persisted selected-target payload.
-    pub fn raw_selected_target(&self) -> Result<Option<String>> {
-        self.fixture
-            .tmux
-            .show_window_option(&self.window_id, SELECTED_TARGET_OPTION)
-    }
-
-    /// Decode the currently persisted sidebar row identity.
-    pub fn selected_target(&self) -> Result<Option<SidebarRowIdentity>> {
-        Ok(self
-            .raw_selected_target()?
-            .as_deref()
-            .and_then(decode_selected_target))
     }
 }
 

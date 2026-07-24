@@ -5,6 +5,7 @@
 //! the command that installed them.
 
 use std::ffi::OsString;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 
@@ -30,10 +31,13 @@ pub(super) fn sidebar_wake_command(window_id: &str) -> Result<String> {
 
 /// Build the tmux hook command that expands `#{window_id}` at hook runtime.
 pub(super) fn sidebar_wake_hook_command() -> Result<String> {
-    Ok(format!(
-        "run-shell -b {}",
-        shell_quote(&sidebar_wake_command("#{window_id}")?)
-    ))
+    Ok(sidebar_wake_hook_command_from(&sidebar_wake_command(
+        "#{window_id}",
+    )?))
+}
+
+fn sidebar_wake_hook_command_from(wake_command: &str) -> String {
+    format!("run-shell -b {}", shell_quote(wake_command))
 }
 
 /// Quote a shell word for the simple POSIX shell commands kmux installs in tmux.
@@ -45,20 +49,34 @@ pub(super) fn shell_quote(value: &str) -> String {
 // against the same kmux binary and tmux socket as the user command.
 fn sidebar_command<const N: usize>(args: [&str; N]) -> Result<String> {
     let executable = std::env::current_exe().context("failed to determine current executable")?;
-    let mut parts = vec!["exec".to_owned(), "env".to_owned()];
-    for key in [
+    let environment = sidebar_environment();
+    Ok(sidebar_command_from(&executable, &environment, args))
+}
+
+fn sidebar_environment() -> Vec<(&'static str, OsString)> {
+    [
         "XDG_CONFIG_HOME",
         "XDG_STATE_HOME",
         "KMUX_TMUX_SOCKET_NAME",
         "KMUX_TMUX_TMPDIR",
-    ] {
-        if let Some(value) = std::env::var_os(key) {
-            parts.push(format_env_assignment(key, &value));
-        }
+    ]
+    .into_iter()
+    .filter_map(|key| std::env::var_os(key).map(|value| (key, value)))
+    .collect()
+}
+
+fn sidebar_command_from<const N: usize>(
+    executable: &Path,
+    environment: &[(&str, OsString)],
+    args: [&str; N],
+) -> String {
+    let mut parts = vec!["exec".to_owned(), "env".to_owned()];
+    for (key, value) in environment {
+        parts.push(format_env_assignment(key, value));
     }
     parts.push(shell_quote(&executable.to_string_lossy()));
     parts.extend(args.into_iter().map(str::to_owned));
-    Ok(parts.join(" "))
+    parts.join(" ")
 }
 
 fn format_env_assignment(key: &str, value: &OsString) -> String {
@@ -69,42 +87,47 @@ fn format_env_assignment(key: &str, value: &OsString) -> String {
 mod tests {
     use super::*;
 
+    fn command<const N: usize>(args: [&str; N]) -> String {
+        sidebar_command_from(
+            Path::new("/opt/example/bin/kmux"),
+            &[("XDG_CONFIG_HOME", OsString::from("/config/example"))],
+            args,
+        )
+    }
+
     #[test]
-    fn sidebar_pane_command_runs_hidden_tui() -> Result<()> {
-        let command = sidebar_tui_command()?;
+    fn sidebar_pane_command_runs_hidden_tui() {
+        let command = command(["sidebar", "_run"]);
 
         assert!(command.starts_with("exec env "));
         assert!(command.contains(" sidebar _run"));
         assert!(!command.contains("while :; do"));
-        Ok(())
     }
 
     #[test]
-    fn sidebar_off_command_runs_visible_disable_path() -> Result<()> {
-        let command = sidebar_off_command()?;
+    fn sidebar_off_command_runs_visible_disable_path() {
+        let command = command(["sidebar", "off"]);
 
         assert!(command.starts_with("exec env "));
         assert!(command.contains(" sidebar off"));
-        Ok(())
     }
 
     #[test]
-    fn sidebar_wake_command_targets_window_id() -> Result<()> {
-        let command = sidebar_wake_command("@42")?;
+    fn sidebar_wake_command_targets_window_id() {
+        let command = command(["sidebar", "_wake", "@42"]);
 
         assert!(command.starts_with("exec env "));
         assert!(command.contains(" sidebar _wake "));
         assert!(command.ends_with(" sidebar _wake @42"));
-        Ok(())
     }
 
     #[test]
-    fn sidebar_wake_hook_preserves_tmux_window_format() -> Result<()> {
-        let command = sidebar_wake_hook_command()?;
+    fn sidebar_wake_hook_preserves_tmux_window_format() {
+        let wake = command(["sidebar", "_wake", "#{window_id}"]);
+        let command = sidebar_wake_hook_command_from(&wake);
 
         assert!(command.starts_with("run-shell -b "));
         assert!(command.contains("sidebar _wake"));
         assert!(command.contains("#{window_id}"));
-        Ok(())
     }
 }

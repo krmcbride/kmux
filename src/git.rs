@@ -18,6 +18,8 @@ use crate::{LIFECYCLE_ACTIVE_ENV, telemetry};
 /// Thin adapter for running Git commands from a fixed working directory.
 pub struct Git {
     cwd: PathBuf,
+    clear_environment: bool,
+    env: Vec<(OsString, OsString)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +69,8 @@ impl Git {
     pub fn new(cwd: impl AsRef<Path>) -> Self {
         Self {
             cwd: cwd.as_ref().to_path_buf(),
+            clear_environment: false,
+            env: Vec::new(),
         }
     }
 
@@ -362,6 +366,11 @@ impl Git {
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
     {
+        if cfg!(test) {
+            bail!(
+                "Git subprocesses are unavailable in library unit tests; use a pure policy seam or an adapter contract target"
+            );
+        }
         let args = args.into_iter().map(Into::into).collect::<Vec<_>>();
         let display_args = display_args(&args);
         let output = telemetry::timed_result_event!(
@@ -372,7 +381,14 @@ impl Git {
                 cwd = %self.cwd.display(),
             },
             || {
-                Command::new("git")
+                let mut command = Command::new("git");
+                if self.clear_environment {
+                    command.env_clear();
+                }
+                for (key, value) in &self.env {
+                    command.env(key, value);
+                }
+                command
                     .args(&args)
                     .current_dir(&self.cwd)
                     // Git hooks and checkout filters run synchronously inside
@@ -466,7 +482,9 @@ impl Git {
             bail!("worktree path {} does not exist", path.display());
         }
 
-        let output = Git::new(path).stdout(["status", "--porcelain", "--untracked-files=all"])?;
+        let output =
+            self.with_cwd(path)
+                .stdout(["status", "--porcelain", "--untracked-files=all"])?;
         Ok(!output.trim().is_empty())
     }
 
@@ -497,6 +515,21 @@ impl Git {
         } else {
             bail_git(output)
         }
+    }
+
+    fn with_cwd(&self, cwd: impl AsRef<Path>) -> Self {
+        Self {
+            cwd: cwd.as_ref().to_path_buf(),
+            clear_environment: self.clear_environment,
+            env: self.env.clone(),
+        }
+    }
+
+    #[cfg(feature = "internal-adapter-contract-tests")]
+    fn with_command_environment(mut self, env: Vec<(OsString, OsString)>) -> Self {
+        self.clear_environment = true;
+        self.env = env;
+        self
     }
 }
 
@@ -650,63 +683,140 @@ fn bail_git<T>(output: GitOutput) -> Result<T> {
     bail!("git command failed with status {}: {stderr}", output.status)
 }
 
-#[cfg(test)]
-pub mod test_support {
-    use std::process::Command;
-
+#[cfg(feature = "internal-adapter-contract-tests")]
+/// Crate-wide exception: path and agent adapter contracts need the same owned
+/// Git environment, and no narrower Rust visibility spans those sibling modules.
+pub(crate) mod contract_support {
     use tempfile::TempDir;
 
     use super::*;
 
-    /// Owned Git repository fixture for crate-local adapter and policy tests.
-    pub struct GitRepoFixture {
+    /// Owned repository and command environment for Git adapter contracts.
+    pub(crate) struct GitRepoFixture {
         temp: TempDir,
         path: PathBuf,
+        environment: Vec<(OsString, OsString)>,
     }
 
     impl GitRepoFixture {
-        /// Initialize a repository with one commit and neutral test identity.
-        pub fn new() -> Result<Self> {
+        /// Initialize a repository with one commit under a private Git environment.
+        pub(crate) fn new() -> Result<Self> {
             let temp = TempDir::new()?;
             let path = temp.path().join("project-alpha");
-            fs::create_dir(&path)?;
-            let fixture = Self { temp, path };
+            let home = temp.path().join("home");
+            let config_home = temp.path().join("config-home");
+            let state_home = temp.path().join("state-home");
+            let cache_home = temp.path().join("cache-home");
+            let data_home = temp.path().join("data-home");
+            let runtime_dir = temp.path().join("runtime-dir");
+            let tmp = temp.path().join("tmp");
+            let hooks = temp.path().join("empty-hooks");
+            for directory in [
+                &path,
+                &home,
+                &config_home,
+                &state_home,
+                &cache_home,
+                &data_home,
+                &runtime_dir,
+                &tmp,
+                &hooks,
+            ] {
+                fs::create_dir_all(directory)?;
+            }
+            let gitconfig = temp.path().join("gitconfig");
+            fs::write(
+                &gitconfig,
+                format!(
+                    "[commit]\n\tgpgSign = false\n[core]\n\thooksPath = {}\n",
+                    hooks.display()
+                ),
+            )?;
+            let environment = vec![
+                (OsString::from("HOME"), home.into_os_string()),
+                (
+                    OsString::from("PATH"),
+                    std::env::var_os("PATH").unwrap_or_default(),
+                ),
+                (OsString::from("SHELL"), OsString::from("/bin/sh")),
+                (OsString::from("LANG"), OsString::from("C")),
+                (OsString::from("LC_ALL"), OsString::from("C")),
+                (
+                    OsString::from("XDG_CONFIG_HOME"),
+                    config_home.into_os_string(),
+                ),
+                (
+                    OsString::from("XDG_STATE_HOME"),
+                    state_home.into_os_string(),
+                ),
+                (
+                    OsString::from("XDG_CACHE_HOME"),
+                    cache_home.into_os_string(),
+                ),
+                (OsString::from("XDG_DATA_HOME"), data_home.into_os_string()),
+                (
+                    OsString::from("XDG_RUNTIME_DIR"),
+                    runtime_dir.into_os_string(),
+                ),
+                (OsString::from("TMPDIR"), tmp.into_os_string()),
+                (OsString::from("GIT_CONFIG_NOSYSTEM"), OsString::from("1")),
+                (
+                    OsString::from("GIT_CONFIG_GLOBAL"),
+                    gitconfig.into_os_string(),
+                ),
+                (
+                    OsString::from("GIT_AUTHOR_NAME"),
+                    OsString::from("Example Author"),
+                ),
+                (
+                    OsString::from("GIT_AUTHOR_EMAIL"),
+                    OsString::from("author@example.invalid"),
+                ),
+                (
+                    OsString::from("GIT_COMMITTER_NAME"),
+                    OsString::from("Example Committer"),
+                ),
+                (
+                    OsString::from("GIT_COMMITTER_EMAIL"),
+                    OsString::from("committer@example.invalid"),
+                ),
+            ];
+            let fixture = Self {
+                temp,
+                path,
+                environment,
+            };
             fixture.git(&["init", "--initial-branch", "main"])?;
-            fixture.git(&["config", "user.email", "test@example.invalid"])?;
-            fixture.git(&["config", "user.name", "Test User"])?;
-            fixture.commit_file("README.md", "test\n", "initial")?;
+            fixture.commit_file("README.md", "example\n", "initial")?;
             Ok(fixture)
         }
 
-        /// Return the repository path while retaining its temporary owner.
-        pub fn path(&self) -> &Path {
+        pub(crate) fn path(&self) -> &Path {
             &self.path
         }
 
-        /// Return the fixture root for sibling worktree paths.
-        pub fn root(&self) -> &Path {
+        pub(crate) fn root(&self) -> &Path {
             self.temp.path()
         }
 
-        /// Run a Git command in the fixture repository and require success.
-        pub fn git(&self, args: &[&str]) -> Result<()> {
-            let output = Command::new("git")
-                .args(args)
-                .current_dir(&self.path)
-                .output()
-                .with_context(|| format!("failed to run git {}", args.join(" ")))?;
-            assert!(
-                output.status.success(),
-                "git {} failed\nstdout: {}\nstderr: {}",
-                args.join(" "),
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            Ok(())
+        pub(crate) fn adapter(&self) -> Git {
+            self.adapter_at(&self.path)
         }
 
-        /// Write and commit one file in the fixture repository.
-        pub fn commit_file(&self, file_name: &str, content: &str, message: &str) -> Result<()> {
+        pub(crate) fn adapter_at(&self, path: impl AsRef<Path>) -> Git {
+            Git::new(path).with_command_environment(self.environment.clone())
+        }
+
+        pub(crate) fn git(&self, args: &[&str]) -> Result<()> {
+            self.adapter().stdout(args.iter().copied()).map(|_| ())
+        }
+
+        pub(crate) fn commit_file(
+            &self,
+            file_name: &str,
+            content: &str,
+            message: &str,
+        ) -> Result<()> {
             fs::write(self.path.join(file_name), content)?;
             self.git(&["add", file_name])?;
             self.git(&["commit", "-m", message])
@@ -716,43 +826,11 @@ pub mod test_support {
 
 #[cfg(test)]
 mod tests {
-    use super::test_support::GitRepoFixture;
-    use super::*;
     use std::collections::HashSet;
 
-    #[test]
-    fn discovers_repo_info_from_primary_worktree() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let repo = fixture.path();
+    use tempfile::TempDir;
 
-        let info = Git::new(repo).repo_info()?;
-
-        assert_eq!(info.current_worktree, repo.canonicalize()?);
-        assert_eq!(info.git_common_dir, repo.join(".git").canonicalize()?);
-        Ok(())
-    }
-
-    #[test]
-    fn discovers_repo_info_from_linked_worktree() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let repo = fixture.path();
-        let worktree_base = fixture.root().join("project-alpha__worktrees");
-        let linked = worktree_base.join("feature-auth");
-        fs::create_dir(&worktree_base)?;
-        fixture.git(&[
-            "worktree",
-            "add",
-            "-b",
-            "feature/auth",
-            linked.to_string_lossy().as_ref(),
-        ])?;
-
-        let info = Git::new(&linked).repo_info()?;
-
-        assert_eq!(info.current_worktree, linked.canonicalize()?);
-        assert_eq!(info.git_common_dir, repo.join(".git").canonicalize()?);
-        Ok(())
-    }
+    use super::*;
 
     #[test]
     fn parses_porcelain_worktree_records() -> Result<()> {
@@ -823,36 +901,87 @@ prunable gitdir file points to non-existent location\n";
     }
 
     #[test]
-    fn detects_current_branch_and_detached_head() -> Result<()> {
+    fn rejects_non_empty_worktree_path() -> Result<()> {
+        let temp = TempDir::new()?;
+        let git_repo = Git::new(temp.path());
+        let conflicting = temp.path().join("conflict");
+        fs::create_dir_all(&conflicting)?;
+        fs::write(conflicting.join("file.txt"), "occupied\n")?;
+
+        let error = git_repo
+            .ensure_available_worktree_path(&conflicting)
+            .unwrap_err();
+
+        assert!(error.to_string().contains("not empty"));
+        Ok(())
+    }
+}
+
+#[cfg(feature = "internal-adapter-contract-tests")]
+pub mod contract_tests {
+    use super::contract_support::GitRepoFixture;
+    use super::*;
+
+    pub fn discovers_repo_info_from_primary_worktree() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
+        let repo = fixture.path();
+        let info = fixture.adapter().repo_info()?;
+
+        assert_eq!(info.current_worktree, repo.canonicalize()?);
+        assert_eq!(info.git_common_dir, repo.join(".git").canonicalize()?);
+        Ok(())
+    }
+
+    pub fn discovers_repo_info_from_linked_worktree() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let repo = fixture.path();
+        let worktree_base = fixture.root().join("project-alpha__worktrees");
+        let linked = worktree_base.join("feature-auth");
+        fs::create_dir(&worktree_base)?;
+        fixture.git(&[
+            "worktree",
+            "add",
+            "-b",
+            "feature/auth",
+            linked.to_string_lossy().as_ref(),
+        ])?;
+
+        let info = fixture.adapter_at(&linked).repo_info()?;
+
+        assert_eq!(info.current_worktree, linked.canonicalize()?);
+        assert_eq!(info.git_common_dir, repo.join(".git").canonicalize()?);
+        Ok(())
+    }
+
+    pub fn detects_current_branch_and_detached_head() -> Result<()> {
+        let fixture = GitRepoFixture::new()?;
+        let git_repo = fixture.adapter();
 
         assert_eq!(git_repo.current_branch()?.as_deref(), Some("main"));
-
         let head = git_repo.stdout(["rev-parse", "HEAD"])?;
         fixture.git(&["checkout", "--detach", &head])?;
 
         assert_eq!(git_repo.current_branch()?, None);
-        let error = git_repo.require_current_branch().unwrap_err();
+        let error = match git_repo.require_current_branch() {
+            Ok(branch) => bail!("detached HEAD unexpectedly resolved branch {branch:?}"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("detached HEAD"));
         Ok(())
     }
 
-    #[test]
-    fn creates_branch_from_current_branch_and_reuses_without_moving() -> Result<()> {
+    pub fn creates_branch_from_current_branch_and_reuses_without_moving() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
+        let git_repo = fixture.adapter();
 
         assert_eq!(
             git_repo.ensure_local_branch("feature/auth", None)?,
             BranchAction::Created
         );
         let feature_rev = git_repo.stdout(["rev-parse", "feature/auth"])?;
-
         fixture.commit_file("after.txt", "after\n", "after feature branch")?;
         let main_rev = git_repo.stdout(["rev-parse", "main"])?;
         assert_ne!(feature_rev, main_rev);
-
         assert_eq!(
             git_repo.ensure_local_branch("feature/auth", None)?,
             BranchAction::Existing
@@ -861,12 +990,10 @@ prunable gitdir file points to non-existent location\n";
         Ok(())
     }
 
-    #[test]
-    fn creates_branch_from_explicit_start_point() -> Result<()> {
+    pub fn creates_branch_from_explicit_start_point() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
+        let git_repo = fixture.adapter();
         let initial_rev = git_repo.stdout(["rev-parse", "main"])?;
-
         fixture.commit_file("later.txt", "later\n", "later")?;
 
         assert_eq!(
@@ -878,10 +1005,9 @@ prunable gitdir file points to non-existent location\n";
         Ok(())
     }
 
-    #[test]
-    fn returns_merge_base_when_branches_share_history() -> Result<()> {
+    pub fn returns_merge_base_when_branches_share_history() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
+        let git_repo = fixture.adapter();
         let initial_rev = git_repo.stdout(["rev-parse", "main"])?;
         git_repo.ensure_local_branch("feature/auth", Some("main"))?;
         fixture.commit_file("later.txt", "later\n", "later")?;
@@ -893,11 +1019,10 @@ prunable gitdir file points to non-existent location\n";
         Ok(())
     }
 
-    #[test]
-    fn returns_none_when_branches_have_no_merge_base() -> Result<()> {
+    pub fn returns_none_when_branches_have_no_merge_base() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
         let repo = fixture.path();
-        let git_repo = Git::new(repo);
+        let git_repo = fixture.adapter();
         git_repo.ensure_local_branch("feature/auth", Some("main"))?;
         fixture.git(&["checkout", "--orphan", "orphan-parent"])?;
         fs::remove_file(repo.join("README.md"))?;
@@ -908,8 +1033,7 @@ prunable gitdir file points to non-existent location\n";
         Ok(())
     }
 
-    #[test]
-    fn safe_deletion_prefers_configured_upstream_over_local_head() -> Result<()> {
+    pub fn safe_deletion_prefers_configured_upstream_over_local_head() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
         let remote = fixture.root().join("remote.git");
         let remote = remote.to_string_lossy();
@@ -933,16 +1057,17 @@ prunable gitdir file points to non-existent location\n";
             "merge feature locally",
         ])?;
 
-        let git = Git::new(fixture.path());
-
-        assert!(!git.branch_is_safely_deletable("feature/safety")?);
+        assert!(
+            !fixture
+                .adapter()
+                .branch_is_safely_deletable("feature/safety")?
+        );
         Ok(())
     }
 
-    #[test]
-    fn adds_and_finds_worktree_by_branch() -> Result<()> {
+    pub fn adds_and_finds_worktree_by_branch() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
+        let git_repo = fixture.adapter();
         let worktree_base = fixture.root().join("project-alpha__worktrees");
         let linked = worktree_base.join("feature-auth");
         fs::create_dir(&worktree_base)?;
@@ -959,26 +1084,9 @@ prunable gitdir file points to non-existent location\n";
         Ok(())
     }
 
-    #[test]
-    fn rejects_non_empty_worktree_path() -> Result<()> {
+    pub fn remove_worktree_guards_dirty_paths_unless_forced() -> Result<()> {
         let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
-        let conflicting = fixture.root().join("project-alpha__worktrees/conflict");
-        fs::create_dir_all(&conflicting)?;
-        fs::write(conflicting.join("file.txt"), "occupied\n")?;
-
-        let error = git_repo
-            .add_worktree(&conflicting, "feature/auth")
-            .unwrap_err();
-
-        assert!(error.to_string().contains("not empty"));
-        Ok(())
-    }
-
-    #[test]
-    fn remove_worktree_guards_dirty_paths_unless_forced() -> Result<()> {
-        let fixture = GitRepoFixture::new()?;
-        let git_repo = Git::new(fixture.path());
+        let git_repo = fixture.adapter();
         let worktree_base = fixture.root().join("project-alpha__worktrees");
         let linked = worktree_base.join("feature-auth");
         fs::create_dir(&worktree_base)?;
@@ -987,7 +1095,10 @@ prunable gitdir file points to non-existent location\n";
         fs::write(linked.join("untracked.txt"), "dirty\n")?;
 
         assert!(git_repo.worktree_is_dirty(&linked)?);
-        let error = git_repo.remove_worktree(&linked, false).unwrap_err();
+        let error = match git_repo.remove_worktree(&linked, false) {
+            Ok(()) => bail!("dirty worktree removal unexpectedly succeeded"),
+            Err(error) => error,
+        };
         assert!(error.to_string().contains("uncommitted changes"));
 
         git_repo.remove_worktree(&linked, true)?;

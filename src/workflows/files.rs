@@ -48,6 +48,11 @@ pub(super) fn run_post_create(
     workspace_slug: &str,
 ) -> Result<()> {
     for command in &config.post_create {
+        if cfg!(test) {
+            bail!(
+                "post-create child processes are unavailable in library unit tests; use an integration test"
+            );
+        }
         let status = Command::new("sh")
             .arg("-c")
             .arg(command)

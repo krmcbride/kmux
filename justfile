@@ -12,9 +12,21 @@ fmt-check:
 
 clippy:
     cargo clippy --all-targets -- -D warnings
+    cargo clippy --all-targets --features internal-adapter-contract-tests -- -D warnings
+
+test-lib:
+    cargo test --lib
+
+adapter-contracts:
+    cargo test --features internal-adapter-contract-tests \
+        --test git_adapter_contracts \
+        --test tmux_adapter_contracts \
+        --test launcher_adapter_contracts \
+        --test sidebar_action_contracts
 
 test:
     cargo test
+    just adapter-contracts
 
 build:
     cargo build
