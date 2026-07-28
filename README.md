@@ -101,11 +101,11 @@ shell window in place for manual recovery. A later launcher failure is visible i
 that shell and does not retroactively fail `kmux workspace create`.
 
 The one-shot request lives briefly under the owner-only
-`$XDG_STATE_HOME/kmux/launcher-runtime` directory (or the platform's user-state
-directory when `XDG_STATE_HOME` is unset) so a sandboxed caller and an existing
-tmux server can access the same capability even when they have different `/tmp`
-or `XDG_RUNTIME_DIR` mounts. Kmux consumes the request before launcher spawn and
-removes its private directory after handoff or failure.
+`${XDG_STATE_HOME:-$HOME/.local/state}/kmux/launcher-runtime` directory on Linux
+and macOS so a sandboxed caller and an existing tmux server can access the same
+capability even when they have different `/tmp` or `XDG_RUNTIME_DIR` mounts.
+Kmux consumes the request before launcher spawn and removes its private directory
+after handoff or failure.
 
 Inspect workspace state as a table or JSON:
 
@@ -244,9 +244,28 @@ ln -s "$out/share/kmux/skills/delegating-with-kmux" \
 
 ## Configuration
 
-kmux loads strict YAML configuration from
-`${XDG_CONFIG_HOME:-$HOME/.config}/kmux/config.yaml`. A missing file uses
-defaults. Inspect the fully-resolved active values as YAML or JSON:
+On Linux and macOS, kmux uses the same Unix XDG directory policy:
+
+| Purpose | Absolute override | Default |
+| --- | --- | --- |
+| Configuration | `XDG_CONFIG_HOME` | `$HOME/.config` |
+| Persistent state | `XDG_STATE_HOME` | `$HOME/.local/state` |
+| Cache | `XDG_CACHE_HOME` | `$HOME/.cache` |
+
+Empty or relative XDG overrides are ignored because XDG base directories must be
+absolute. Windows continues to use its platform-native directories when an
+absolute override is absent.
+
+The resulting kmux paths are
+`$HOME/.config/kmux/config.yaml`, `$HOME/.local/state/kmux`, and
+`$HOME/.cache/kmux` by default. The state root includes persistent agent
+observations and launcher handoffs; opt-in telemetry uses the cache root. Because
+kmux is pre-release, macOS users upgrading from the previous behavior should note
+that kmux no longer reads `~/Library/Application Support/kmux` and does not
+automatically migrate or merge data from that location.
+
+kmux loads strict YAML configuration from the resolved config path. A missing
+file uses defaults. Inspect the fully-resolved active values as YAML or JSON:
 
 ```sh
 kmux config

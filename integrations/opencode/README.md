@@ -172,10 +172,12 @@ directory while OpenCode is stopped:
 ${XDG_STATE_HOME:-$HOME/.local/state}/kmux/agent-observations/
 ```
 
-On platforms without an XDG state directory, kmux uses the platform local-data
-directory under `kmux/agent-observations/`. This reset removes observations from all
-agent integrations, not only OpenCode, so inspect or back up the directory when
-other reporters matter. No automatic migration is provided for pre-release state.
+Linux and macOS use the displayed XDG state default; an absolute
+`XDG_STATE_HOME` overrides it. Windows uses its platform-native state or
+local-data directory when the override is absent. This reset removes observations
+from all agent integrations, not only OpenCode, so inspect or back up the
+directory when other reporters matter. No automatic migration is provided for
+pre-release state.
 
 A clean plugin disposal removes observations it successfully owns. A process crash
 can still leave valid observations because kmux does not currently apply a TTL or

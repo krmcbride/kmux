@@ -201,6 +201,29 @@ sidebar:
     Ok(())
 }
 
+#[cfg(unix)]
+#[test]
+fn config_uses_home_xdg_default_when_override_is_unset() -> Result<()> {
+    let temp = tempfile::tempdir()?;
+    let home = temp.path().join("home");
+    let config_dir = home.join(".config/kmux");
+    fs::create_dir_all(&config_dir)?;
+    fs::write(config_dir.join("config.yaml"), "window_prefix: home-xdg-\n")?;
+
+    kmux_command()?
+        .current_dir(temp.path())
+        .env("HOME", &home)
+        .env_remove("XDG_CONFIG_HOME")
+        .env_remove("TMUX")
+        .env_remove("TMUX_PANE")
+        .env("PATH", "")
+        .arg("config")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("window_prefix: home-xdg-"));
+    Ok(())
+}
+
 #[test]
 fn config_reports_invalid_launcher_descriptions() -> Result<()> {
     let temp = tempfile::tempdir()?;
