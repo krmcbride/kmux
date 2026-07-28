@@ -2,9 +2,10 @@ use std::collections::BTreeMap;
 use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
-use directories::BaseDirs;
 use serde::Deserialize;
 use unicode_width::UnicodeWidthStr;
+
+use crate::user_dirs;
 
 /// Default tmux window-name prefix for kmux workspaces.
 pub const DEFAULT_WINDOW_PREFIX: &str = "kmux-";
@@ -73,8 +74,7 @@ impl Config {
 
     /// Return the XDG config-file path used for the global kmux YAML config.
     fn global_path() -> Result<PathBuf> {
-        let base_dirs = BaseDirs::new().context("could not determine config directory")?;
-        Ok(base_dirs.config_dir().join("kmux/config.yaml"))
+        Ok(user_dirs::config_dir()?.join("kmux/config.yaml"))
     }
 
     /// Load and validate config from a specific path, treating a missing file as defaults.

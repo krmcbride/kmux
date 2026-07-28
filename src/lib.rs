@@ -11,6 +11,7 @@ pub(crate) mod slug;
 pub(crate) mod state;
 pub(crate) mod telemetry;
 pub(crate) mod tmux;
+pub(crate) mod user_dirs;
 pub(crate) mod workflows;
 pub(crate) mod workspace;
 

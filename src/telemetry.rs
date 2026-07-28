@@ -11,9 +11,10 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 
-use directories::BaseDirs;
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::fmt::MakeWriter;
+
+use crate::user_dirs;
 
 const TELEMETRY_FILENAME: &str = "telemetry.jsonl";
 
@@ -129,7 +130,9 @@ fn telemetry_path() -> Option<PathBuf> {
 }
 
 fn default_telemetry_path() -> Option<PathBuf> {
-    BaseDirs::new().map(|base_dirs| base_dirs.cache_dir().join("kmux").join(TELEMETRY_FILENAME))
+    user_dirs::cache_dir()
+        .ok()
+        .map(|cache_dir| cache_dir.join("kmux").join(TELEMETRY_FILENAME))
 }
 
 fn telemetry_path_from_env(

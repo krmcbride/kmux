@@ -786,7 +786,7 @@ launchers:
 
 #[cfg(unix)]
 #[test]
-fn launcher_uses_home_state_when_xdg_state_is_unset() -> Result<()> {
+fn launcher_uses_platform_state_when_xdg_state_is_unset() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
 
     let (temp, repo) = init_repo()?;
@@ -822,7 +822,11 @@ launchers:
         .assert()
         .success();
 
-    let launcher_runtime = home.join(".local/state/kmux/launcher-runtime");
+    let launcher_runtime = if cfg!(target_os = "macos") {
+        home.join("Library/Application Support/kmux/launcher-runtime")
+    } else {
+        home.join(".local/state/kmux/launcher-runtime")
+    };
     assert_eq!(
         fs::metadata(&launcher_runtime)?.permissions().mode() & 0o777,
         0o700
@@ -968,8 +972,8 @@ launchers:
 
     wait_for_nonempty_file(&output)?;
     assert_eq!(
-        fs::read_to_string(&cwd_output)?,
-        worktree.display().to_string()
+        fs::canonicalize(fs::read_to_string(&cwd_output)?)?,
+        fs::canonicalize(&worktree)?
     );
     assert!(ordering.exists());
     assert!(tty.exists());

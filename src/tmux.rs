@@ -1146,7 +1146,7 @@ pub mod test_support {
 /// Crate-wide exception: sidebar contracts need the same owned tmux server
 /// fixture as adapter contracts, and no narrower visibility spans those modules.
 pub(crate) mod contract_support {
-    use tempfile::TempDir;
+    use tempfile::{Builder, TempDir};
 
     use super::*;
 
@@ -1154,11 +1154,17 @@ pub(crate) mod contract_support {
     pub(crate) struct TmuxFixture {
         pub(crate) tmux: Tmux,
         _environment: TempDir,
+        _socket_root: TempDir,
     }
 
     impl TmuxFixture {
         pub(crate) fn new() -> Result<Self> {
             let environment = TempDir::new()?;
+            // Darwin's per-user TMPDIR is long enough that tmux's additional
+            // `tmux-<uid>/<label>` components can exceed the Unix socket limit.
+            // A unique POSIX /tmp child keeps the complete socket path short
+            // while the owned TempDir preserves parallel-test isolation.
+            let socket_root = Builder::new().prefix("kmt-").tempdir_in("/tmp")?;
             let root = environment.path();
             let home = root.join("home");
             let config_home = root.join("config-home");
@@ -1167,7 +1173,6 @@ pub(crate) mod contract_support {
             let data_home = root.join("data-home");
             let runtime_dir = root.join("runtime-dir");
             let tmp = root.join("tmp");
-            let socket_dir = root.join("tmux-socket");
             for directory in [
                 &home,
                 &config_home,
@@ -1176,12 +1181,11 @@ pub(crate) mod contract_support {
                 &data_home,
                 &runtime_dir,
                 &tmp,
-                &socket_dir,
             ] {
                 fs::create_dir_all(directory)?;
             }
 
-            let tmux = Tmux::with_socket_name("kmux-adapter-contract")
+            let tmux = Tmux::with_socket_name("s")
                 .with_clean_environment()
                 .with_env("HOME", home.as_os_str())
                 .with_env("PATH", std::env::var_os("PATH").unwrap_or_default())
@@ -1194,11 +1198,12 @@ pub(crate) mod contract_support {
                 .with_env("XDG_DATA_HOME", data_home.as_os_str())
                 .with_env("XDG_RUNTIME_DIR", runtime_dir.as_os_str())
                 .with_env("TMPDIR", tmp.as_os_str())
-                .with_env("TMUX_TMPDIR", socket_dir.as_os_str());
+                .with_env("TMUX_TMPDIR", socket_root.path().as_os_str());
 
             Ok(Self {
                 tmux,
                 _environment: environment,
+                _socket_root: socket_root,
             })
         }
     }

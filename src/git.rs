@@ -693,7 +693,8 @@ pub(crate) mod contract_support {
 
     /// Owned repository and command environment for Git adapter contracts.
     pub(crate) struct GitRepoFixture {
-        temp: TempDir,
+        _temp: TempDir,
+        root: PathBuf,
         path: PathBuf,
         environment: Vec<(OsString, OsString)>,
     }
@@ -702,15 +703,16 @@ pub(crate) mod contract_support {
         /// Initialize a repository with one commit under a private Git environment.
         pub(crate) fn new() -> Result<Self> {
             let temp = TempDir::new()?;
-            let path = temp.path().join("project-alpha");
-            let home = temp.path().join("home");
-            let config_home = temp.path().join("config-home");
-            let state_home = temp.path().join("state-home");
-            let cache_home = temp.path().join("cache-home");
-            let data_home = temp.path().join("data-home");
-            let runtime_dir = temp.path().join("runtime-dir");
-            let tmp = temp.path().join("tmp");
-            let hooks = temp.path().join("empty-hooks");
+            let root = temp.path().canonicalize()?;
+            let path = root.join("project-alpha");
+            let home = root.join("home");
+            let config_home = root.join("config-home");
+            let state_home = root.join("state-home");
+            let cache_home = root.join("cache-home");
+            let data_home = root.join("data-home");
+            let runtime_dir = root.join("runtime-dir");
+            let tmp = root.join("tmp");
+            let hooks = root.join("empty-hooks");
             for directory in [
                 &path,
                 &home,
@@ -724,7 +726,7 @@ pub(crate) mod contract_support {
             ] {
                 fs::create_dir_all(directory)?;
             }
-            let gitconfig = temp.path().join("gitconfig");
+            let gitconfig = root.join("gitconfig");
             fs::write(
                 &gitconfig,
                 format!(
@@ -782,7 +784,8 @@ pub(crate) mod contract_support {
                 ),
             ];
             let fixture = Self {
-                temp,
+                _temp: temp,
+                root,
                 path,
                 environment,
             };
@@ -796,7 +799,7 @@ pub(crate) mod contract_support {
         }
 
         pub(crate) fn root(&self) -> &Path {
-            self.temp.path()
+            &self.root
         }
 
         pub(crate) fn adapter(&self) -> Git {

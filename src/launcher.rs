@@ -29,11 +29,11 @@ use std::thread;
 use std::time::{Duration, Instant, SystemTime};
 
 use anyhow::{Context, Result, bail};
-use directories::BaseDirs;
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, TempDir};
 
 use crate::config::LauncherConfig;
+use crate::user_dirs;
 
 const PROTOCOL_VERSION: u32 = 1;
 const DIRECTORY_PREFIX: &str = ".kmux-launch-v1-";
@@ -457,11 +457,9 @@ fn create_private_tempdir(base: &Path) -> Result<TempDir> {
 // server. Sandboxes may give those processes different /tmp and runtime mounts,
 // so use the shared user-state filesystem rather than namespace-local temp.
 fn shared_launcher_runtime_directory() -> Result<PathBuf> {
-    let base_dirs = BaseDirs::new().context("could not determine launcher state directory")?;
-    let state_root = base_dirs
-        .state_dir()
-        .unwrap_or_else(|| base_dirs.data_local_dir());
-    Ok(state_root.join("kmux").join(LAUNCH_RUNTIME_DIRECTORY))
+    Ok(user_dirs::state_dir()?
+        .join("kmux")
+        .join(LAUNCH_RUNTIME_DIRECTORY))
 }
 
 fn create_private_base_directory(path: &Path) -> Result<()> {
@@ -808,7 +806,7 @@ mod tests {
         let launcher = resolved("/bin/true", &[], None);
         let first = create_pending(&launcher, cwd.path())?;
         let second = create_pending(&launcher, cwd.path())?;
-        let runtime = cwd.path().join("launcher-state");
+        let runtime = fs::canonicalize(cwd.path().join("launcher-state"))?;
 
         assert_ne!(first.request_path, second.request_path);
         for pending in [&first, &second] {
@@ -927,13 +925,22 @@ mod tests {
             .expect("request parent")
             .to_path_buf();
         fs::remove_file(&pending.request_path)?;
+        let (started_tx, started_rx) = std::sync::mpsc::sync_channel(0);
         let acknowledgment = thread::spawn(move || {
+            started_tx
+                .send(())
+                .map_err(|_| anyhow::anyhow!("acknowledgment test receiver dropped"))?;
             thread::sleep(Duration::from_millis(50));
             write_acknowledgment(&directory, SpawnResult::Spawned)
         });
+        started_rx
+            .recv()
+            .context("acknowledgment test thread did not start")?;
 
-        pending.wait_for_spawn_timeouts(Duration::from_millis(10), Duration::from_millis(250))?;
-        acknowledgment.join().expect("acknowledgment thread")?;
+        pending.wait_for_spawn_timeouts(Duration::from_millis(10), Duration::from_secs(1))?;
+        acknowledgment
+            .join()
+            .map_err(|_| anyhow::anyhow!("acknowledgment thread panicked"))??;
         Ok(())
     }
 

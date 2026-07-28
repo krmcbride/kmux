@@ -12,10 +12,10 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, ensure};
-use directories::BaseDirs;
 use sha2::{Digest, Sha256};
 
 use crate::telemetry;
+use crate::user_dirs;
 
 use super::model::{AgentObservationKey, AgentObservationState, AgentSessionKey};
 
@@ -39,11 +39,7 @@ pub fn now_unix_seconds() -> u64 {
 impl StateStore {
     /// Open the XDG-backed kmux agent-observation state store.
     pub fn new() -> Result<Self> {
-        let base_dirs = BaseDirs::new().context("could not determine state directory")?;
-        let state_root = base_dirs
-            .state_dir()
-            .unwrap_or_else(|| base_dirs.data_local_dir());
-        Self::with_path(state_root.join("kmux"))
+        Self::with_path(user_dirs::state_dir()?.join("kmux"))
     }
 
     /// Insert or replace one reporter's latest observation for an agent session.
