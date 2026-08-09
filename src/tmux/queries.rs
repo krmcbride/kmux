@@ -18,8 +18,8 @@ use super::models::{
 };
 use super::process::{Tmux, bail_tmux, tmux_server_is_absent};
 
-// Unit Separator (U+001F) delimits rich tmux format output where fields such as
-// pane titles and current paths may contain tabs.
+// Unit Separator (U+001F) delimits tmux format output where fields such as pane
+// titles and current paths may contain tabs.
 pub(super) const TMUX_FIELD_SEPARATOR: char = '\u{1f}';
 
 impl Tmux {
@@ -37,12 +37,11 @@ impl Tmux {
 
     /// List windows in one session, or all sessions when no session is provided.
     pub fn list_windows(&self, session_name: Option<&str>) -> Result<Vec<TmuxWindow>> {
-        let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
         let output = if let Some(session_name) = session_name {
             let target = format!("{}:", exact_session_target(session_name));
-            self.stdout(["list-windows", "-t", &target, "-F", format])?
+            self.stdout(["list-windows", "-t", &target, "-F", TMUX_WINDOW_FORMAT])?
         } else {
-            self.stdout(["list-windows", "-a", "-F", format])?
+            self.stdout(["list-windows", "-a", "-F", TMUX_WINDOW_FORMAT])?
         };
         parse_windows(&output)
     }
@@ -51,8 +50,7 @@ impl Tmux {
     pub fn list_windows_by_id(&self, session_id: &str) -> Result<Vec<TmuxWindow>> {
         validate_session_id(session_id)?;
         let target = format!("{session_id}:");
-        let format = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
-        let output = self.stdout(["list-windows", "-t", &target, "-F", format])?;
+        let output = self.stdout(["list-windows", "-t", &target, "-F", TMUX_WINDOW_FORMAT])?;
         parse_windows(&output)
     }
 
@@ -62,10 +60,7 @@ impl Tmux {
     /// remain errors so callers do not mistake permission or protocol failures
     /// for an empty tmux instance.
     pub fn list_panes(&self) -> Result<Vec<TmuxPane>> {
-        let separator = TMUX_FIELD_SEPARATOR;
-        let format = format!(
-            "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{window_index}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_current_path}}{separator}#{{@kmux_role}}"
-        );
+        let format = lightweight_pane_format();
         let output = self.output(["list-panes", "-a", "-F", &format])?;
         if !output.status.success() {
             if tmux_server_is_absent(&output.stderr) {
@@ -78,10 +73,7 @@ impl Tmux {
 
     /// List rich pane snapshots used by status and sidebar reconciliation.
     pub fn list_pane_snapshots(&self) -> Result<Vec<TmuxPaneSnapshot>> {
-        let separator = TMUX_FIELD_SEPARATOR;
-        let format = format!(
-            "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{window_index}}{separator}#{{pane_id}}{separator}#{{pane_index}}{separator}#{{pane_left}}{separator}#{{pane_width}}{separator}#{{window_width}}{separator}#{{window_layout}}{separator}#{{pane_title}}{separator}#{{pane_current_command}}{separator}#{{pane_current_path}}{separator}#{{pane_active}}{separator}#{{pane_last}}{separator}#{{window_active}}{separator}#{{window_last_flag}}{separator}#{{session_attached}}{separator}#{{@kmux_role}}"
-        );
+        let format = rich_pane_format();
         let output = self.stdout(["list-panes", "-a", "-F", &format])?;
         parse_pane_snapshots(&output)
     }
@@ -101,6 +93,34 @@ impl Tmux {
             .iter()
             .any(|window| window.window_name == window_name))
     }
+}
+
+const TMUX_WINDOW_FORMAT: &str = "#{session_name}\t#{window_id}\t#{window_index}\t#{window_name}\t#{window_width}\t#{window_active}\t#{window_layout}";
+
+struct ParsedPanePrefix {
+    identity: TmuxPaneIdentity,
+    placement: TmuxPanePlacement,
+}
+
+fn pane_format_prefix() -> String {
+    let separator = TMUX_FIELD_SEPARATOR;
+    format!(
+        "#{{session_id}}{separator}#{{session_name}}{separator}#{{window_id}}{separator}#{{window_name}}{separator}#{{window_index}}{separator}#{{pane_id}}{separator}#{{pane_index}}"
+    )
+}
+
+fn lightweight_pane_format() -> String {
+    let prefix = pane_format_prefix();
+    format!(
+        "{prefix}{TMUX_FIELD_SEPARATOR}#{{pane_current_path}}{TMUX_FIELD_SEPARATOR}#{{@kmux_role}}"
+    )
+}
+
+fn rich_pane_format() -> String {
+    let prefix = pane_format_prefix();
+    format!(
+        "{prefix}{TMUX_FIELD_SEPARATOR}#{{pane_left}}{TMUX_FIELD_SEPARATOR}#{{pane_width}}{TMUX_FIELD_SEPARATOR}#{{window_width}}{TMUX_FIELD_SEPARATOR}#{{window_layout}}{TMUX_FIELD_SEPARATOR}#{{pane_title}}{TMUX_FIELD_SEPARATOR}#{{pane_current_command}}{TMUX_FIELD_SEPARATOR}#{{pane_current_path}}{TMUX_FIELD_SEPARATOR}#{{pane_active}}{TMUX_FIELD_SEPARATOR}#{{pane_last}}{TMUX_FIELD_SEPARATOR}#{{window_active}}{TMUX_FIELD_SEPARATOR}#{{window_last_flag}}{TMUX_FIELD_SEPARATOR}#{{session_attached}}{TMUX_FIELD_SEPARATOR}#{{@kmux_role}}"
+    )
 }
 
 fn parse_windows(output: &str) -> Result<Vec<TmuxWindow>> {
@@ -174,25 +194,11 @@ fn parse_pane(line: &str) -> Result<TmuxPane> {
     if fields.len() != 9 {
         bail!("unexpected tmux pane format: {line:?}");
     }
-    validate_session_id(fields[0])?;
-    validate_window_id(fields[2])?;
-    if !is_tmux_pane_id(fields[5]) {
-        bail!("invalid tmux pane id {:?}", fields[5]);
-    }
+    let prefix = parse_pane_prefix(&fields, fields[7])?;
 
     Ok(TmuxPane {
-        identity: TmuxPaneIdentity {
-            session_id: fields[0].to_owned(),
-            window_id: fields[2].to_owned(),
-            pane_id: fields[5].to_owned(),
-        },
-        placement: TmuxPanePlacement {
-            session_name: fields[1].to_owned(),
-            window_name: fields[3].to_owned(),
-            window_index: fields[4].to_owned(),
-            pane_index: fields[6].to_owned(),
-            current_path: non_empty_string(fields[7]),
-        },
+        identity: prefix.identity,
+        placement: prefix.placement,
         kmux_role: non_empty_string(fields[8]),
     })
 }
@@ -204,25 +210,11 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
     if fields.len() != 20 {
         bail!("unexpected tmux pane snapshot format: {line:?}");
     }
-    validate_session_id(fields[0])?;
-    validate_window_id(fields[2])?;
-    if !is_tmux_pane_id(fields[5]) {
-        bail!("invalid tmux pane id {:?}", fields[5]);
-    }
+    let prefix = parse_pane_prefix(&fields, fields[13])?;
 
     Ok(TmuxPaneSnapshot {
-        identity: TmuxPaneIdentity {
-            session_id: fields[0].to_owned(),
-            window_id: fields[2].to_owned(),
-            pane_id: fields[5].to_owned(),
-        },
-        placement: TmuxPanePlacement {
-            session_name: fields[1].to_owned(),
-            window_name: fields[3].to_owned(),
-            window_index: fields[4].to_owned(),
-            pane_index: fields[6].to_owned(),
-            current_path: non_empty_string(fields[13]),
-        },
+        identity: prefix.identity,
+        placement: prefix.placement,
         geometry: TmuxPaneGeometry {
             pane_left: parse_pane_snapshot_u16(line, "pane_left", fields[7])?,
             pane_width: parse_pane_snapshot_u16(line, "pane_width", fields[8])?,
@@ -239,6 +231,29 @@ fn parse_pane_snapshot(line: &str) -> Result<TmuxPaneSnapshot> {
         title: non_empty_string(fields[11]),
         current_command: non_empty_string(fields[12]),
         kmux_role: non_empty_string(fields[19]),
+    })
+}
+
+fn parse_pane_prefix(fields: &[&str], current_path: &str) -> Result<ParsedPanePrefix> {
+    validate_session_id(fields[0])?;
+    validate_window_id(fields[2])?;
+    if !is_tmux_pane_id(fields[5]) {
+        bail!("invalid tmux pane id {:?}", fields[5]);
+    }
+
+    Ok(ParsedPanePrefix {
+        identity: TmuxPaneIdentity {
+            session_id: fields[0].to_owned(),
+            window_id: fields[2].to_owned(),
+            pane_id: fields[5].to_owned(),
+        },
+        placement: TmuxPanePlacement {
+            session_name: fields[1].to_owned(),
+            window_name: fields[3].to_owned(),
+            window_index: fields[4].to_owned(),
+            pane_index: fields[6].to_owned(),
+            current_path: non_empty_string(current_path),
+        },
     })
 }
 
@@ -327,6 +342,22 @@ mod tests {
     }
 
     #[test]
+    fn rich_pane_snapshots_reject_inconsistent_names_for_one_session_id() {
+        let first = rich_pane_record("$1", "project-alpha", "@1", "%1");
+        let second = rich_pane_record("$1", "renamed-project", "@2", "%2");
+        let output = format!("{first}\n{second}");
+
+        let error = parse_pane_snapshots(&output)
+            .expect_err("one opaque session id must not have conflicting names");
+
+        assert!(
+            error
+                .to_string()
+                .contains("inconsistent tmux pane records for session id \"$1\"")
+        );
+    }
+
+    #[test]
     fn parses_pane_snapshots() -> Result<()> {
         let separator = TMUX_FIELD_SEPARATOR;
         let output = format!(
@@ -384,6 +415,79 @@ mod tests {
         assert!(message.contains("pane_width"));
         assert!(message.contains("wide"));
         assert!(message.contains("tmux pane snapshot"));
+    }
+
+    #[test]
+    fn pane_parsers_preserve_tabs_inside_fields() -> Result<()> {
+        let separator = TMUX_FIELD_SEPARATOR;
+        let lightweight = format!(
+            "$1{separator}project\talpha{separator}@1{separator}main\twork{separator}1{separator}%1{separator}0{separator}/repo/project\talpha{separator}sidebar"
+        );
+        let rich = format!(
+            "$1{separator}project\talpha{separator}@1{separator}main\twork{separator}1{separator}%1{separator}0{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,1{separator}editor\tpane{separator}shell\tcommand{separator}/repo/project\talpha{separator}1{separator}0{separator}1{separator}0{separator}1{separator}sidebar"
+        );
+
+        let lightweight = parse_panes(&lightweight)?;
+        let rich = parse_pane_snapshots(&rich)?;
+
+        assert_eq!(lightweight[0].placement.session_name, "project\talpha");
+        assert_eq!(lightweight[0].placement.window_name, "main\twork");
+        assert_eq!(
+            lightweight[0].placement.current_path.as_deref(),
+            Some("/repo/project\talpha")
+        );
+        assert_eq!(rich[0].title.as_deref(), Some("editor\tpane"));
+        assert_eq!(rich[0].current_command.as_deref(), Some("shell\tcommand"));
+        assert_eq!(
+            rich[0].placement.current_path.as_deref(),
+            Some("/repo/project\talpha")
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn pane_parsers_share_opaque_id_validation() {
+        for (session_id, window_id, pane_id, expected) in [
+            ("project-alpha", "@1", "%1", "invalid tmux session id"),
+            ("$1", "main", "%1", "invalid tmux window id"),
+            ("$1", "@1", "pane-1", "invalid tmux pane id"),
+        ] {
+            let lightweight =
+                lightweight_pane_record(session_id, "project-alpha", window_id, pane_id);
+            let rich = rich_pane_record(session_id, "project-alpha", window_id, pane_id);
+
+            let lightweight_error = parse_panes(&lightweight)
+                .expect_err("lightweight pane records must reject malformed opaque ids")
+                .to_string();
+            let rich_error = parse_pane_snapshots(&rich)
+                .expect_err("rich pane records must reject malformed opaque ids")
+                .to_string();
+
+            assert_eq!(lightweight_error, rich_error);
+            assert!(lightweight_error.contains(expected));
+        }
+    }
+
+    #[test]
+    fn positional_parsers_reject_malformed_field_counts() {
+        assert!(
+            parse_panes("too few fields")
+                .expect_err("lightweight pane records require nine fields")
+                .to_string()
+                .contains("unexpected tmux pane format")
+        );
+        assert!(
+            parse_pane_snapshots("too few fields")
+                .expect_err("rich pane records require twenty fields")
+                .to_string()
+                .contains("unexpected tmux pane snapshot format")
+        );
+        assert!(
+            parse_window("too\tfew")
+                .expect_err("window records require seven fields")
+                .to_string()
+                .contains("unexpected tmux window format")
+        );
     }
 
     #[test]
@@ -458,5 +562,29 @@ mod tests {
             }
         );
         Ok(())
+    }
+
+    fn lightweight_pane_record(
+        session_id: &str,
+        session_name: &str,
+        window_id: &str,
+        pane_id: &str,
+    ) -> String {
+        let separator = TMUX_FIELD_SEPARATOR;
+        format!(
+            "{session_id}{separator}{session_name}{separator}{window_id}{separator}main{separator}1{separator}{pane_id}{separator}0{separator}/repo/project-alpha{separator}"
+        )
+    }
+
+    fn rich_pane_record(
+        session_id: &str,
+        session_name: &str,
+        window_id: &str,
+        pane_id: &str,
+    ) -> String {
+        let separator = TMUX_FIELD_SEPARATOR;
+        format!(
+            "{session_id}{separator}{session_name}{separator}{window_id}{separator}main{separator}1{separator}{pane_id}{separator}0{separator}0{separator}80{separator}80{separator}b25d,80x24,0,0,1{separator}editor{separator}shell{separator}/repo/project-alpha{separator}1{separator}0{separator}1{separator}0{separator}1{separator}"
+        )
     }
 }
