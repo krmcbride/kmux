@@ -23,10 +23,6 @@ pub use models::{
     TmuxPaneSnapshot, TmuxPaneVisibility, TmuxWindow,
 };
 pub use process::Tmux;
-// Preserve the existing crate-visible raw-output type even though current callers
-// use it only through `Tmux::output`'s inferred return value.
-#[allow(unused_imports)]
-pub use process::TmuxOutput;
 
 #[cfg(test)]
 pub mod test_support {

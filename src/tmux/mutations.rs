@@ -43,6 +43,12 @@ impl Tmux {
         Ok(())
     }
 
+    /// Start a shell command through tmux without waiting for it to finish.
+    pub fn run_shell_background(&self, command: &str) -> Result<()> {
+        self.stdout(["run-shell", "-b", command])?;
+        Ok(())
+    }
+
     /// Select a window by opaque session id and exact window name.
     pub fn select_window_by_id(&self, session_id: &str, window_name: &str) -> Result<()> {
         validate_session_id(session_id)?;

@@ -41,6 +41,7 @@ pub mod git {
 /// Tmux CLI adapter contracts.
 pub mod tmux {
     pub use crate::tmux::contract_tests::{
+        background_shell_returns_before_command_finishes_and_propagates_errors,
         creates_selects_lists_and_kills_windows_on_isolated_socket,
         lightweight_pane_listing_treats_missing_server_as_empty,
         literal_command_runs_inside_shell_and_window_survives_exit,

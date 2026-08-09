@@ -18,10 +18,10 @@ pub struct Tmux {
 
 #[derive(Debug)]
 /// Raw tmux subprocess output with UTF-8-lossy stdout and stderr text.
-pub struct TmuxOutput {
-    pub status: ExitStatus,
-    pub stdout: String,
-    pub stderr: String,
+pub(super) struct TmuxOutput {
+    pub(super) status: ExitStatus,
+    pub(super) stdout: String,
+    pub(super) stderr: String,
 }
 
 impl Tmux {
@@ -55,7 +55,7 @@ impl Tmux {
     }
 
     /// Run a tmux command and return raw output without requiring a successful exit status.
-    pub fn output<I, S>(&self, args: I) -> Result<TmuxOutput>
+    pub(super) fn output<I, S>(&self, args: I) -> Result<TmuxOutput>
     where
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
@@ -113,7 +113,7 @@ impl Tmux {
     }
 
     /// Run a tmux command, require success, and return trimmed stdout.
-    pub fn stdout<I, S>(&self, args: I) -> Result<String>
+    pub(super) fn stdout<I, S>(&self, args: I) -> Result<String>
     where
         I: IntoIterator<Item = S>,
         S: Into<OsString>,
