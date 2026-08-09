@@ -1,10 +1,12 @@
 //! Process-backed contracts for the concrete tmux adapter.
 
+use std::fs;
 use std::path::Path;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use tempfile::TempDir;
 
 use super::contract_support::{TmuxFixture, create_test_session};
@@ -153,6 +155,44 @@ pub fn literal_command_runs_inside_shell_and_window_survives_exit() -> Result<()
     Ok(())
 }
 
+pub fn background_shell_returns_before_command_finishes_and_propagates_errors() -> Result<()> {
+    let fixture = TmuxFixture::new()?;
+    let temp = TempDir::new()?;
+    let tmux = &fixture.tmux;
+    assert!(tmux.run_shell_background(":").is_err());
+
+    create_test_session(tmux, "project", temp.path())?;
+    let started = temp.path().join("background-started");
+    let release = temp.path().join("background-release");
+    let finished = temp.path().join("background-finished");
+    let command = format!(
+        ": > {}; while [ ! -e {} ]; do sleep 0.025; done; : > {}",
+        quote_shell_path(&started),
+        quote_shell_path(&release),
+        quote_shell_path(&finished),
+    );
+    let (result_sender, result_receiver) = mpsc::channel();
+    let background_tmux = tmux.clone();
+    thread::spawn(move || {
+        let _ = result_sender.send(background_tmux.run_shell_background(&command));
+    });
+
+    assert!(wait_for_path(&started));
+    let run_result = match result_receiver.recv_timeout(Duration::from_secs(5)) {
+        Ok(result) => result,
+        Err(error) => {
+            fs::write(&release, [])?;
+            return Err(error)
+                .context("tmux run-shell did not return while its background command was blocked");
+        }
+    };
+    run_result?;
+    assert!(!finished.exists());
+    fs::write(&release, [])?;
+    assert!(wait_for_path(&finished));
+    Ok(())
+}
+
 fn wait_for_path(path: &Path) -> bool {
     let deadline = Instant::now() + Duration::from_secs(10);
     while Instant::now() < deadline {
@@ -162,4 +202,8 @@ fn wait_for_path(path: &Path) -> bool {
         thread::sleep(Duration::from_millis(25));
     }
     false
+}
+
+fn quote_shell_path(path: &Path) -> String {
+    format!("'{}'", path.to_string_lossy().replace('\'', "'\"'\"'"))
 }

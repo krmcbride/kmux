@@ -165,8 +165,7 @@ fn set_current_sidebar_pane_title(tmux: &Tmux) {
 fn request_disable_async() -> Result<()> {
     let tmux = Tmux::from_env();
     let command = sidebar_off_command()?;
-    tmux.stdout(["run-shell", "-b", &command])?;
-    Ok(())
+    tmux.run_shell_background(&command)
 }
 
 // Reconcile under the global sidebar lock: one sidebar pane per window, marked

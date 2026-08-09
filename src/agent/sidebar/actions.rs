@@ -456,7 +456,7 @@ pub mod contract_tests {
         AgentLocationHints, AgentObservationKey, AgentObservationState, AgentSessionKey,
         AgentStatus,
     };
-    use crate::tmux::contract_support::{TmuxFixture, create_test_session};
+    use crate::tmux::contract_support::{TmuxFixture, create_test_session, link_window};
 
     use super::*;
 
@@ -614,13 +614,11 @@ pub mod contract_tests {
             "project-copy",
             fixture.temp.path(),
         )?;
-        fixture.tmux_fixture.tmux.stdout([
-            "link-window",
-            "-s",
+        link_window(
+            &fixture.tmux_fixture.tmux,
             &target_window_id,
-            "-t",
-            "project-copy:",
-        ])?;
+            "project-copy",
+        )?;
         let sidebar_pane_id =
             fixture
                 .tmux_fixture

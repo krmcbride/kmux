@@ -96,3 +96,15 @@ pub fn create_test_session(tmux: &Tmux, session_name: &str, cwd: &Path) -> Resul
     tmux.wait_for_pane_current_path(&pane_id, cwd)?;
     Ok(pane_id)
 }
+
+/// Link a physical window into another session for duplicate-record contract setup.
+pub fn link_window(tmux: &Tmux, window_id: &str, target_session: &str) -> Result<()> {
+    tmux.stdout([
+        "link-window",
+        "-s",
+        window_id,
+        "-t",
+        &format!("{target_session}:"),
+    ])?;
+    Ok(())
+}

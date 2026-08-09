@@ -24,3 +24,8 @@ fn physical_window_id_disambiguates_duplicate_names() -> Result<()> {
 fn literal_command_runs_inside_shell_and_window_survives_exit() -> Result<()> {
     kmux::contract_tests::tmux::literal_command_runs_inside_shell_and_window_survives_exit()
 }
+
+#[test]
+fn background_shell_returns_before_command_finishes_and_propagates_errors() -> Result<()> {
+    kmux::contract_tests::tmux::background_shell_returns_before_command_finishes_and_propagates_errors()
+}
