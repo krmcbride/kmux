@@ -44,8 +44,7 @@ impl Tmux {
         if !is_tmux_pane_id(&pane_id) {
             return Ok(None);
         }
-        let format = "#{session_name}\t#{session_id}\t#{window_name}\t#{window_id}\t#{pane_id}";
-        let output = self.output(["display-message", "-p", "-t", &pane_id, format])?;
+        let output = self.output(["display-message", "-p", "-t", &pane_id, TMUX_CONTEXT_FORMAT])?;
         if !output.status.success() {
             if tmux_server_is_absent(&output.stderr) || tmux_pane_is_absent(&output.stderr) {
                 return Ok(None);
@@ -73,11 +72,16 @@ impl Tmux {
     // reconstructing context from environment variables. Keep the format and
     // parsing together so tmux format changes fail near the adapter boundary.
     fn query_pane_context(&self, target_pane: Option<&str>) -> Result<TmuxContext> {
-        let format = "#{session_name}\t#{session_id}\t#{window_name}\t#{window_id}\t#{pane_id}";
         let output = if let Some(target_pane) = target_pane {
-            self.stdout(["display-message", "-p", "-t", target_pane, format])?
+            self.stdout([
+                "display-message",
+                "-p",
+                "-t",
+                target_pane,
+                TMUX_CONTEXT_FORMAT,
+            ])?
         } else {
-            self.stdout(["display-message", "-p", format])?
+            self.stdout(["display-message", "-p", TMUX_CONTEXT_FORMAT])?
         };
         parse_context(&output)
     }
@@ -112,6 +116,9 @@ pub(super) fn is_tmux_pane_id(pane_id: &str) -> bool {
         .strip_prefix('%')
         .is_some_and(|value| !value.is_empty() && value.chars().all(|ch| ch.is_ascii_digit()))
 }
+
+const TMUX_CONTEXT_FORMAT: &str =
+    "#{session_name}\t#{session_id}\t#{window_name}\t#{window_id}\t#{pane_id}";
 
 fn parse_context(output: &str) -> Result<TmuxContext> {
     let fields = output.trim_end().split('\t').collect::<Vec<_>>();
