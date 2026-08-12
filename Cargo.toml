@@ -3,6 +3,7 @@ name = "kmux"
 version = "0.1.0"
 edition = "2024"
 description = "Lean tmux and git worktree workflow helper"
+license = "MIT"
 
 [features]
 internal-adapter-contract-tests = []
