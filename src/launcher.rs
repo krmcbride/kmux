@@ -1049,6 +1049,11 @@ mod tests {
 pub mod contract_tests {
     use super::*;
 
+    // Process-backed contract tests may run while Nix is saturating the build
+    // host. Keep production handoff deadlines strict, but give test helper
+    // threads enough scheduling headroom to observe the same behavior reliably.
+    const CONTRACT_HANDOFF_TIMEOUT: Duration = Duration::from_secs(30);
+
     fn resolved(
         executable: impl Into<String>,
         args: &[&str],
@@ -1064,6 +1069,10 @@ pub mod contract_tests {
 
     fn create_pending(launcher: &ResolvedLauncher, cwd: &Path) -> Result<PendingLaunch> {
         PendingLaunch::create_under(launcher, cwd, &cwd.join("launcher-state"))
+    }
+
+    fn wait_for_contract_spawn(pending: PendingLaunch) -> Result<()> {
+        pending.wait_for_spawn_timeouts(CONTRACT_HANDOFF_TIMEOUT, CONTRACT_HANDOFF_TIMEOUT)
     }
 
     fn join_ingress(ingress: thread::JoinHandle<Result<i32>>) -> Result<i32> {
@@ -1106,7 +1115,7 @@ pub mod contract_tests {
             .to_path_buf();
         let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
 
-        pending.wait_for_spawn()?;
+        wait_for_contract_spawn(pending)?;
         assert_eq!(join_ingress(ingress)?, 0);
         assert!(!directory.exists());
         let bytes = fs::read(output)?;
@@ -1135,7 +1144,7 @@ pub mod contract_tests {
             let request_path = pending.request_path.clone();
             let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
 
-            pending.wait_for_spawn()?;
+            wait_for_contract_spawn(pending)?;
             assert_eq!(join_ingress(ingress)?, 0);
             assert_eq!(fs::read_to_string(output)?, expected_count);
         }
@@ -1158,7 +1167,7 @@ pub mod contract_tests {
             .collect::<Vec<_>>();
 
         for launch in pending {
-            launch.wait_for_spawn()?;
+            wait_for_contract_spawn(launch)?;
         }
         for ingress in ingress {
             assert_eq!(join_ingress(ingress)?, 0);
@@ -1179,7 +1188,7 @@ pub mod contract_tests {
         let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
 
         let parent_error = expected_error(
-            pending.wait_for_spawn(),
+            wait_for_contract_spawn(pending),
             "spawn failure should be acknowledged",
         )?
         .to_string();
@@ -1249,7 +1258,7 @@ pub mod contract_tests {
         let request_path = pending.request_path.clone();
         let ingress = thread::spawn(move || run_ingress_for_test(&request_path));
 
-        pending.wait_for_spawn()?;
+        wait_for_contract_spawn(pending)?;
         assert_eq!(join_ingress(ingress)?, 0);
         assert!(marker.exists());
         Ok(())
