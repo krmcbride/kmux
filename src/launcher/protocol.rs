@@ -14,7 +14,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tempfile::{Builder, TempDir};
 
-use super::validate_cwd;
 use crate::user_dirs;
 
 pub(super) const PROTOCOL_VERSION: u32 = 1;
@@ -69,6 +68,17 @@ pub(super) fn validate_request(request: &LaunchRequest) -> Result<()> {
         bail!("private launcher request arguments are invalid");
     }
     validate_cwd(&request.cwd)
+}
+
+pub(super) fn validate_cwd(cwd: &Path) -> Result<()> {
+    if !cwd.is_absolute() {
+        bail!("launcher working directory must be absolute");
+    }
+    let metadata = fs::metadata(cwd).context("launcher working directory is unavailable")?;
+    if !metadata.is_dir() {
+        bail!("launcher working directory is not a directory");
+    }
+    Ok(())
 }
 
 pub(super) fn create_request_directory() -> Result<TempDir> {
@@ -406,15 +416,11 @@ mod tests {
     use std::thread;
 
     use super::*;
-    use crate::launcher::{PendingLaunch, ResolvedLauncher, run_ingress_for_test};
+    use crate::launcher::ingress::run_ingress_for_test;
+    use crate::launcher::{PendingLaunch, ResolvedLauncher};
 
     fn resolved(executable: impl Into<String>) -> ResolvedLauncher {
-        ResolvedLauncher {
-            name: "example-launcher".to_owned(),
-            executable: executable.into(),
-            static_args: Vec::new(),
-            input: None,
-        }
+        ResolvedLauncher::for_test(executable, &[], None)
     }
 
     fn create_pending(launcher: &ResolvedLauncher, cwd: &Path) -> Result<PendingLaunch> {
@@ -432,13 +438,13 @@ mod tests {
         let second = create_pending(&launcher, cwd.path())?;
         let runtime = fs::canonicalize(cwd.path().join("launcher-state"))?;
 
-        assert_ne!(first.request_path, second.request_path);
+        assert_ne!(first.request_path(), second.request_path());
         for pending in [&first, &second] {
-            let directory = pending.request_path.parent().expect("request parent");
+            let directory = pending.request_path().parent().expect("request parent");
             assert_eq!(directory.parent(), Some(runtime.as_path()));
             assert_eq!(fs::metadata(&runtime)?.mode() & 0o777, 0o700);
             assert_eq!(fs::metadata(directory)?.mode() & 0o777, 0o700);
-            assert_eq!(fs::metadata(&pending.request_path)?.mode() & 0o777, 0o600);
+            assert_eq!(fs::metadata(pending.request_path())?.mode() & 0o777, 0o600);
             assert!(!directory.join(REQUEST_TEMP_FILE).exists());
         }
         Ok(())
@@ -472,9 +478,9 @@ mod tests {
         let cwd = tempfile::tempdir()?;
         let launcher = resolved("example-command");
         let pending = create_pending(&launcher, cwd.path())?;
-        fs::remove_file(&pending.request_path)?;
+        fs::remove_file(pending.request_path())?;
         write_json_atomically(
-            pending.request_path.parent().expect("request parent"),
+            pending.request_path().parent().expect("request parent"),
             REQUEST_TEMP_FILE,
             REQUEST_FILE,
             &LaunchRequest {
@@ -485,7 +491,7 @@ mod tests {
                 input: None,
             },
         )?;
-        let ingress_path = pending.request_path.clone();
+        let ingress_path = pending.request_path().to_path_buf();
         let ingress = thread::spawn(move || run_ingress_for_test(&ingress_path));
 
         pending
@@ -502,14 +508,14 @@ mod tests {
     fn claim_timeout_cancellation_prevents_late_request_consumption() -> Result<()> {
         let cwd = tempfile::tempdir()?;
         let pending = create_pending(&resolved("example-command"), cwd.path())?;
-        let mut file = open_private_file(&pending.request_path)?;
+        let mut file = open_private_file(pending.request_path())?;
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)?;
         let decoded = serde_json::from_slice(&bytes)
             .context("test request should decode before cancellation")?;
 
-        assert!(cancel_unclaimed_request(&pending.request_path)?);
-        let error = finish_request_claim(&pending.request_path, Ok(decoded))
+        assert!(cancel_unclaimed_request(pending.request_path())?);
+        let error = finish_request_claim(pending.request_path(), Ok(decoded))
             .expect_err("ingress must lose after deadline cancellation removes the request");
 
         assert!(
@@ -525,11 +531,11 @@ mod tests {
         let cwd = tempfile::tempdir()?;
         let pending = create_pending(&resolved("example-command"), cwd.path())?;
         let directory = pending
-            .request_path
+            .request_path()
             .parent()
             .expect("request parent")
             .to_path_buf();
-        let mut acknowledgment = create_private_file(&pending.ack_path)?;
+        let mut acknowledgment = create_private_file(pending.acknowledgment_path())?;
         acknowledgment.write_all(b"{malformed")?;
         drop(acknowledgment);
 
@@ -550,10 +556,10 @@ mod tests {
         let external = cwd.path().join("external-request");
         fs::write(&external, "not a request")?;
         let pending = create_pending(&resolved("/bin/true"), cwd.path())?;
-        fs::remove_file(&pending.request_path)?;
-        symlink(&external, &pending.request_path)?;
+        fs::remove_file(pending.request_path())?;
+        symlink(&external, pending.request_path())?;
 
-        run_ingress_for_test(&pending.request_path).expect_err("symlinked request must fail");
+        run_ingress_for_test(pending.request_path()).expect_err("symlinked request must fail");
         assert_eq!(fs::read_to_string(external)?, "not a request");
         Ok(())
     }
