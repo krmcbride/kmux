@@ -1,4 +1,11 @@
 //! Caller-side ownership of one private launcher handoff.
+//!
+//! The caller keeps the private request directory alive until the handoff
+//! resolves. It waits separately for the pane shell to claim the request and for
+//! ingress to spawn the child, so slow shell initialization does not consume the
+//! spawn budget. At the claim deadline, request removal arbitrates cancellation:
+//! the caller either prevents a late spawn or observes that ingress already owns
+//! the request and grants it a fresh spawn-acknowledgment interval.
 
 use std::fs;
 use std::path::{Path, PathBuf};
