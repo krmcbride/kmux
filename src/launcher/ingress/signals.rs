@@ -1,4 +1,9 @@
 //! Unix signal ownership for the pane-side ingress process.
+//!
+//! Ingress and its child share the pane's foreground process group, so terminal
+//! signals reach both. Ingress retains ownership with no-op handlers while the
+//! child receives default signal behavior. This keeps ingress alive to reap the
+//! child before the pane shell resumes.
 
 use std::process::Command;
 

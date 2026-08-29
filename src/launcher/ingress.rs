@@ -1,4 +1,10 @@
 //! Pane-side launcher ingress and child-process ownership.
+//!
+//! Ingress runs as the pane shell's foreground job and starts the configured
+//! launcher with that pane's TTY. It acknowledges spawn so the original workflow
+//! can continue, but remains alive until it reaps the child. That ordering keeps
+//! the shell from resuming beside a launcher that still owns the same TTY, even
+//! when acknowledgment delivery fails.
 
 use std::path::Path;
 use std::process::{Command, ExitStatus, Stdio};

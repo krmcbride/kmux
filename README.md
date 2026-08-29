@@ -78,7 +78,8 @@ the branch or worktree.
 
 When a default launcher is configured, kmux starts it as the foreground program
 in the new window after file operations, `post_create`, and parent metadata are
-complete. Override it for one create without changing the default:
+complete. The pane's configured shell remains its long-lived process and resumes
+when the launcher exits. Override it for one create without changing the default:
 
 ```sh
 kmux workspace create feature/review --launcher editor
