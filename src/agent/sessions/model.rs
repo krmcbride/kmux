@@ -162,7 +162,8 @@ impl ResolvedAgentSession {
         self.target.git_branch.as_deref()
     }
 
-    /// Return the latest reporter-provided directory, if one was provided.
+    /// Return the latest reporter-provided directory, falling back to the
+    /// directory used for workspace attachment.
     pub fn directory(&self) -> Option<&str> {
         self.target
             .directory
