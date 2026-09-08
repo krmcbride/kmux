@@ -13,8 +13,24 @@ pub(super) fn resolve_create(
     config: &Config,
     args: &cli::CreateArgs,
 ) -> Result<Option<ResolvedLauncher>> {
-    let input = resolve_launcher_input(args)?;
-    let selected = if let Some(name) = args.launcher.as_deref() {
+    resolve_launcher(
+        config,
+        args.launcher.as_deref(),
+        args.launcher_input.as_deref(),
+    )
+}
+
+/// Resolve an explicit/default launcher and validate transient caller input before effects.
+pub(super) fn resolve_launcher(
+    config: &Config,
+    launcher: Option<&str>,
+    input: Option<&str>,
+) -> Result<Option<ResolvedLauncher>> {
+    if input.is_some() && launcher.is_none() {
+        bail!("--launcher-input requires --launcher");
+    }
+    let input = resolve_launcher_input(input)?;
+    let selected = if let Some(name) = launcher {
         let launcher = config
             .launcher(name)
             .ok_or_else(|| anyhow::anyhow!("unknown launcher {name:?}"))?;
@@ -33,12 +49,8 @@ pub(super) fn resolve_default(config: &Config) -> Option<ResolvedLauncher> {
         .map(|(name, launcher)| ResolvedLauncher::from_config(name, launcher, None))
 }
 
-fn resolve_launcher_input(args: &cli::CreateArgs) -> Result<Option<String>> {
-    if args.launcher_input.is_some() && args.launcher.is_none() {
-        bail!("--launcher-input requires --launcher");
-    }
-
-    let input = match args.launcher_input.as_deref() {
+fn resolve_launcher_input(input: Option<&str>) -> Result<Option<String>> {
+    let input = match input {
         Some("-") => {
             let mut bytes = Vec::new();
             std::io::stdin()

@@ -44,12 +44,12 @@ _kmux() {
         return
     fi
 
-    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--launcher" ]]; then
+    if [[ ( "$cmd" == "create" || "$cmd" == "open" ) && "${words[CURRENT-1]}" == "--launcher" ]]; then
         _kmux_launchers
         return
     fi
 
-    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--launcher-input" ]]; then
+    if [[ ( "$cmd" == "create" || "$cmd" == "open" ) && "${words[CURRENT-1]}" == "--launcher-input" ]]; then
         return
     fi
 
@@ -67,7 +67,7 @@ _kmux() {
     fi
 
     case "$cmd" in
-        remove)
+        remove|open|close)
             _kmux_workspaces
             ;;
         create)

@@ -59,8 +59,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     // Refresh live tmux evidence at the last responsible moment. The held
     // project lifecycle lock prevents another kmux lifecycle command from
     // changing project windows between this check and Git removal.
-    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
-    let window_id = tmux_resolution.prepare_workspace_removal(resolved.path(), &window_name)?;
+    let window_id = tmux_resolution.prepare_workspace_removal(&resolved, &repo.config)?;
     repo.git.remove_worktree(resolved.path(), args.force)?;
     repo.git.delete_local_branch(branch, true)?;
     if let Some(policy) = state.policy_for_path(resolved.path()) {

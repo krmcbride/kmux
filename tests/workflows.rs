@@ -1790,7 +1790,7 @@ fn remove_rejects_duplicate_expected_windows_before_git_mutation() -> Result<()>
         .args(["workspace", "remove", "feature-remove-duplicate", "--force"])
         .assert()
         .failure()
-        .stderr(predicate::str::contains("has multiple windows named"));
+        .stderr(predicate::str::contains("multiple tmux windows are named"));
 
     assert!(worktree.is_dir());
     assert!(git_stdout(&repo, &["show-ref", "--heads", "feature/remove-duplicate"]).is_ok());

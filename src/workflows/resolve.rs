@@ -18,6 +18,26 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Worksp
     let (state, entries) = load_workspace_state(repo)?;
     let candidates = name_candidates(&repo.config, name);
     let canonical = std::path::Path::new(name).canonicalize().ok();
+    // Exact IDs and canonical paths remain usable even when a label or branch
+    // happens to spell another workspace's identity.
+    if let Some(policy) = state
+        .policies()
+        .iter()
+        .find(|policy| policy.id() == name)
+        .or_else(|| {
+            canonical
+                .as_deref()
+                .and_then(|path| state.policy_for_path(path))
+        })
+    {
+        return WorkspaceRecord::from_policy(
+            policy.clone(),
+            entries
+                .iter()
+                .find(|entry| policy.matches_registration(entry))
+                .cloned(),
+        );
+    }
     let matches = state
         .policies()
         .iter()
@@ -26,15 +46,13 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Worksp
                 .iter()
                 .find(|entry| policy.matches_registration(entry))
                 .and_then(|entry| entry.branch.as_deref());
-            name == policy.id()
-                || (!policy.retired()
-                    && (canonical.as_deref() == Some(policy.path())
-                        || candidates.iter().any(|candidate| {
-                            candidate == policy.id()
-                                || candidate == policy.label()
-                                || candidate == policy.window_slug()
-                                || branch == Some(candidate.as_str())
-                        })))
+            !policy.retired()
+                && candidates.iter().any(|candidate| {
+                    candidate == policy.id()
+                        || candidate == policy.label()
+                        || candidate == policy.window_slug()
+                        || branch == Some(candidate.as_str())
+                })
         })
         .collect::<Vec<_>>();
     match matches.as_slice() {
@@ -115,14 +133,14 @@ pub(super) fn load_workspace_state(
     Ok((state, worktrees))
 }
 
-/// Return remembered, live owned workspaces suitable for tmux restore.
-pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<WorkspaceRecord>> {
+/// Return live external worktrees and remembered owned/primary presentations.
+pub(super) fn restorable_workspaces(repo: &RepoContext) -> Result<Vec<WorkspaceRecord>> {
     let (state, entries) = load_workspace_state(repo)?;
     let mut records = state
         .policies()
         .iter()
         .filter(|policy| {
-            policy.authority() == crate::workspace::Authority::Kmux && policy.presentation()
+            policy.authority() == crate::workspace::Authority::External || policy.presentation()
         })
         .map(|policy| {
             WorkspaceRecord::from_policy(

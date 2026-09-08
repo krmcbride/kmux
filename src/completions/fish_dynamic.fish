@@ -58,3 +58,8 @@ complete -c kmux -n '__kmux_in_workspace_command create' -l launcher-input -r -f
 complete -c kmux -n '__kmux_in_workspace_command create; and not __fish_prev_arg_in --parent --launcher --launcher-input' -f -a '(__kmux_create_branches)'
 complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
 complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'
+
+complete -c kmux -n '__kmux_in_workspace_command close' -f -a '(__kmux_workspaces)'
+complete -c kmux -n '__kmux_in_workspace_command open' -l launcher -r -f -a '(__kmux_launchers)'
+complete -c kmux -n '__kmux_in_workspace_command open' -l launcher-input -r -f
+complete -c kmux -n '__kmux_in_workspace_command open; and not __fish_prev_arg_in --launcher --launcher-input' -f -a '(__kmux_workspaces)'

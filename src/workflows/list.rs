@@ -18,14 +18,38 @@ use crate::workspace::WorkspaceInventoryItem;
 /// Print workspace inventory, optionally as JSON for machine consumers.
 pub(super) fn run(args: cli::ListArgs) -> Result<()> {
     let repo = load_repo_context()?;
-    let items = list_items(&repo)?;
+    let mut items = list_items(&repo)?;
+    let tmux = Tmux::from_env();
+    let windows = tmux
+        .list_panes()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pane| pane.identity.window_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let bindings = windows
+        .into_iter()
+        .filter_map(|id| {
+            tmux.show_window_option(&id, "@kmux_workspace_id")
+                .ok()
+                .flatten()
+                .map(|workspace_id| (workspace_id, id))
+        })
+        .collect::<Vec<_>>();
+    for item in &mut items {
+        item.set_tmux_windows(
+            bindings
+                .iter()
+                .filter(|(id, _)| id == item.workspace_id())
+                .map(|(_, window)| window.clone())
+                .collect(),
+        );
+    }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&items)?);
         return Ok(());
     }
 
-    let tmux = Tmux::from_env();
     let activities = StateStore::new()
         .ok()
         .and_then(|store| workspace_activities(&store, &tmux).ok())
@@ -170,7 +194,7 @@ fn format_mux(
         return "-".to_owned();
     }
 
-    let window_name = config.workspace_window_name(item.workspace_slug());
+    let window_name = config.workspace_window_name(item.presentation_slug());
     match tmux.window_exists_by_name(session_name, &window_name) {
         Ok(true) => "yes".to_owned(),
         Ok(false) | Err(_) => "-".to_owned(),

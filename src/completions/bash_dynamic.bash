@@ -35,13 +35,13 @@ _kmux_dynamic() {
     if [[ ${cword} -ge 3 && "${words[1]}" == "workspace" ]]; then
         local cmd="${words[2]}"
         case "$cmd" in
-            remove)
+            remove|close)
                 if [[ "$cur" != -* ]]; then
                     COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     return
                 fi
                 ;;
-            create)
+            create|open)
                 case "$prev" in
                     --parent)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
@@ -57,7 +57,11 @@ _kmux_dynamic() {
                         ;;
                 esac
                 if [[ "$cur" != -* ]]; then
-                    COMPREPLY=($(compgen -W "$(_kmux_create_branches)" -- "$cur"))
+                    if [[ "$cmd" == "open" ]]; then
+                        COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "$(_kmux_create_branches)" -- "$cur"))
+                    fi
                     return
                 fi
                 ;;

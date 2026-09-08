@@ -19,18 +19,24 @@ use anyhow::{Result, bail};
 
 use super::context::RepoContext;
 use super::project_session::TmuxContext;
+use crate::config::Config;
+use crate::git::Git;
 use crate::launcher::{PendingLaunch, ResolvedLauncher};
+use crate::paths::same_path;
+use crate::tmux::{Tmux, TmuxWindow};
 use crate::workspace::WorkspaceRecord;
+
+const WORKSPACE_ID_OPTION: &str = "@kmux_workspace_id";
 
 /// A newly-created detached shell window that can receive one hidden ingress.
 pub(super) struct CreatedWindow {
-    window_name: String,
+    window_id: String,
     pane_id: String,
 }
 
 /// Whether restore found an existing window or created a missing shell window.
 pub(super) enum RestoreWindow {
-    Existing,
+    Existing(String),
     Created(CreatedWindow),
 }
 
@@ -40,7 +46,7 @@ pub(super) fn create_shell(
     tmux: &TmuxContext,
     resolved: &WorkspaceRecord,
 ) -> Result<CreatedWindow> {
-    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
+    let window_name = presentation_name(&repo.config, resolved);
     if tmux
         .tmux
         .window_exists_by_name_by_id(&tmux.session_id, &window_name)?
@@ -55,10 +61,10 @@ pub(super) fn create_shell(
     let pane_id = tmux
         .tmux
         .create_window_by_id(&tmux.session_id, &window_name, resolved.path())?;
-    Ok(CreatedWindow {
-        window_name,
-        pane_id,
-    })
+    let window_id = tmux.tmux.pane_context(&pane_id)?.window_id;
+    tmux.tmux
+        .set_window_option(&window_id, WORKSPACE_ID_OPTION, resolved.policy().id())?;
+    Ok(CreatedWindow { window_id, pane_id })
 }
 
 /// Return an existing expected window unchanged or create its missing shell window.
@@ -67,26 +73,113 @@ pub(super) fn restore_shell(
     tmux: &TmuxContext,
     resolved: &WorkspaceRecord,
 ) -> Result<RestoreWindow> {
-    let window_name = repo.config.workspace_window_name(resolved.workspace_slug());
-    let expected_windows = tmux
-        .tmux
-        .list_windows_by_id(&tmux.session_id)?
-        .iter()
-        .filter(|window| window.window_name == window_name)
-        .count();
-
-    if expected_windows > 1 {
-        bail!(
-            "multiple tmux windows are named '{}' for workspace '{}'; remove duplicates before restoring",
-            window_name,
-            resolved.workspace_slug()
-        );
-    }
-    if expected_windows == 1 {
-        return Ok(RestoreWindow::Existing);
+    if let Some(window) = find_existing(&tmux.tmux, &tmux.session_id, &repo.config, resolved)? {
+        let name = presentation_name(&repo.config, resolved);
+        if window.window_name != name {
+            tmux.tmux.rename_window(&window.window_id, &name)?;
+        }
+        return Ok(RestoreWindow::Existing(window.window_id));
     }
 
     create_shell(repo, tmux, resolved).map(RestoreWindow::Created)
+}
+
+/// Resolve presentation by stable ID, admitting legacy names only with path evidence.
+pub(super) fn find_existing(
+    tmux: &Tmux,
+    session_id: &str,
+    config: &Config,
+    workspace: &WorkspaceRecord,
+) -> Result<Option<TmuxWindow>> {
+    let name = presentation_name(config, workspace);
+    let windows = tmux.list_windows_by_id(session_id)?;
+    let named = windows
+        .iter()
+        .filter(|window| window.window_name == name)
+        .collect::<Vec<_>>();
+    if named.len() > 1 {
+        bail!(
+            "multiple tmux windows are named '{}' for workspace '{}'; close duplicate windows before continuing",
+            name,
+            workspace.workspace_slug()
+        );
+    }
+    let mut bound = Vec::new();
+    for window in &windows {
+        if tmux
+            .show_window_option(&window.window_id, WORKSPACE_ID_OPTION)?
+            .as_deref()
+            == Some(workspace.policy().id())
+        {
+            bound.push(window);
+        }
+    }
+    if bound.len() > 1 {
+        bail!(
+            "multiple tmux windows are bound to workspace '{}'; close duplicates first",
+            workspace.policy().id()
+        );
+    }
+    let candidate = match (bound.first(), named.first()) {
+        (Some(bound), Some(named)) if bound.window_id != named.window_id => {
+            bail!("tmux window name '{}' conflicts with another window", name)
+        }
+        (Some(bound), _) => Some(*bound),
+        (_, Some(named)) => Some(*named),
+        _ => None,
+    };
+    let Some(window) = candidate else {
+        return Ok(None);
+    };
+    let panes = tmux.list_panes()?;
+    if panes.iter().any(|pane| {
+        pane.identity.window_id == window.window_id && pane.identity.session_id != session_id
+    }) {
+        bail!(
+            "workspace presentation is linked into another tmux session; unlink it before continuing"
+        );
+    }
+    if bound.is_empty() {
+        if tmux
+            .show_window_option(&window.window_id, WORKSPACE_ID_OPTION)?
+            .is_some()
+        {
+            bail!("tmux window '{}' belongs to another workspace", name);
+        }
+        let content = panes
+            .iter()
+            .filter(|pane| {
+                pane.identity.window_id == window.window_id
+                    && pane.kmux_role.as_deref() != Some("sidebar")
+            })
+            .collect::<Vec<_>>();
+        if content.is_empty()
+            || !content.iter().all(|pane| {
+                pane.placement
+                    .current_path
+                    .as_deref()
+                    .and_then(|path| Git::new(path).worktree_root().ok())
+                    .is_some_and(|root| same_path(&root, workspace.path()))
+            })
+        {
+            bail!(
+                "tmux window '{}' has no verified presentation for workspace '{}'; rename or close the conflicting window",
+                name,
+                workspace.workspace_slug()
+            );
+        }
+        tmux.set_window_option(
+            &window.window_id,
+            WORKSPACE_ID_OPTION,
+            workspace.policy().id(),
+        )?;
+    }
+    Ok(Some(window.clone()))
+}
+
+/// Compose configured naming with explicit ephemeral retention.
+pub(super) fn presentation_name(config: &Config, workspace: &WorkspaceRecord) -> String {
+    config.workspace_window_name(&workspace.policy().presentation_slug())
 }
 
 /// Materialize, deliver, and await one launcher's spawn acknowledgment.
@@ -106,5 +199,5 @@ pub(super) fn start_launcher(
 /// Select a newly-created window only after its optional launcher handoff.
 pub(super) fn select_created(tmux: &TmuxContext, window: &CreatedWindow) -> Result<()> {
     tmux.tmux
-        .select_window_by_id(&tmux.session_id, &window.window_name)
+        .select_window_id_in_session(&tmux.session_id, &window.window_id)
 }

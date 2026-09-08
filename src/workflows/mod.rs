@@ -14,6 +14,7 @@ mod create;
 mod files;
 mod launch;
 mod list;
+mod presentation;
 mod project_session;
 mod remove;
 mod resolve;
@@ -25,6 +26,16 @@ mod window;
 /// Run the workspace creation workflow.
 pub fn run_create(args: cli::CreateArgs) -> Result<()> {
     create::run(args)
+}
+
+/// Open one registered worktree in its project session.
+pub fn run_open(args: cli::OpenArgs) -> Result<()> {
+    presentation::open(args)
+}
+
+/// Close only one workspace's remembered tmux presentation.
+pub fn run_close(args: cli::CloseArgs) -> Result<()> {
+    presentation::close(args)
 }
 
 /// Print the fully-resolved active kmux configuration.

@@ -1,8 +1,8 @@
 # kmux
 
-kmux is a tmux and Git worktree workflow helper. It creates one focused
-workspace per branch, restores the tmux windows those workspaces expect, and
-shows agent activity across worktrees in a global sidebar.
+kmux is a tmux and Git worktree workflow helper. It opens registered worktrees
+in a project tmux session, manages the worktrees it creates, and shows agent
+activity across worktrees in a global sidebar.
 
 kmux is currently pre-release. Its CLI and persisted state may still change
 before the first stable release.
@@ -33,10 +33,15 @@ path. Detached callers resolve the same session from its live Git pane paths.
 
 ## Workspace model
 
-A kmux workspace is identified by its canonical Git worktree root. For a main
-checkout at `/repo/project-alpha`, kmux places linked worktrees under the sibling
-directory `/repo/project-alpha__worktrees/` and derives filesystem/tmux slugs
-from branch names.
+A workspace is a registered Git worktree with a stable kmux identity. Git supplies
+its path, HEAD, branch or detached state, and registration flags. Kmux separately
+records its label, lifecycle authority, retention, presentation intent, and lineage.
+External worktrees can live anywhere and remain external when opened in tmux.
+
+Existing branch-derived kmux worktrees migrate once to owned persistent records
+without moving directories or changing branches. New registrations never gain
+authority from a path or branch name. Ownership is bound to the original Git
+registration, so a replacement at the same path cannot inherit it.
 
 The release model distinguishes one Git project from its worktree workspaces:
 
@@ -129,11 +134,27 @@ expected windows:
 kmux workspace restore
 ```
 
-Restore affects only missing expected windows. It uses the current configured
-default launcher with no dynamic input, never a previous one-shot override. An
-existing shell window is left untouched, including after an earlier launcher
-failure. Without a default launcher, create and restore create ordinary shell
-windows.
+Restore opens every live external worktree registered to the project, even if it
+has never been opened in kmux. It also restores remembered owned presentations.
+New windows use the current default launcher without prior one-shot input;
+existing windows keep running, including after an earlier launcher failure.
+Without a default launcher, windows contain the configured tmux shell.
+
+Open one checkout by path, workspace ID, label, or current branch:
+
+```sh
+kmux workspace open /repo/external-worktree
+kmux workspace open --background --launcher editor
+kmux workspace close /repo/external-worktree
+```
+
+With no target, open and close use the current registered checkout, including
+detached worktrees. Open remembers presentation and accepts the same launcher
+input as create. Existing windows are focused or reused without restarting their
+launcher. Close forgets that presentation and closes only its managed window,
+leaving files, commits, branches, and the worktree registration intact. A live
+external worktree remains eligible for the next restore after close. Stale or
+prunable registrations are listed as unavailable and never pruned by restore.
 
 Remove a workspace by branch, slug, or window name. From inside a kmux worktree,
 the name may be omitted:

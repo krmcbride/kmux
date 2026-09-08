@@ -92,6 +92,10 @@ pub enum WorkspaceCommand {
         after_long_help = CREATE_AFTER_LONG_HELP
     )]
     Create(CreateArgs),
+    /// Open or focus a registered worktree without changing its lifecycle authority.
+    Open(OpenArgs),
+    /// Close a workspace's tmux presentation while keeping its worktree.
+    Close(CloseArgs),
     /// List workspaces in the current Git project.
     #[command(long_about = LIST_LONG_ABOUT, after_long_help = LIST_AFTER_LONG_HELP)]
     List(ListArgs),
@@ -158,6 +162,29 @@ pub struct CreateArgs {
 pub struct LaunchArgs {
     /// Opaque path to a private, one-shot launcher request.
     pub request: PathBuf,
+}
+
+#[derive(Debug, Args)]
+pub struct OpenArgs {
+    /// Workspace ID, label, branch, or path; omit to use the current worktree.
+    #[arg(value_hint = ValueHint::Other)]
+    pub target: Option<String>,
+    /// Open without selecting the window; required outside the target session.
+    #[arg(short, long)]
+    pub background: bool,
+    /// Start this configured launcher in a newly created window.
+    #[arg(long, value_hint = ValueHint::Other)]
+    pub launcher: Option<String>,
+    /// Pass one final argument to the launcher; '-' reads it from stdin.
+    #[arg(long, requires = "launcher", allow_hyphen_values = true, value_name = "INPUT", value_hint = ValueHint::Other)]
+    pub launcher_input: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CloseArgs {
+    /// Workspace ID, label, branch, or path; omit to use the current worktree.
+    #[arg(value_hint = ValueHint::Other)]
+    pub target: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -315,7 +342,7 @@ const ROOT_AFTER_LONG_HELP: &str = concat!(
 );
 
 const WORKSPACE_LONG_ABOUT: &str = concat!(
-    "Manage workspaces in the current Git project. Each workspace combines a local branch, linked worktree, and expected tmux window, with optional parent metadata.\n\n",
+    "Manage every registered Git worktree in the current project. Checkout state, lifecycle authority, retention, and tmux presentation are separate.\n\n",
     "Run these commands from the Git project you want to manage."
 );
 const WORKSPACE_AFTER_LONG_HELP: &str = concat!(
@@ -369,10 +396,10 @@ const SET_PARENT_AFTER_LONG_HELP: &str = concat!(
     "  kmux workspace set-parent main feature/sidebar"
 );
 
-const RESTORE_LONG_ABOUT: &str = "Recreate missing tmux windows for workspaces in the current Git project. Existing windows are left unchanged. New windows use the currently configured default launcher.";
+const RESTORE_LONG_ABOUT: &str = "Open every live external worktree and remembered workspace in the project tmux session, including worktrees never opened before. Existing windows keep running. New windows use the current default launcher without one-shot input.";
 const RESTORE_AFTER_LONG_HELP: &str = "Example:\n  kmux workspace restore";
 
-const LIST_LONG_ABOUT: &str = "List workspaces and their parent, Git, tmux, and agent context for the current Git project. This command does not change workspace state.";
+const LIST_LONG_ABOUT: &str = "List workspaces and their parent, Git, tmux, and agent context for the current Git project. Git supplies checkout facts; kmux reconciles policy records and migrates legacy state once.";
 const LIST_AFTER_LONG_HELP: &str = "Examples:\n  kmux workspace list\n  kmux workspace list --json";
 const LIST_JSON_LONG_HELP: &str = "Print the current project's workspace inventory as JSON.";
 

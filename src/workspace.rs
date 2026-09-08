@@ -42,6 +42,8 @@ pub struct WorkspaceInventoryItem {
     authority: Authority,
     retention: Option<Retention>,
     presentation: bool,
+    presentation_slug: String,
+    tmux_window_ids: Vec<String>,
     registered: bool,
     live: bool,
     git_head: Option<String>,
@@ -174,6 +176,8 @@ impl WorkspaceInventoryItem {
             authority: record.policy.authority(),
             retention: record.policy.retention(),
             presentation: record.policy.presentation(),
+            presentation_slug: record.policy.presentation_slug(),
+            tmux_window_ids: Vec::new(),
             registered: record.git.is_some(),
             git_head: record.git.as_ref().and_then(|entry| entry.head.clone()),
             creation_anchor: record.policy.creation_anchor().map(ToOwned::to_owned),
@@ -221,6 +225,21 @@ impl WorkspaceInventoryItem {
     /// Return the workspace slug serialized in `workspace list --json` output.
     pub fn workspace_slug(&self) -> &str {
         &self.workspace_slug
+    }
+
+    /// Return the stable policy identity used to bind a tmux window.
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    /// Return the current window label with explicit retention where applicable.
+    pub fn presentation_slug(&self) -> &str {
+        &self.presentation_slug
+    }
+
+    /// Attach best-effort live tmux facts without changing remembered presentation.
+    pub fn set_tmux_windows(&mut self, ids: Vec<String>) {
+        self.tmux_window_ids = ids;
     }
 
     /// Return the Git branch serialized in `workspace list --json` output.
@@ -296,18 +315,6 @@ pub fn validated_kmux_record(
     let record = WorkspaceRecord::from_worktree(worktree, is_main)?;
     validate_branch_derived_workspace_slug(paths, &record)?;
     Ok(record)
-}
-
-/// Convert strict kmux worktrees into reusable workspace records.
-pub fn strict_kmux_workspace_records(
-    paths: &RepoPaths,
-    worktrees: impl IntoIterator<Item = WorktreeInfo>,
-) -> Result<Vec<WorkspaceRecord>> {
-    worktrees
-        .into_iter()
-        .filter(|worktree| is_strict_kmux_workspace(paths, worktree))
-        .map(|worktree| WorkspaceRecord::from_worktree(worktree, false))
-        .collect()
 }
 
 /// Reject branch/path mismatches so strict commands do not operate on ambiguous worktrees.
@@ -471,31 +478,6 @@ mod tests {
                 .contains("non-derived kmux workspace path")
         );
         assert!(error.to_string().contains("expected 'feature-legacy-auth'"));
-    }
-
-    #[test]
-    fn strict_workspace_records_return_reusable_records() -> Result<()> {
-        let paths = repo_paths();
-        let records = strict_kmux_workspace_records(
-            &paths,
-            [
-                worktree("/repo/project", Some("main")),
-                worktree(
-                    "/repo/project__worktrees/feature-auth",
-                    Some("feature/auth"),
-                ),
-                worktree(
-                    "/repo/project__worktrees/custom-auth",
-                    Some("feature/custom"),
-                ),
-                worktree("/repo/project__worktrees/detached", None),
-            ],
-        )?;
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].workspace_slug(), "feature-auth");
-        assert_eq!(records[0].branch(), Some("feature/auth"));
-        Ok(())
     }
 
     #[test]

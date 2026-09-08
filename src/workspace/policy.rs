@@ -116,6 +116,20 @@ impl WorkspacePolicy {
     pub fn presentation(&self) -> bool {
         self.presentation
     }
+
+    /// Remember or forget presentation without granting lifecycle authority.
+    pub fn set_presentation(&mut self, presentation: bool) {
+        self.presentation = presentation;
+    }
+
+    /// Make ephemeral retention explicit in the tmux window name.
+    pub fn presentation_slug(&self) -> String {
+        if self.retention == Some(Retention::Ephemeral) {
+            format!("ephemeral-{}", self.window_slug)
+        } else {
+            self.window_slug.clone()
+        }
+    }
     /// Return the original creation commit, when known.
     pub fn creation_anchor(&self) -> Option<&str> {
         self.creation_anchor.as_deref()

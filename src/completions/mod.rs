@@ -11,7 +11,8 @@ use crate::cli;
 use crate::config::Config;
 use crate::git::Git;
 use crate::paths::RepoPaths;
-use crate::workspace::strict_kmux_workspace_records;
+use crate::state::workspace::WorkspaceStateStore;
+use crate::workspace::{WorkspacePolicy, is_strict_kmux_workspace};
 
 /// Print static clap completions plus kmux dynamic completion hooks for a shell.
 pub fn generate(shell: Shell) -> Result<()> {
@@ -90,7 +91,7 @@ fn public_completion_command(command: &Command) -> Command {
     public
 }
 
-/// Print strict kmux workspace slugs for shell completion.
+/// Print stable workspace labels for shell completion without changing repository state.
 pub fn complete_workspaces() -> Result<()> {
     for workspace in kmux_workspaces() {
         println!("{workspace}");
@@ -139,12 +140,33 @@ fn kmux_workspaces() -> Vec<String> {
         return Vec::new();
     };
 
-    let Ok(records) = strict_kmux_workspace_records(&paths, worktrees) else {
+    let Ok(state) = WorkspaceStateStore::new(&paths.git_common_dir).load() else {
         return Vec::new();
     };
-    let mut workspaces = records
-        .into_iter()
-        .map(|record| record.workspace_slug().to_owned())
+    let mut workspaces = worktrees
+        .iter()
+        .filter(|entry| !entry.bare && entry.prunable.is_none() && entry.path.is_dir())
+        .map(|entry| {
+            if let Some(policy) = state
+                .policies()
+                .iter()
+                .find(|policy| policy.matches_registration(entry))
+            {
+                policy.label().to_owned()
+            } else if state.version == 1 && is_strict_kmux_workspace(&paths, entry) {
+                // Preview the legacy label, leaving migration to a workspace command.
+                entry
+                    .path
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_string_lossy()
+                    .into_owned()
+            } else {
+                WorkspacePolicy::observed(entry.path.clone(), entry.path == paths.main_worktree)
+                    .label()
+                    .to_owned()
+            }
+        })
         .collect::<Vec<_>>();
     workspaces.sort();
     workspaces.dedup();
@@ -193,9 +215,21 @@ fn prepare_zsh_base(script: &str, name: &str) -> String {
 // helpers in our dynamic suffix so workspace values like "create" cannot select
 // another workspace command's options.
 fn prepare_fish_base(script: &str) -> String {
-    let workspace_commands = ["create", "list", "remove", "set-parent", "restore"];
+    let command = cli::Cli::command();
+    let workspace_commands = command
+        .find_subcommand("workspace")
+        .map(|workspace| {
+            workspace
+                .get_subcommands()
+                .map(Command::get_name)
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
     let mut script = script.replace(
-        "__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create list remove set-parent restore",
+        &format!(
+            "__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from {}",
+            workspace_commands.join(" ")
+        ),
         "__kmux_needs_workspace_command",
     );
     for command in workspace_commands {
@@ -257,7 +291,7 @@ mod tests {
     #[test]
     fn prepare_fish_base_uses_position_aware_workspace_predicates() {
         let input = concat!(
-            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create list remove set-parent restore\" -a create\n",
+            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create open close list remove set-parent restore\" -a create\n",
             "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from create\" -l parent\n",
             "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from remove\" -l force\n",
         );
@@ -325,12 +359,12 @@ mod tests {
         let zsh = include_str!("zsh_dynamic.zsh");
         assert!(zsh.contains("kmux _complete-launchers 2>/dev/null"));
         assert!(zsh.contains(concat!(
-            "[[ \"$cmd\" == \"create\" && \"${words[CURRENT-1]}\" == \"--launcher\" ]]",
+            "[[ ( \"$cmd\" == \"create\" || \"$cmd\" == \"open\" ) && \"${words[CURRENT-1]}\" == \"--launcher\" ]]",
             "; then\n",
             "        _kmux_launchers"
         )));
         assert!(zsh.contains(concat!(
-            "[[ \"$cmd\" == \"create\" && \"${words[CURRENT-1]}\" == \"--launcher-input\" ]]",
+            "[[ ( \"$cmd\" == \"create\" || \"$cmd\" == \"open\" ) && \"${words[CURRENT-1]}\" == \"--launcher-input\" ]]",
             "; then\n",
             "        return"
         )));
@@ -363,7 +397,15 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             workspace_commands,
-            ["create", "list", "remove", "set-parent", "restore"]
+            [
+                "create",
+                "open",
+                "close",
+                "list",
+                "remove",
+                "set-parent",
+                "restore"
+            ]
         );
 
         for removed in ["add", "list", "ls", "remove", "rm", "parent", "restore"] {
