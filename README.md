@@ -203,7 +203,7 @@ leaving files, commits, branches, and the worktree registration intact. A live
 external worktree remains eligible for the next restore after close. Stale or
 prunable registrations are listed as unavailable and never pruned by restore.
 
-Remove a workspace by branch, slug, or window name. From inside a kmux worktree,
+Remove an owned workspace by ID, path, label, branch, or window name. From inside it,
 the name may be omitted:
 
 ```sh
@@ -211,9 +211,31 @@ kmux workspace remove feature/sidebar
 kmux workspace remove
 ```
 
-Removal deletes the linked worktree, local branch, expected tmux window, and the
-workspace's own parent link. It refuses dirty worktrees or branches that are not
-safely merged unless `--force` is supplied.
+Removal deletes the linked worktree and its verified managed window, retaining
+historical identity and lineage. Ephemeral workspaces preserve all publication
+branches, as do promoted workspaces. The persistent creation preset deletes only
+its explicitly owned original branch when still checked out there, with the
+existing safely-merged check. Primary and external worktrees remain outside kmux's
+removal authority, regardless of path or `--force`. Locked worktrees must be
+unlocked explicitly.
+
+Advanced detached HEAD is protected by a verified ref under
+`refs/kmux/recovery/<workspace-id>/<commit>`, including after promotion. Unknown
+creation anchors also require a snapshot; a clean checkout still at its known
+creation anchor does not. Names are deterministic with collision suffixes and
+never overwrite a different ref. Recovery refs remain outside local branch
+listings. Removal prints the ref and a `git worktree add --detach` command to
+recreate the committed checkout. Find saved work later with:
+
+```sh
+git for-each-ref --format='%(refname) %(objectname)' refs/kmux/recovery/
+```
+
+A recovery-ref creation or verification failure leaves the workspace intact.
+Dirty worktrees are refused by default. `--force` discards uncommitted files and
+permits deleting an unmerged explicitly owned persistent branch; detached
+committed HEAD is still protected separately. Recovery refs preserve committed
+objects only. They have no automatic expiration or cleanup schedule.
 
 ## Sidebar and agent activity
 
@@ -344,6 +366,7 @@ kmux config --json
 For example, the source configuration can contain:
 
 ```yaml
+worktree_root: ~/.kmux/worktrees
 window_prefix: kmux-
 
 window:

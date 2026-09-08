@@ -54,7 +54,7 @@ pub fn run_set_parent(args: cli::SetParentArgs) -> Result<()> {
     set_parent::run(args)
 }
 
-/// Reconcile tmux windows for existing strict kmux worktrees.
+/// Restore every live external worktree and remembered owned or primary presentation.
 pub fn run_restore() -> Result<()> {
     restore::run()
 }
@@ -64,7 +64,7 @@ pub fn run_list(args: cli::ListArgs) -> Result<()> {
     list::run(args)
 }
 
-/// Remove one kmux workspace and its local branch.
+/// Remove an owned workspace with detached recovery and explicit branch authority checks.
 pub fn run_remove(args: cli::RemoveArgs) -> Result<()> {
     remove::run(args)
 }

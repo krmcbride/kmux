@@ -12,6 +12,8 @@ pub mod git {
         creates_branch_from_explicit_start_point, detects_current_branch_and_detached_head,
         discovers_repo_info_from_linked_worktree, discovers_repo_info_from_primary_worktree,
         inventory_preserves_unusual_paths_and_registration_binding,
+        recovery_ref_creation_fails_without_replacing_an_occupied_namespace,
+        recovery_refs_are_verified_idempotent_and_never_overwrite_collisions,
         remove_worktree_guards_dirty_paths_unless_forced,
         returns_merge_base_when_branches_share_history,
         returns_none_when_branches_have_no_merge_base,

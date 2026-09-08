@@ -72,6 +72,10 @@ fn default_creation_is_detached_ephemeral_and_clean_removal_cleans_its_allocatio
         .success();
     assert!(!allocation.exists());
     assert_eq!(git_stdout(&repo, &["show-ref"])?, refs);
+    assert_eq!(
+        git_stdout(&repo, &["for-each-ref", "refs/kmux/recovery/"])?,
+        ""
+    );
     Ok(())
 }
 

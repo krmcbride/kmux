@@ -101,7 +101,7 @@ pub enum WorkspaceCommand {
     /// List workspaces in the current Git project.
     #[command(long_about = LIST_LONG_ABOUT, after_long_help = LIST_AFTER_LONG_HELP)]
     List(ListArgs),
-    /// Remove a workspace and its local branch.
+    /// Remove an owned workspace while protecting detached commits and publication branches.
     #[command(
         long_about = REMOVE_LONG_ABOUT,
         after_long_help = REMOVE_AFTER_LONG_HELP
@@ -432,8 +432,9 @@ const LIST_AFTER_LONG_HELP: &str = "Examples:\n  kmux workspace list\n  kmux wor
 const LIST_JSON_LONG_HELP: &str = "Print the current project's workspace inventory as JSON.";
 
 const REMOVE_LONG_ABOUT: &str = concat!(
-    "Remove a workspace's linked worktree, local branch, tmux window, and parent metadata. NAME may be its slug, branch, or window name; omit it inside a kmux worktree to remove the current workspace.\n\n",
-    "Kmux refuses the main worktree, dirty worktrees, unmerged branches, and worktrees used by other panes. Use --force only to bypass the dirty and unmerged checks."
+    "Remove an owned worktree and its managed tmux window. NAME accepts a workspace ID, path, label, current branch, or window name; omit it inside the owned worktree. Historical lineage is retained.\n\n",
+    "Advanced detached HEAD, including after promotion, is saved and verified under refs/kmux/recovery before removal. Unknown creation anchors also require recovery; a known unchanged creation anchor needs no snapshot. The command reports a ref and recreation command.\n\n",
+    "Publication branches are preserved. Only the original explicitly owned persistent branch is eligible for deletion, with existing safely-merged checks. Primary and external worktrees, locked registrations, and worktrees used by other panes are refused."
 );
 const REMOVE_AFTER_LONG_HELP: &str = concat!(
     "Examples:\n",
@@ -441,8 +442,8 @@ const REMOVE_AFTER_LONG_HELP: &str = concat!(
     "  kmux workspace remove --force feature/abandoned"
 );
 const REMOVE_FORCE_LONG_HELP: &str = concat!(
-    "Allow removal despite uncommitted or unmerged work, potentially discarding it. ",
-    "Other safety checks still apply."
+    "Discard uncommitted files and allow deletion of an unmerged explicitly owned persistent branch. ",
+    "Detached committed HEAD still requires verified recovery when advanced or its creation anchor is unknown. Ownership, registration, lock, and live-pane protections still apply."
 );
 
 const STATUS_LONG_ABOUT: &str =

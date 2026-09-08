@@ -129,7 +129,7 @@ impl Git {
     }
 
     /// Return whether a worktree contains staged, unstaged, or untracked changes.
-    pub(super) fn worktree_is_dirty(&self, path: &Path) -> Result<bool> {
+    pub fn worktree_is_dirty(&self, path: &Path) -> Result<bool> {
         if !path.is_dir() {
             bail!("worktree path {} does not exist", path.display());
         }

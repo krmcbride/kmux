@@ -6,6 +6,7 @@
 
 mod branches;
 mod process;
+mod recovery;
 mod registration;
 mod repository;
 mod worktrees;

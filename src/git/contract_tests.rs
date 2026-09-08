@@ -7,6 +7,44 @@ use anyhow::{Result, bail};
 use super::BranchAction;
 use super::contract_support::GitRepoFixture;
 
+pub fn recovery_refs_are_verified_idempotent_and_never_overwrite_collisions() -> Result<()> {
+    let fixture = GitRepoFixture::new()?;
+    let git = fixture.adapter();
+    let old = git.resolve_commit("HEAD")?;
+    fixture.commit_file("feature.txt", "feature\n", "advance HEAD")?;
+    let head = git.resolve_commit("HEAD")?;
+    let branches = git.local_branch_refs()?;
+    let base = format!("refs/kmux/recovery/ws-example/{head}");
+    fixture.git(&["update-ref", &base, &old])?;
+    let recovery = git.create_recovery_ref("ws-example", &head)?;
+    assert_eq!(recovery, format!("{base}-1"));
+    assert_eq!(git.resolve_commit(&base)?, old);
+    assert_eq!(git.resolve_commit(&recovery)?, head);
+    assert_eq!(git.create_recovery_ref("ws-example", &head)?, recovery);
+    assert_eq!(git.local_branch_refs()?, branches);
+
+    let symbolic = format!("refs/kmux/recovery/ws-symbolic/{head}");
+    fixture.git(&["symbolic-ref", &symbolic, "refs/heads/main"])?;
+    assert_eq!(
+        git.create_recovery_ref("ws-symbolic", &head)?,
+        format!("{symbolic}-1")
+    );
+    git.verify_preserved_branch("main", &head)?;
+    assert!(git.verify_preserved_branch("main", &old).is_err());
+    Ok(())
+}
+
+pub fn recovery_ref_creation_fails_without_replacing_an_occupied_namespace() -> Result<()> {
+    let fixture = GitRepoFixture::new()?;
+    let git = fixture.adapter();
+    let head = git.resolve_commit("HEAD")?;
+    fixture.git(&["update-ref", "refs/kmux", &head])?;
+    assert!(git.create_recovery_ref("ws-example", &head).is_err());
+    assert_eq!(git.resolve_commit("refs/kmux")?, head);
+    assert_eq!(git.local_branch_refs()?, ["main"]);
+    Ok(())
+}
+
 pub fn inventory_preserves_unusual_paths_and_registration_binding() -> Result<()> {
     let fixture = GitRepoFixture::new()?;
     let path = fixture.root().join("workspace \"alpha\"\n ");
