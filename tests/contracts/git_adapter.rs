@@ -1,6 +1,11 @@
 use anyhow::Result;
 
 #[test]
+fn inventory_preserves_unusual_paths_and_registration_binding() -> Result<()> {
+    kmux::contract_tests::git::inventory_preserves_unusual_paths_and_registration_binding()
+}
+
+#[test]
 fn discovers_repo_info_from_primary_worktree() -> Result<()> {
     kmux::contract_tests::git::discovers_repo_info_from_primary_worktree()
 }

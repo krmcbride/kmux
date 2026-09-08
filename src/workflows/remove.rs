@@ -14,8 +14,8 @@ use crate::workspace::WorkspaceRecord;
 /// Remove a kmux workspace, its worktree, local branch, tmux window, and owned parent link.
 pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let repo = load_repo_context()?;
-    let resolved = resolve_remove_target(&repo, args.name.as_deref())?;
     let tmux_resolution = project_session::resolve(&repo.paths)?;
+    let resolved = resolve_remove_target(&repo, args.name.as_deref())?;
 
     if same_path(resolved.path(), &repo.paths.main_worktree) {
         bail!(
@@ -23,12 +23,26 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
             resolved.path().display()
         );
     }
+    if resolved.policy().authority() != crate::workspace::Authority::Kmux {
+        bail!(
+            "kmux has no lifecycle authority for this external worktree; use 'kmux workspace close' to close its presentation"
+        );
+    }
+    if !resolved.is_live() {
+        bail!("workspace registration is stale; refusing to remove a replacement path");
+    }
     let branch = resolved.branch().ok_or_else(|| {
         anyhow::anyhow!(
             "workspace '{}' has no known git branch and cannot be removed by kmux",
             resolved.workspace_slug()
         )
     })?;
+    if resolved.policy().owned_branch() != Some(branch) {
+        bail!(
+            "workspace branch changed; kmux does not own branch '{}'",
+            branch
+        );
+    }
     if !args.force && !repo.git.branch_is_safely_deletable(branch)? {
         bail!(
             "branch '{}' is not safely merged; use --force to delete the workspace anyway",
@@ -36,7 +50,7 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         );
     }
     let state_store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
-    let mut state = state_store.load()?;
+    let (mut state, _) = super::resolve::load_workspace_state(&repo)?;
     // Removing a parent branch is metadata-only for descendants: warn about
     // dangling child links instead of silently reparenting or deleting them.
     let remaining_children = state.children_of(branch);
@@ -49,9 +63,12 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     let window_id = tmux_resolution.prepare_workspace_removal(resolved.path(), &window_name)?;
     repo.git.remove_worktree(resolved.path(), args.force)?;
     repo.git.delete_local_branch(branch, true)?;
-    if state.remove_parent(branch) {
-        state_store.save(&state)?;
+    if let Some(policy) = state.policy_for_path(resolved.path()) {
+        let id = policy.id().to_owned();
+        state.remove_policy(&id);
     }
+    state.remove_parent(branch);
+    state_store.save(&state)?;
     if !remaining_children.is_empty() {
         eprintln!(
             "warning: parent links still reference removed branch '{}': {}",

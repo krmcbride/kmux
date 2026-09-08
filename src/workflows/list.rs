@@ -44,6 +44,8 @@ pub(super) fn run(args: cli::ListArgs) -> Result<()> {
         .iter()
         .enumerate()
         .map(|(index, item)| DisplayRow {
+            kind: item.kind_label(),
+            workspace: item.workspace_slug().to_owned(),
             branch: format_branch(&items, index),
             parent: item.git_parent_branch().unwrap_or("-").to_owned(),
             age: format_age(item, now),
@@ -59,6 +61,8 @@ pub(super) fn run(args: cli::ListArgs) -> Result<()> {
 }
 
 struct DisplayRow {
+    kind: String,
+    workspace: String,
     branch: String,
     parent: String,
     age: String,
@@ -72,7 +76,7 @@ struct DisplayRow {
 // parent labels in their own column for scanability.
 fn format_branch(items: &[WorkspaceInventoryItem], index: usize) -> String {
     let item = &items[index];
-    let branch = item.git_branch().unwrap_or("-");
+    let branch = item.checkout_label();
     if item.tree_depth() == 0 {
         return branch.to_owned();
     }
@@ -212,7 +216,15 @@ fn format_path(path: &Path, current_dir: &Path) -> String {
 // Width calculations use chars rather than bytes because status icons may be multibyte.
 fn print_table(rows: &[DisplayRow]) {
     let headers = [
-        "BRANCH", "PARENT", "AGE", "AGENT", "MUX", "UNMERGED", "PATH",
+        "TYPE",
+        "WORKSPACE",
+        "BRANCH",
+        "PARENT",
+        "AGE",
+        "AGENT",
+        "MUX",
+        "UNMERGED",
+        "PATH",
     ];
     let mut widths = headers.map(str::len);
 
@@ -229,8 +241,10 @@ fn print_table(rows: &[DisplayRow]) {
     }
 }
 
-fn row_values(row: &DisplayRow) -> [&str; 7] {
+fn row_values(row: &DisplayRow) -> [&str; 9] {
     [
+        &row.kind,
+        &row.workspace,
         &row.branch,
         &row.parent,
         &row.age,
@@ -241,7 +255,7 @@ fn row_values(row: &DisplayRow) -> [&str; 7] {
     ]
 }
 
-fn format_row(values: &[&str; 7], widths: &[usize; 7]) -> String {
+fn format_row(values: &[&str; 9], widths: &[usize; 9]) -> String {
     values
         .iter()
         .enumerate()
@@ -292,6 +306,7 @@ mod tests {
                 bare: false,
                 locked: None,
                 prunable: None,
+                kmux_binding: None,
             },
             is_main,
         )?;

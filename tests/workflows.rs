@@ -1257,7 +1257,7 @@ launchers:
     let state_object = state_json.as_object().expect("workspace state object");
     assert_eq!(
         state_object.keys().collect::<Vec<_>>(),
-        ["parents", "version"]
+        ["parents", "version", "workspaces"]
     );
     for parent in state_object["parents"].as_array().expect("parent links") {
         let fields = parent.as_object().expect("parent link object");

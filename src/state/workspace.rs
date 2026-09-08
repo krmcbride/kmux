@@ -14,7 +14,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
-const CURRENT_VERSION: u32 = 1;
+use crate::git::WorktreeInfo;
+use crate::paths::RepoPaths;
+use crate::workspace::{Authority, Retention, WorkspacePolicy, is_strict_kmux_workspace};
+
+const CURRENT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -22,6 +26,7 @@ const CURRENT_VERSION: u32 = 1;
 pub struct WorkspaceState {
     pub version: u32,
     pub parents: Vec<WorkspaceParentLink>,
+    workspaces: Vec<WorkspacePolicy>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -45,6 +50,97 @@ pub struct WorkspaceLifecycleLock {
 }
 
 impl WorkspaceState {
+    /// Add registered paths and migrate strict legacy ownership exactly once.
+    ///
+    /// Missing records remain available as stale inventory and lineage history.
+    /// The caller supplies canonical Git paths and holds the repository lifecycle lock.
+    pub fn reconcile(&mut self, paths: &RepoPaths, worktrees: &[WorktreeInfo]) -> Result<bool> {
+        let before = self.clone();
+        for policy in &mut self.workspaces {
+            if policy.authority() == Authority::Kmux
+                && worktrees.iter().any(|entry| {
+                    entry.path == policy.path()
+                        && entry.prunable.is_none()
+                        && entry.path.is_dir()
+                        && !policy.matches_registration(entry)
+                })
+            {
+                policy.retire();
+            }
+        }
+        for entry in worktrees {
+            if self.policy_for_path(&entry.path).is_some() {
+                continue;
+            }
+            let primary = entry.path == paths.main_worktree;
+            let policy = if !primary
+                && self.version == 1
+                && is_strict_kmux_workspace(paths, entry)
+                && let Some(id) = &entry.kmux_binding
+            {
+                let label = entry
+                    .path
+                    .file_name()
+                    .ok_or_else(|| anyhow::anyhow!("missing worktree basename"))?
+                    .to_string_lossy()
+                    .into_owned();
+                WorkspacePolicy::owned(
+                    id.clone(),
+                    entry.path.clone(),
+                    label,
+                    Retention::Persistent,
+                    entry.head.clone(),
+                    entry.branch.clone(),
+                )?
+            } else {
+                WorkspacePolicy::observed(entry.path.clone(), primary)
+            };
+            self.upsert_policy(policy)?;
+        }
+        self.version = CURRENT_VERSION;
+        self.normalize();
+        Ok(*self != before)
+    }
+
+    /// Return persisted workspace intent, including records no longer registered with Git.
+    pub fn policies(&self) -> &[WorkspacePolicy] {
+        &self.workspaces
+    }
+
+    /// Look up the policy bound to a canonical worktree path.
+    pub fn policy_for_path(&self, path: &Path) -> Option<&WorkspacePolicy> {
+        self.workspaces
+            .iter()
+            .find(|policy| !policy.retired() && policy.path() == path)
+    }
+
+    /// Replace one explicit policy after validating identity and presentation collisions.
+    pub fn upsert_policy(&mut self, policy: WorkspacePolicy) -> Result<()> {
+        policy.validate()?;
+        for existing in &self.workspaces {
+            if existing.id() != policy.id()
+                && !existing.retired()
+                && !policy.retired()
+                && (existing.path() == policy.path()
+                    || existing.window_slug() == policy.window_slug())
+            {
+                bail!(
+                    "workspace identity or window name conflicts with '{}'",
+                    existing.id()
+                );
+            }
+        }
+        self.workspaces
+            .retain(|existing| existing.id() != policy.id());
+        self.workspaces.push(policy);
+        self.normalize();
+        Ok(())
+    }
+
+    /// Forget an explicitly removed owned workspace without affecting other records.
+    pub fn remove_policy(&mut self, id: &str) {
+        self.workspaces.retain(|policy| policy.id() != id);
+    }
     /// Return the parent link recorded for a branch, if kmux knows one.
     pub fn parent_for(&self, branch: &str) -> Option<&WorkspaceParentLink> {
         self.parents.iter().find(|link| link.branch == branch)
@@ -104,6 +200,8 @@ impl WorkspaceState {
 
     // Keep state deterministic on disk and collapse duplicate entries from hand edits.
     fn normalize(&mut self) {
+        self.workspaces
+            .sort_by(|left, right| left.id().cmp(right.id()));
         self.parents
             .sort_by(|left, right| left.branch.cmp(&right.branch));
         self.parents
@@ -114,8 +212,9 @@ impl WorkspaceState {
 impl Default for WorkspaceState {
     fn default() -> Self {
         Self {
-            version: CURRENT_VERSION,
+            version: 1,
             parents: Vec::new(),
+            workspaces: Vec::new(),
         }
     }
 }
@@ -184,21 +283,32 @@ impl WorkspaceStateStore {
 
         let mut state: WorkspaceState = serde_json::from_str(&content)
             .with_context(|| format!("failed to parse {}", self.path.display()))?;
-        if state.version != CURRENT_VERSION {
+        if state.version != 1 && state.version != CURRENT_VERSION {
             bail!(
                 "unsupported kmux workspace state version {}; expected {}",
                 state.version,
                 CURRENT_VERSION
             );
         }
+        let mut ids = BTreeSet::new();
+        let mut paths = BTreeSet::new();
+        let mut names = BTreeSet::new();
+        for policy in &state.workspaces {
+            policy.validate()?;
+            if !ids.insert(policy.id())
+                || (!policy.retired()
+                    && (!paths.insert(policy.path()) || !names.insert(policy.window_slug())))
+            {
+                bail!("duplicate workspace identity, path, or window name in state");
+            }
+        }
         state.normalize();
         Ok(state)
     }
 
-    /// Persist workspace graph state with the current schema version and stable ordering.
+    /// Persist validated workspace state with stable ordering; reconciliation upgrades v1.
     pub fn save(&self, state: &WorkspaceState) -> Result<()> {
         let mut state = state.clone();
-        state.version = CURRENT_VERSION;
         state.normalize();
         let content = serde_json::to_vec_pretty(&state)?;
         write_atomic(&self.path, &content)
@@ -365,5 +475,101 @@ mod tests {
 
         assert!(state.would_create_cycle("feature/a", "feature/c"));
         assert!(!state.would_create_cycle("feature/c", "main"));
+    }
+
+    #[test]
+    fn migration_is_one_time_and_retention_survives_checkout_changes() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = RepoPaths {
+            current_worktree: temp.path().join("project-alpha"),
+            main_worktree: temp.path().join("project-alpha"),
+            git_common_dir: temp.path().join("project-alpha/.git"),
+            worktree_base_dir: temp.path().join("project-alpha__worktrees"),
+        };
+        let mut legacy = registration(paths.workspace_path("feature-alpha"), Some("feature/alpha"));
+        legacy.kmux_binding = Some("ws-owned-alpha".to_owned());
+        let mut state = WorkspaceState::default();
+        state.set_parent(link("feature/alpha", "main", "anchor"));
+        assert!(state.reconcile(&paths, &[legacy.clone()])?);
+        let original = state
+            .policy_for_path(&legacy.path)
+            .expect("migrated policy")
+            .clone();
+        assert_eq!(original.authority(), Authority::Kmux);
+        assert_eq!(original.retention(), Some(Retention::Persistent));
+        assert!(state.parent_for("feature/alpha").is_some());
+
+        legacy.branch = None;
+        legacy.detached = true;
+        assert!(!state.reconcile(&paths, &[legacy.clone()])?);
+        assert_eq!(state.policy_for_path(&legacy.path), Some(&original));
+        let external = registration(paths.workspace_path("feature-later"), Some("feature/later"));
+        state.reconcile(&paths, &[legacy, external.clone()])?;
+        assert_eq!(
+            state
+                .policy_for_path(&external.path)
+                .expect("external")
+                .authority(),
+            Authority::External
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn replacement_registration_retires_authority_and_preserves_history() -> Result<()> {
+        let temp = TempDir::new()?;
+        let path = temp.path().join("workspace");
+        fs::create_dir(&path)?;
+        let paths = RepoPaths {
+            current_worktree: temp.path().join("project-alpha"),
+            main_worktree: temp.path().join("project-alpha"),
+            git_common_dir: temp.path().join("project-alpha/.git"),
+            worktree_base_dir: temp.path().join("project-alpha__worktrees"),
+        };
+        let mut state = WorkspaceState {
+            version: CURRENT_VERSION,
+            ..WorkspaceState::default()
+        };
+        state.upsert_policy(WorkspacePolicy::owned(
+            "ws-original".to_owned(),
+            path.clone(),
+            "original".to_owned(),
+            Retention::Ephemeral,
+            Some("anchor".to_owned()),
+            None,
+        )?)?;
+        let replacement = registration(path.clone(), Some("publication/one"));
+        state.reconcile(&paths, std::slice::from_ref(&replacement))?;
+        assert_eq!(state.policies().len(), 2);
+        let original = state
+            .policies()
+            .iter()
+            .find(|p| p.id() == "ws-original")
+            .expect("history");
+        assert!(original.retired());
+        assert!(!original.matches_registration(&replacement));
+        assert_eq!(original.retention(), Some(Retention::Ephemeral));
+        assert_eq!(
+            state
+                .policy_for_path(&path)
+                .expect("replacement")
+                .authority(),
+            Authority::External
+        );
+        assert!(!state.reconcile(&paths, &[replacement])?);
+        Ok(())
+    }
+
+    fn registration(path: PathBuf, branch: Option<&str>) -> WorktreeInfo {
+        WorktreeInfo {
+            path,
+            head: Some("anchor".to_owned()),
+            branch: branch.map(ToOwned::to_owned),
+            detached: branch.is_none(),
+            bare: false,
+            locked: None,
+            prunable: None,
+            kmux_binding: None,
+        }
     }
 }

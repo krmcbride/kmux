@@ -1,12 +1,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 
-use anyhow::{Result, anyhow, bail};
+use anyhow::{Result, bail};
 
 use crate::config::Config;
 use crate::git::WorktreeInfo;
 use crate::state::workspace::{WorkspaceState, WorkspaceStateStore};
 use crate::workspace::{
-    WorkspaceInventoryItem, WorkspaceRecord, is_kmux_worktree, strict_kmux_workspace_records,
+    WorkspaceInventoryItem, WorkspaceRecord, is_kmux_worktree, is_strict_kmux_workspace,
     validated_kmux_record,
 };
 
@@ -15,16 +15,45 @@ use crate::paths::same_path;
 
 /// Resolve a user-supplied workspace name, slug, or window-prefixed slug.
 pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<WorkspaceRecord> {
-    for candidate in name_candidates(&repo.config, name) {
-        if let Some(worktree) = find_kmux_workspace_by_name(repo, &candidate)? {
-            return resolved_from_kmux_worktree(repo, worktree);
-        }
+    let (state, entries) = load_workspace_state(repo)?;
+    let candidates = name_candidates(&repo.config, name);
+    let canonical = std::path::Path::new(name).canonicalize().ok();
+    let matches = state
+        .policies()
+        .iter()
+        .filter(|policy| {
+            let branch = entries
+                .iter()
+                .find(|entry| policy.matches_registration(entry))
+                .and_then(|entry| entry.branch.as_deref());
+            name == policy.id()
+                || (!policy.retired()
+                    && (canonical.as_deref() == Some(policy.path())
+                        || candidates.iter().any(|candidate| {
+                            candidate == policy.id()
+                                || candidate == policy.label()
+                                || candidate == policy.window_slug()
+                                || branch == Some(candidate.as_str())
+                        })))
+        })
+        .collect::<Vec<_>>();
+    match matches.as_slice() {
+        [policy] => WorkspaceRecord::from_policy(
+            (*policy).clone(),
+            entries
+                .iter()
+                .find(|entry| policy.matches_registration(entry))
+                .cloned(),
+        ),
+        [] => bail!("workspace '{}' not found", name),
+        _ => bail!(
+            "workspace selector '{}' is ambiguous; use its full workspace ID or canonical path",
+            name
+        ),
     }
-
-    bail!("workspace '{}' not found", name)
 }
 
-/// Resolve the current worktree as a strict kmux workspace for short-form commands.
+/// Resolve the current registered checkout; the caller enforces lifecycle authority.
 pub(super) fn resolve_current_kmux_workspace(
     repo: &RepoContext,
     command_name: &str,
@@ -32,29 +61,7 @@ pub(super) fn resolve_current_kmux_workspace(
     if same_path(&repo.paths.current_worktree, &repo.paths.main_worktree) {
         bail!("{command_name} requires a workspace name when run from the main worktree");
     }
-
-    let is_current_kmux_worktree = repo
-        .paths
-        .current_worktree
-        .parent()
-        .is_some_and(|parent| same_path(parent, &repo.paths.worktree_base_dir));
-    if !is_current_kmux_worktree {
-        bail!("current worktree is not kmux-managed; pass a workspace name explicitly");
-    }
-
-    let current = repo
-        .git
-        .worktrees()?
-        .into_iter()
-        .find(|worktree| same_path(&worktree.path, &repo.paths.current_worktree))
-        .ok_or_else(|| {
-            anyhow!(
-                "current worktree {} is not registered with git",
-                repo.paths.current_worktree.display()
-            )
-        })?;
-
-    resolved_from_kmux_worktree(repo, current)
+    resolve_workspace(repo, &repo.paths.current_worktree.to_string_lossy())
 }
 
 /// Resolve a Git worktree and require its kmux path slug to match its branch name.
@@ -67,50 +74,69 @@ pub(super) fn resolved_from_kmux_worktree(
 
 /// Build the full workspace inventory, enriched with parent metadata and tree depth.
 pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceInventoryItem>> {
-    let mut worktrees = repo.git.worktrees()?;
-    let mut items = Vec::new();
-
-    if let Some(main) = worktrees
+    let _lock = super::project_session::lock_project_lifecycle(&repo.paths)?;
+    let (state, worktrees) = load_workspace_state(repo)?;
+    let mut items = state
+        .policies()
         .iter()
-        .find(|worktree| worktree.path == repo.paths.main_worktree)
-    {
-        items.push(list_item_from_worktree(main.clone(), true)?);
-    }
-
-    items.extend(
-        strict_kmux_workspace_records(&repo.paths, worktrees.drain(..))?
-            .into_iter()
-            .map(list_item_from_record)
-            .collect::<Result<Vec<_>>>()?,
-    );
-
-    let state = WorkspaceStateStore::new(&repo.paths.git_common_dir).load()?;
+        .map(|policy| {
+            let git = worktrees
+                .iter()
+                .find(|entry| policy.matches_registration(entry))
+                .cloned();
+            list_item_from_record(WorkspaceRecord::from_policy(policy.clone(), git)?)
+        })
+        .collect::<Result<Vec<_>>>()?;
     apply_parent_state(&mut items, &state);
     Ok(parent_tree_order(items))
 }
 
-/// Return strict kmux workspaces suitable for tmux restore.
-///
-/// Strict workspaces live under the kmux worktree base and use the branch-derived slug.
-pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<WorkspaceRecord>> {
-    let mut workspaces = Vec::new();
-    for worktree in repo.git.worktrees()? {
-        if !is_kmux_worktree(&repo.paths, &worktree.path) {
-            continue;
+/// Reconcile persisted policy from current Git inventory under the caller's lifecycle lock.
+pub(super) fn load_workspace_state(
+    repo: &RepoContext,
+) -> Result<(WorkspaceState, Vec<WorktreeInfo>)> {
+    let store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
+    let mut state = store.load()?;
+    let mut worktrees = repo.git.worktrees()?;
+    if state.version == 1 {
+        for entry in &mut worktrees {
+            if is_strict_kmux_workspace(&repo.paths, entry)
+                && entry.path.is_dir()
+                && entry.prunable.is_none()
+                && !entry.bare
+            {
+                entry.kmux_binding = Some(repo.git.claim_worktree(&entry.path)?);
+            }
         }
-
-        let resolved = resolved_from_kmux_worktree(repo, worktree)?;
-        if resolved.branch().is_none() {
-            bail!(
-                "workspace '{}' has no known git branch and cannot be restored by kmux",
-                resolved.workspace_slug()
-            );
-        }
-        workspaces.push(resolved);
     }
+    if state.reconcile(&repo.paths, &worktrees)? {
+        store.save(&state)?;
+    }
+    Ok((state, worktrees))
+}
 
-    workspaces.sort_by(|left, right| left.workspace_slug().cmp(right.workspace_slug()));
-    Ok(workspaces)
+/// Return remembered, live owned workspaces suitable for tmux restore.
+pub(super) fn strict_kmux_workspaces(repo: &RepoContext) -> Result<Vec<WorkspaceRecord>> {
+    let (state, entries) = load_workspace_state(repo)?;
+    let mut records = state
+        .policies()
+        .iter()
+        .filter(|policy| {
+            policy.authority() == crate::workspace::Authority::Kmux && policy.presentation()
+        })
+        .map(|policy| {
+            WorkspaceRecord::from_policy(
+                policy.clone(),
+                entries
+                    .iter()
+                    .find(|entry| policy.matches_registration(entry))
+                    .cloned(),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?;
+    records.retain(WorkspaceRecord::is_live);
+    records.sort_by(|left, right| left.workspace_slug().cmp(right.workspace_slug()));
+    Ok(records)
 }
 
 /// Find a kmux worktree by exact branch name or workspace slug/name.
@@ -153,14 +179,6 @@ pub(super) fn find_kmux_workspace_by_slug(
 
 // Filesystem creation time is best-effort list metadata; unsupported platforms
 // fall back to modified time, then omit the field.
-fn list_item_from_worktree(
-    worktree: WorktreeInfo,
-    is_main: bool,
-) -> Result<WorkspaceInventoryItem> {
-    let record = WorkspaceRecord::from_worktree(worktree, is_main)?;
-    list_item_from_record(record)
-}
-
 fn list_item_from_record(record: WorkspaceRecord) -> Result<WorkspaceInventoryItem> {
     let created_at = std::fs::metadata(record.path())
         .ok()
@@ -330,6 +348,7 @@ mod tests {
                 bare: false,
                 locked: None,
                 prunable: None,
+                kmux_binding: None,
             },
             is_main,
         )?;

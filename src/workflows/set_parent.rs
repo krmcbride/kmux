@@ -40,7 +40,7 @@ pub(super) fn record_parent(repo: &RepoContext, child: &str, parent: &str) -> Re
         bail!("parent branch '{parent}' does not exist locally");
     }
     let store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
-    let mut state = store.load()?;
+    let (mut state, _) = super::resolve::load_workspace_state(repo)?;
     validate_no_cycle(&state, child, parent)?;
     let anchor = repo
         .git

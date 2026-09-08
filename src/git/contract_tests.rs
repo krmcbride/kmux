@@ -7,6 +7,69 @@ use anyhow::{Result, bail};
 use super::BranchAction;
 use super::contract_support::GitRepoFixture;
 
+pub fn inventory_preserves_unusual_paths_and_registration_binding() -> Result<()> {
+    let fixture = GitRepoFixture::new()?;
+    let path = fixture.root().join("workspace \"alpha\"\n ");
+    let git = fixture.adapter();
+    fixture.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        path.to_string_lossy().as_ref(),
+        "HEAD",
+    ])?;
+    fixture.git(&[
+        "worktree",
+        "lock",
+        "--reason",
+        "review\nnotes ",
+        path.to_string_lossy().as_ref(),
+    ])?;
+    let entries = git.worktrees()?;
+    let entry = entries
+        .iter()
+        .find(|e| e.path == path)
+        .ok_or_else(|| anyhow::anyhow!("missing exact worktree path"))?;
+    assert!(entry.detached);
+    assert!(entry.branch.is_none());
+    assert!(entry.head.is_some());
+    assert_eq!(entry.locked.as_deref(), Some("review\nnotes"));
+    assert_eq!(fixture.adapter_at(&path).worktree_root()?, path);
+    assert!(entry.kmux_binding.is_none());
+    let id = git.claim_worktree(&path)?;
+    assert_eq!(git.claim_worktree(&path)?, id);
+    assert_eq!(
+        git.worktrees()?
+            .iter()
+            .find(|e| e.path == path)
+            .and_then(|e| e.kmux_binding.as_deref()),
+        Some(id.as_str())
+    );
+    fixture.git(&["worktree", "unlock", path.to_string_lossy().as_ref()])?;
+    git.remove_worktree(&path, false)?;
+    fixture.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        path.to_string_lossy().as_ref(),
+        "HEAD",
+    ])?;
+    assert!(
+        git.worktrees()?
+            .iter()
+            .find(|e| e.path == path)
+            .is_some_and(|e| e.kmux_binding.is_none())
+    );
+    fs::remove_dir_all(&path)?;
+    assert!(
+        git.worktrees()?
+            .iter()
+            .find(|e| e.path == path)
+            .is_some_and(|e| e.prunable.is_some())
+    );
+    Ok(())
+}
+
 pub fn discovers_repo_info_from_primary_worktree() -> Result<()> {
     let fixture = GitRepoFixture::new()?;
     let repo = fixture.path();

@@ -13,7 +13,7 @@ use super::resolve::{
 use super::set_parent::{record_parent, validate_no_cycle};
 use super::window::{create_shell, select_created, start_launcher};
 use crate::state::workspace::WorkspaceStateStore;
-use crate::workspace::WorkspaceRecord;
+use crate::workspace::{Retention, WorkspacePolicy, WorkspaceRecord};
 
 /// Create a new branch workspace, tmux window, and parent metadata link.
 pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
@@ -81,7 +81,7 @@ pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
         bail!("parent branch '{}' does not exist locally", target.parent);
     }
     let state_store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
-    let state = state_store.load()?;
+    let (mut state, _) = super::resolve::load_workspace_state(&repo)?;
     validate_no_cycle(&state, &target.branch, &target.parent)?;
     repo.git
         .merge_base(&target.start_point, &target.parent)?
@@ -97,6 +97,15 @@ pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
     repo.git
         .ensure_local_branch(&target.branch, Some(&target.start_point))?;
     repo.git.add_worktree(&worktree_path, &target.branch)?;
+    state.upsert_policy(WorkspacePolicy::owned(
+        repo.git.claim_worktree(&worktree_path)?,
+        worktree_path.clone(),
+        workspace_slug.clone(),
+        Retention::Persistent,
+        repo.git.merge_base(&target.branch, &target.branch)?,
+        Some(target.branch.clone()),
+    )?)?;
+    state_store.save(&state)?;
     apply_file_operations(&repo.config, &repo.paths.main_worktree, &worktree_path)?;
     run_post_create(
         &repo.config,
@@ -105,11 +114,7 @@ pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
         &workspace_slug,
     )?;
 
-    let resolved = WorkspaceRecord::from_created_kmux_workspace(
-        workspace_slug,
-        worktree_path,
-        target.branch.clone(),
-    )?;
+    let resolved = super::resolve::resolve_workspace(&repo, &worktree_path.to_string_lossy())?;
     let window = create_shell(&repo, &tmux, &resolved)?;
     record_parent(&repo, &target.branch, &target.parent)?;
     if let Some(launcher) = &launcher {
