@@ -31,29 +31,42 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     if !resolved.is_live() {
         bail!("workspace registration is stale; refusing to remove a replacement path");
     }
-    let branch = resolved.branch().ok_or_else(|| {
-        anyhow::anyhow!(
-            "workspace '{}' has no known git branch and cannot be removed by kmux",
-            resolved.workspace_slug()
-        )
-    })?;
-    if resolved.policy().owned_branch() != Some(branch) {
-        bail!(
-            "workspace branch changed; kmux does not own branch '{}'",
-            branch
-        );
-    }
-    if !args.force && !repo.git.branch_is_safely_deletable(branch)? {
-        bail!(
-            "branch '{}' is not safely merged; use --force to delete the workspace anyway",
-            branch
-        );
-    }
+    let branch_to_delete = match resolved.branch() {
+        Some(branch)
+            if resolved.policy().retention() == Some(crate::workspace::Retention::Persistent) =>
+        {
+            if resolved.policy().owned_branch() != Some(branch) {
+                bail!(
+                    "workspace branch changed; kmux does not own branch '{}'",
+                    branch
+                );
+            }
+            if !args.force && !repo.git.branch_is_safely_deletable(branch)? {
+                bail!(
+                    "branch '{}' is not safely merged; use --force to delete the workspace anyway",
+                    branch
+                );
+            }
+            Some(branch)
+        }
+        Some(_) => None,
+        None => {
+            let head = resolved.git().and_then(|entry| entry.head.as_deref());
+            if head.is_none() || head != resolved.policy().creation_anchor() {
+                bail!(
+                    "detached workspace has committed work beyond its creation anchor; recovery is required before removal"
+                );
+            }
+            None
+        }
+    };
     let state_store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
     let (mut state, _) = super::resolve::load_workspace_state(&repo)?;
     // Removing a parent branch is metadata-only for descendants: warn about
     // dangling child links instead of silently reparenting or deleting them.
-    let remaining_children = state.children_of(branch);
+    let remaining_children = branch_to_delete
+        .map(|branch| state.children_of(branch))
+        .unwrap_or_default();
 
     leave_worktree_before_removal(&repo.paths.main_worktree)?;
     // Refresh live tmux evidence at the last responsible moment. The held
@@ -61,17 +74,30 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     // changing project windows between this check and Git removal.
     let window_id = tmux_resolution.prepare_workspace_removal(&resolved, &repo.config)?;
     repo.git.remove_worktree(resolved.path(), args.force)?;
-    repo.git.delete_local_branch(branch, true)?;
+    if let Some(branch) = branch_to_delete {
+        repo.git.delete_local_branch(branch, true)?;
+    }
+    if let Some(directory) = resolved.policy().allocation_directory() {
+        // Remove only the empty directory this create reserved, never a shared root.
+        if let Err(error) = std::fs::remove_dir(directory) {
+            eprintln!(
+                "workspace removed; allocation directory {} remains: {error}",
+                directory.display()
+            );
+        }
+    }
     if let Some(policy) = state.policy_for_path(resolved.path()) {
         let id = policy.id().to_owned();
         state.remove_policy(&id);
     }
-    state.remove_parent(branch);
+    if let Some(branch) = branch_to_delete {
+        state.remove_parent(branch);
+    }
     state_store.save(&state)?;
     if !remaining_children.is_empty() {
         eprintln!(
             "warning: parent links still reference removed branch '{}': {}",
-            branch,
+            branch_to_delete.unwrap_or(""),
             remaining_children.join(", ")
         );
     }

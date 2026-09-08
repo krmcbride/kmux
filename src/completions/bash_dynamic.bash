@@ -43,7 +43,7 @@ _kmux_dynamic() {
                 ;;
             create|open)
                 case "$prev" in
-                    --parent)
+                    --parent|--from)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
                         return
                         ;;
@@ -52,6 +52,10 @@ _kmux_dynamic() {
                         return
                         ;;
                     --launcher-input)
+                        COMPREPLY=()
+                        return
+                        ;;
+                    --name)
                         COMPREPLY=()
                         return
                         ;;

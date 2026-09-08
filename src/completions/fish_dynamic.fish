@@ -53,9 +53,11 @@ end
 
 complete -c kmux -n '__kmux_in_workspace_command remove' -f -a '(__kmux_workspaces)'
 complete -c kmux -n '__kmux_in_workspace_command create' -l parent -r -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l from -r -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l name -r -f
 complete -c kmux -n '__kmux_in_workspace_command create' -l launcher -r -f -a '(__kmux_launchers)'
 complete -c kmux -n '__kmux_in_workspace_command create' -l launcher-input -r -f
-complete -c kmux -n '__kmux_in_workspace_command create; and not __fish_prev_arg_in --parent --launcher --launcher-input' -f -a '(__kmux_create_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create; and not __fish_prev_arg_in --parent --from --name --launcher --launcher-input' -f -a '(__kmux_create_branches)'
 complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
 complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'
 

@@ -124,7 +124,15 @@ pub enum WorkspaceCommand {
 pub struct CreateArgs {
     /// New local branch, or REMOTE/BRANCH to track locally.
     #[arg(long_help = CREATE_BRANCH_LONG_HELP, value_hint = ValueHint::Other)]
-    pub branch: String,
+    pub branch: Option<String>,
+
+    /// Start an ephemeral workspace at this Git commit or ref; defaults to current HEAD.
+    #[arg(long, conflicts_with_all = ["branch", "parent"], value_hint = ValueHint::Other)]
+    pub from: Option<String>,
+
+    /// Label an ephemeral workspace without changing its opaque storage directory.
+    #[arg(long, conflicts_with = "branch", value_hint = ValueHint::Other)]
+    pub name: Option<String>,
 
     /// Start from and record this local parent branch.
     #[arg(
@@ -351,18 +359,21 @@ const WORKSPACE_AFTER_LONG_HELP: &str = concat!(
 );
 
 const CREATE_LONG_ABOUT: &str = concat!(
-    "Create BRANCH as a local branch, linked worktree, and tmux window. Run this from the Git project you want the workspace to belong to.\n\n",
+    "Create an owned detached ephemeral worktree at the current checkout's HEAD, or use --from to select a commit or ref. Its path is <worktree_root>/<opaque-id>/<repo-basename>; --name changes only its label.\n\n",
+    "Supplying BRANCH selects the persistent preset: a new local branch and a sibling linked worktree. Attaching, switching, or publishing branches later never changes retention.\n\n",
     "Kmux runs configured workspace setup, then starts the default launcher when one is configured. Use --launcher to select another configured launcher, --launcher-input - to pass it multiline input on stdin, and --background when the caller is not attached to the target tmux session.\n\n",
     "Creation is not rolled back after it begins. Launcher success means the process started; kmux does not wait for its work to finish."
 );
 const CREATE_AFTER_LONG_HELP: &str = concat!(
     "Examples:\n",
+    "  kmux workspace create\n",
+    "  kmux workspace create --from main --name review-alpha\n",
     "  kmux workspace create feature/sidebar\n",
     "  kmux workspace create feature/review \\\n",
     "    --background --launcher review-agent --launcher-input -"
 );
 const CREATE_BRANCH_LONG_HELP: &str = concat!(
-    "Create this new local branch from --parent or the current branch. ",
+    "Select the persistent preset and create this new local branch from --parent or the current branch. ",
     "A known REMOTE/BRANCH instead creates and tracks the corresponding local branch."
 );
 const CREATE_PARENT_LONG_HELP: &str = concat!(

@@ -90,6 +90,19 @@ impl Git {
         Ok(())
     }
 
+    /// Add a linked detached checkout without creating or attaching a branch.
+    pub fn add_detached_worktree(&self, path: &Path, commit: &str) -> Result<()> {
+        self.ensure_available_worktree_path(path)?;
+        self.stdout(vec![
+            OsString::from("worktree"),
+            OsString::from("add"),
+            OsString::from("--detach"),
+            path.as_os_str().to_os_string(),
+            OsString::from(commit),
+        ])?;
+        Ok(())
+    }
+
     /// Return whether this worktree has staged changes.
     pub fn has_staged_changes(&self) -> Result<bool> {
         self.diff_has_changes(["--no-optional-locks", "diff", "--cached", "--quiet"])

@@ -67,19 +67,37 @@ using status, recency, and deterministic tie-breakers.
 
 ## Workspace lifecycle
 
-Start in the main checkout and create a branch workspace:
+Create an ephemeral workspace from any checkout, including a detached one:
 
 ```sh
 tmux new-session -s work
 cd /repo/project-alpha
+kmux workspace create
+kmux workspace create --from main --name review-alpha
+```
+
+Without a branch argument, creation starts detached at the invoking checkout's
+HEAD (or `--from <REF>`) and creates no branch. Storage defaults to
+`~/.kmux/worktrees/<opaque-id>/<repo-basename>`. The random directory is reserved
+exclusively across projects; an optional `--name` sets only the display label.
+Set an absolute or `~/`-prefixed `worktree_root` in configuration to change where
+future ephemeral worktrees are created. Existing paths remain unchanged.
+
+The table and tmux window name identify ephemeral retention explicitly. Creating,
+switching, renaming, or publishing branches inside the worktree keeps its identity,
+path, and retention. Multiple publication branches can belong to one environment.
+
+Supplying a branch selects the persistent compatibility preset:
+
+```sh
 kmux workspace create feature/sidebar
 ```
 
-`kmux workspace create` creates a new local branch, a linked worktree, and a tmux
-window. By default the current branch is recorded as the parent and the new window
-receives focus. Use `--parent <BRANCH>` or `--background` to override those choices.
-Detached callers must use `--background`; they otherwise fail before creating
-the branch or worktree.
+This creates a new local branch and a sibling worktree at
+`<repo>__worktrees/feature-sidebar`. By default the current branch is the parent;
+use `--parent <BRANCH>` to override it. A known `REMOTE/BRANCH` creates a local
+tracking branch. New windows receive focus; callers outside the target tmux
+session must pass `--background` and otherwise fail before creation.
 
 When a default launcher is configured, kmux starts it as the foreground program
 in the new window after file operations, `post_create`, and parent metadata are

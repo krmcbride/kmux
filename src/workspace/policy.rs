@@ -36,6 +36,8 @@ pub struct WorkspacePolicy {
     owned_branch: Option<String>,
     #[serde(default)]
     retired: bool,
+    #[serde(default)]
+    allocation_directory: Option<PathBuf>,
 }
 
 impl WorkspacePolicy {
@@ -63,6 +65,7 @@ impl WorkspacePolicy {
             creation_anchor: None,
             owned_branch: None,
             retired: false,
+            allocation_directory: None,
         }
     }
 
@@ -144,6 +147,16 @@ impl WorkspacePolicy {
         self.retired
     }
 
+    /// Record the directory exclusively reserved by this creation for later empty cleanup.
+    pub fn set_allocation_directory(&mut self, directory: PathBuf) {
+        self.allocation_directory = Some(directory);
+    }
+
+    /// Return the explicitly owned allocation directory, independent of retention or config.
+    pub fn allocation_directory(&self) -> Option<&Path> {
+        self.allocation_directory.as_deref()
+    }
+
     /// Retain identity and lineage after losing the original registration.
     pub fn retire(&mut self) {
         self.retired = true;
@@ -160,11 +173,23 @@ impl WorkspacePolicy {
 
     /// Validate persisted policy before it can authorize workflow effects.
     pub fn validate(&self) -> Result<()> {
-        if !self.path.is_absolute() || self.id.is_empty() {
+        if !self.path.is_absolute()
+            || !self.id.starts_with("ws-")
+            || self.id.len() <= 3
+            || !self
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        {
             bail!("workspace policy requires an absolute path and stable identity");
         }
         validate_label(&self.label)?;
         validate_label(&self.window_slug)?;
+        if let Some(directory) = self.allocation_directory()
+            && (self.authority != Authority::Kmux || self.path.parent() != Some(directory))
+        {
+            bail!("workspace allocation must be the explicitly owned immediate parent directory");
+        }
         if (self.authority == Authority::Kmux) != self.retention.is_some()
             || (self.authority != Authority::Kmux && self.owned_branch.is_some())
         {

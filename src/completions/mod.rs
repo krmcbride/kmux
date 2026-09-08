@@ -354,7 +354,11 @@ mod tests {
             "__kmux_in_workspace_command create' -l launcher -r -f -a '(__kmux_launchers)'"
         ));
         assert!(fish.contains("__kmux_in_workspace_command create' -l launcher-input -r -f"));
-        assert!(fish.contains("not __fish_prev_arg_in --parent --launcher --launcher-input"));
+        assert!(
+            fish.contains(
+                "not __fish_prev_arg_in --parent --from --name --launcher --launcher-input"
+            )
+        );
 
         let zsh = include_str!("zsh_dynamic.zsh");
         assert!(zsh.contains("kmux _complete-launchers 2>/dev/null"));

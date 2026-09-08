@@ -110,6 +110,7 @@ fn config_prints_the_same_resolved_shape_as_yaml_and_json() -> Result<()> {
         temp.path(),
         r#"
 window_prefix: work-
+worktree_root: /repo/example-worktrees
 window:
   default_launcher: review-agent
 launchers:
@@ -165,6 +166,7 @@ sidebar:
     let json: serde_json::Value = serde_json::from_slice(&json_output)?;
     let expected = serde_json::json!({
         "window_prefix": "work-",
+        "worktree_root": "/repo/example-worktrees",
         "window": {"default_launcher": "review-agent"},
         "launchers": {
             "code-agent": {

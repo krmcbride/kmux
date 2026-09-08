@@ -13,6 +13,9 @@ use crate::git::Git;
 use crate::project::ProjectIdentity;
 use crate::telemetry;
 
+mod allocation;
+pub use allocation::EphemeralAllocation;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Resolved filesystem layout for a Git repo and its kmux worktree area.
 pub struct RepoPaths {

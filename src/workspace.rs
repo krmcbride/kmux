@@ -15,7 +15,7 @@ use crate::paths::RepoPaths;
 use crate::slug::workspace_slug_from_branch;
 
 mod policy;
-pub use policy::{Authority, Retention, WorkspacePolicy};
+pub use policy::{Authority, Retention, WorkspacePolicy, validate_label};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 /// Canonical Git worktree root used as kmux's strongest workspace identity.

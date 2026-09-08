@@ -24,6 +24,15 @@ pub struct RemoteBranch {
 }
 
 impl Git {
+    /// Resolve an explicit ref to a commit, rejecting option-like input at the Git boundary.
+    pub fn resolve_commit(&self, reference: &str) -> Result<String> {
+        self.stdout([
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            &format!("{reference}^{{commit}}"),
+        ])
+    }
     /// Return the current branch name, or `None` when HEAD is detached.
     pub fn current_branch(&self) -> Result<Option<String>> {
         let output = self.output(["symbolic-ref", "--quiet", "--short", "HEAD"])?;

@@ -53,8 +53,12 @@ _kmux() {
         return
     fi
 
-    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--parent" ]]; then
+    if [[ "$cmd" == "create" && ( "${words[CURRENT-1]}" == "--parent" || "${words[CURRENT-1]}" == "--from" ) ]]; then
         _kmux_git_branches
+        return
+    fi
+
+    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--name" ]]; then
         return
     fi
 

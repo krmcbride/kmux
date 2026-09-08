@@ -58,12 +58,10 @@ impl WorkspaceState {
         let before = self.clone();
         for policy in &mut self.workspaces {
             if policy.authority() == Authority::Kmux
-                && worktrees.iter().any(|entry| {
-                    entry.path == policy.path()
-                        && entry.prunable.is_none()
-                        && entry.path.is_dir()
-                        && !policy.matches_registration(entry)
-                })
+                && !policy.retired()
+                && !worktrees
+                    .iter()
+                    .any(|entry| policy.matches_registration(entry))
             {
                 policy.retire();
             }
@@ -122,7 +120,8 @@ impl WorkspaceState {
                 && !existing.retired()
                 && !policy.retired()
                 && (existing.path() == policy.path()
-                    || existing.window_slug() == policy.window_slug())
+                    || existing.window_slug() == policy.window_slug()
+                    || existing.presentation_slug() == policy.presentation_slug())
             {
                 bail!(
                     "workspace identity or window name conflicts with '{}'",
