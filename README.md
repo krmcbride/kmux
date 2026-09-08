@@ -38,10 +38,13 @@ its path, HEAD, branch or detached state, and registration flags. Kmux separatel
 records its label, lifecycle authority, retention, presentation intent, and lineage.
 External worktrees can live anywhere and remain external when opened in tmux.
 
-Existing branch-derived kmux worktrees migrate once to owned persistent records
-without moving directories or changing branches. New registrations never gain
-authority from a path or branch name. Ownership is bound to the original Git
-registration, so a replacement at the same path cannot inherit it.
+Compatibility import runs once when kmux policy state is missing or version 1.
+Worktrees matching the old strict sibling layout and branch-derived basename
+become owned persistent records without moving directories or changing branches.
+This legacy exception also applies on first use in a repository without prior
+kmux state. After import, new registrations never gain authority from a path or
+branch name. Ownership is bound to the original Git registration, so a replacement
+at the same path cannot inherit it.
 
 The release model distinguishes one Git project from its worktree workspaces:
 

@@ -130,6 +130,18 @@ impl WorkspacePolicy {
         self.presentation = presentation;
     }
 
+    /// Assign an available generated name to an observation without changing its identity.
+    /// Existing owned workspace names must be preserved during legacy migration.
+    pub fn name_observation(&mut self, name: String) -> Result<()> {
+        if self.authority == Authority::Kmux {
+            bail!("an owned workspace cannot be renamed as an observation");
+        }
+        validate_label(&name)?;
+        self.window_slug = name.clone();
+        self.label = name;
+        Ok(())
+    }
+
     /// Keep an owned ephemeral workspace in place, without acquiring branch authority.
     /// Validation finishes before any retention or label change.
     pub fn promote(&mut self, name: Option<&str>) -> Result<()> {

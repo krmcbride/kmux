@@ -2,7 +2,6 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 
 use anyhow::{Result, bail};
 
-use crate::config::Config;
 use crate::git::WorktreeInfo;
 use crate::state::workspace::{WorkspaceState, WorkspaceStateStore};
 use crate::workspace::{
@@ -13,7 +12,7 @@ use crate::workspace::{
 use super::context::RepoContext;
 use crate::paths::same_path;
 
-/// Resolve a user-supplied workspace name, slug, or window-prefixed slug.
+/// Resolve a workspace ID, path, label, branch, or exact configured presentation name.
 pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<WorkspaceRecord> {
     find_workspace(repo, name)?.ok_or_else(|| anyhow::anyhow!("workspace '{}' not found", name))
 }
@@ -22,7 +21,6 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Worksp
 /// Ambiguous workspace selectors still fail rather than silently choosing a ref.
 pub(super) fn find_workspace(repo: &RepoContext, name: &str) -> Result<Option<WorkspaceRecord>> {
     let (state, entries) = load_workspace_state(repo)?;
-    let candidates = name_candidates(&repo.config, name);
     let canonical = std::path::Path::new(name).canonicalize().ok();
     // Exact IDs and canonical paths remain usable even when a label or branch
     // happens to spell another workspace's identity.
@@ -54,12 +52,13 @@ pub(super) fn find_workspace(repo: &RepoContext, name: &str) -> Result<Option<Wo
                 .find(|entry| policy.matches_registration(entry))
                 .and_then(|entry| entry.branch.as_deref());
             !policy.retired()
-                && candidates.iter().any(|candidate| {
-                    candidate == policy.id()
-                        || candidate == policy.label()
-                        || candidate == policy.window_slug()
-                        || branch == Some(candidate.as_str())
-                })
+                && (name == policy.label()
+                    || name == policy.window_slug()
+                    || name
+                        == repo
+                            .config
+                            .workspace_window_name(&policy.presentation_slug())
+                    || branch == Some(name))
         })
         .collect::<Vec<_>>();
     match matches.as_slice() {
@@ -332,17 +331,6 @@ fn visit_parent_tree(
 
 fn item_order_key(item: &WorkspaceInventoryItem) -> (bool, &str, &str) {
     (!item.is_main(), item.workspace_slug(), item.workspace_id())
-}
-
-// Accept a raw slug or a tmux window name with the configured prefix stripped.
-fn name_candidates(config: &Config, name: &str) -> Vec<String> {
-    let mut candidates = vec![name.to_owned()];
-    if let Some(stripped) = name.strip_prefix(config.window_prefix())
-        && !stripped.is_empty()
-    {
-        candidates.push(stripped.to_owned());
-    }
-    candidates
 }
 
 #[cfg(test)]

@@ -31,6 +31,78 @@ fn entry<'a>(items: &'a [Value], path: &Path) -> Result<&'a Value> {
 }
 
 #[test]
+fn legacy_primary_names_keep_their_windows_and_lineage_through_migration() -> Result<()> {
+    let (temp, repo) = init_repo()?;
+    let tmux = TmuxFixture::new(&repo)?.context("tmux fixture")?;
+    let config = write_config(temp.path(), "")?;
+    let parent = temp.path().join("project__worktrees/primary");
+    let child = temp.path().join("project__worktrees/primary-1");
+    for (branch, path) in [("primary", &parent), ("primary-1", &child)] {
+        git(
+            &repo,
+            &[
+                "worktree",
+                "add",
+                "-b",
+                branch,
+                path.to_str().context("path")?,
+            ],
+        )?;
+    }
+    let anchor = git_stdout(&repo, &["rev-parse", "HEAD"])?;
+    fs::create_dir_all(repo.join(".git/kmux"))?;
+    fs::write(
+        repo.join(".git/kmux/state.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "parents": [{"branch": "primary-1", "parent": "primary", "anchor": anchor}]
+        }))?,
+    )?;
+    let pane = tmux.create_window("project:", "kmux-primary", &parent)?;
+    let window = tmux.pane_format(&pane, "#{window_id}")?;
+    let first = inventory(&repo, &config, &tmux)?;
+    let parent_item = entry(&first, &parent)?;
+    let child_item = entry(&first, &child)?;
+    assert_eq!(parent_item["label"], "primary");
+    assert_eq!(parent_item["authority"], "kmux");
+    assert_eq!(parent_item["retention"], "persistent");
+    assert_eq!(child_item["label"], "primary-1");
+    assert_eq!(entry(&first, &repo)?["label"], "primary-2");
+    assert_eq!(
+        child_item["lineage"]["parent"]["workspace_id"],
+        parent_item["workspace_id"]
+    );
+    assert_eq!(child_item["git_anchor_commit"], anchor);
+    for _ in 0..2 {
+        kmux(&repo, &config, &tmux)?
+            .args(["workspace", "restore"])
+            .assert()
+            .success();
+        let after = inventory(&repo, &config, &tmux)?;
+        assert_eq!(
+            entry(&after, &parent)?["workspace_id"],
+            parent_item["workspace_id"]
+        );
+        assert_eq!(
+            entry(&after, &parent)?["tmux_window_ids"],
+            serde_json::json!([window])
+        );
+        assert_eq!(entry(&after, &child)?["lineage"], child_item["lineage"]);
+        assert!(tmux.window_exists("kmux-primary")?);
+        assert!(tmux.window_exists("kmux-primary-1")?);
+        assert_eq!(
+            git_stdout(&parent, &["branch", "--show-current"])?,
+            "primary"
+        );
+        assert_eq!(
+            git_stdout(&child, &["branch", "--show-current"])?,
+            "primary-1"
+        );
+    }
+    Ok(())
+}
+
+#[test]
 fn restore_opens_all_unvisited_external_worktrees_once_and_reopens_after_close() -> Result<()> {
     let (temp, repo) = init_repo()?;
     let tmux = TmuxFixture::new(&repo)?.context("tmux fixture")?;

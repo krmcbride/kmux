@@ -70,6 +70,7 @@ impl WorkspaceState {
                 policy.retire();
             }
         }
+        let mut discovered = Vec::new();
         for entry in worktrees {
             if self.policy_for_path(&entry.path).is_some() {
                 continue;
@@ -98,6 +99,15 @@ impl WorkspaceState {
             } else {
                 WorkspacePolicy::observed(entry.path.clone(), primary)
             };
+            discovered.push(policy);
+        }
+        // Legacy names already identify windows. Reserve them before assigning new
+        // primary/external display names, regardless of Git's inventory ordering.
+        discovered.sort_by_key(|policy| policy.authority() != Authority::Kmux);
+        for mut policy in discovered {
+            if policy.authority() != Authority::Kmux {
+                self.disambiguate_observation(&mut policy)?;
+            }
             self.upsert_policy(policy)?;
         }
         if self.version < 3 {
@@ -207,6 +217,22 @@ impl WorkspaceState {
         }
     }
 
+    // Only newly discovered observations receive a suffix; stable IDs, paths,
+    // saved presentation names, and legacy owned labels remain unchanged.
+    fn disambiguate_observation(&self, policy: &mut WorkspacePolicy) -> Result<()> {
+        let base = policy.window_slug().to_owned();
+        let mut suffix = 0;
+        while self.workspaces.iter().any(|existing| {
+            !existing.retired()
+                && (existing.window_slug() == policy.window_slug()
+                    || existing.presentation_slug() == policy.presentation_slug())
+        }) {
+            suffix += 1;
+            policy.name_observation(format!("{base}-{suffix}"))?;
+        }
+        Ok(())
+    }
+
     // Resolve legacy branch relationships once. Unknown child refs stay explicit
     // history; a later branch appearance must never silently rebind ancestry.
     fn migrate_lineage(&mut self, worktrees: &[WorktreeInfo]) -> Result<()> {
@@ -310,7 +336,7 @@ impl WorkspaceStateStore {
         Ok(WorkspaceLifecycleLock { file })
     }
 
-    /// Load workspace graph state, returning an empty current-version state when absent.
+    /// Load workspace state; absent state retains the one-time legacy compatibility import.
     pub fn load(&self) -> Result<WorkspaceState> {
         let content = match fs::read_to_string(&self.path) {
             Ok(content) => content,
@@ -626,6 +652,47 @@ mod tests {
                 .authority(),
             Authority::External
         );
+        Ok(())
+    }
+
+    #[test]
+    fn migration_reserves_legacy_names_before_naming_external_observations() -> Result<()> {
+        let temp = TempDir::new()?;
+        let paths = RepoPaths {
+            current_worktree: temp.path().join("project-alpha"),
+            main_worktree: temp.path().join("project-alpha"),
+            git_common_dir: temp.path().join("project-alpha/.git"),
+            worktree_base_dir: temp.path().join("project-alpha__worktrees"),
+        };
+        let external = registration(temp.path().join("external/workspace"), None);
+        let observed = WorkspacePolicy::observed(external.path.clone(), false);
+        let mut legacy = registration(
+            paths.workspace_path(observed.label()),
+            Some(observed.label()),
+        );
+        legacy.kmux_binding = Some("ws-owned-legacy".to_owned());
+        let mut entries = vec![
+            registration(paths.main_worktree.clone(), Some("main")),
+            external.clone(),
+            legacy.clone(),
+        ];
+        let mut state = WorkspaceState::default();
+        state.reconcile(&paths, &entries)?;
+        let named = state
+            .policy_for_path(&external.path)
+            .expect("external policy");
+        assert_eq!(named.id(), observed.id());
+        assert_eq!(named.authority(), Authority::External);
+        assert_eq!(named.label(), format!("{}-1", observed.label()));
+        let imported = state.policy_for_path(&legacy.path).expect("legacy policy");
+        assert_eq!(imported.label(), observed.label());
+        assert_eq!(imported.authority(), Authority::Kmux);
+        assert!(!state.reconcile(&paths, &entries)?);
+
+        entries.reverse();
+        let mut reordered = WorkspaceState::default();
+        reordered.reconcile(&paths, &entries)?;
+        assert_eq!(reordered, state);
         Ok(())
     }
 
