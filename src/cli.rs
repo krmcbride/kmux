@@ -96,6 +96,8 @@ pub enum WorkspaceCommand {
     Open(OpenArgs),
     /// Close a workspace's tmux presentation while keeping its worktree.
     Close(CloseArgs),
+    /// Keep an owned ephemeral workspace persistently in its current directory.
+    Promote(PromoteArgs),
     /// List workspaces in the current Git project.
     #[command(long_about = LIST_LONG_ABOUT, after_long_help = LIST_AFTER_LONG_HELP)]
     List(ListArgs),
@@ -193,6 +195,16 @@ pub struct CloseArgs {
     /// Workspace ID, label, branch, or path; omit to use the current worktree.
     #[arg(value_hint = ValueHint::Other)]
     pub target: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PromoteArgs {
+    /// Workspace ID, label, branch, or path; omit to use the current worktree.
+    #[arg(value_hint = ValueHint::Other)]
+    pub target: Option<String>,
+    /// Change the display label while preserving the directory, ID, and Git checkout.
+    #[arg(long, value_hint = ValueHint::Other)]
+    pub name: Option<String>,
 }
 
 #[derive(Debug, Args)]

@@ -99,6 +99,19 @@ use `--parent <BRANCH>` to override it. A known `REMOTE/BRANCH` creates a local
 tracking branch. New windows receive focus; callers outside the target tmux
 session must pass `--background` and otherwise fail before creation.
 
+Keep an ephemeral workspace persistently in its current directory:
+
+```sh
+kmux workspace promote
+kmux workspace promote review-alpha --name long-running
+```
+
+Promotion works while detached or on a branch. It preserves the workspace ID,
+path, HEAD, branches, presentation intent, and running panes. The optional name
+changes its label and window name. It creates no branch and grants no branch
+deletion authority. Primary, external, and already persistent workspaces cannot
+be promoted. There is no automatic cleanup or relocation.
+
 When a default launcher is configured, kmux starts it as the foreground program
 in the new window after file operations, `post_create`, and parent metadata are
 complete. The pane's configured shell remains its long-lived process and resumes

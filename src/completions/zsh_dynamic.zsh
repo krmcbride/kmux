@@ -58,7 +58,7 @@ _kmux() {
         return
     fi
 
-    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--name" ]]; then
+    if [[ ( "$cmd" == "create" || "$cmd" == "promote" ) && "${words[CURRENT-1]}" == "--name" ]]; then
         return
     fi
 
@@ -71,7 +71,7 @@ _kmux() {
     fi
 
     case "$cmd" in
-        remove|open|close)
+        remove|open|close|promote)
             _kmux_workspaces
             ;;
         create)

@@ -33,14 +33,9 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     }
     let branch_to_delete = match resolved.branch() {
         Some(branch)
-            if resolved.policy().retention() == Some(crate::workspace::Retention::Persistent) =>
+            if resolved.policy().retention() == Some(crate::workspace::Retention::Persistent)
+                && resolved.policy().owned_branch() == Some(branch) =>
         {
-            if resolved.policy().owned_branch() != Some(branch) {
-                bail!(
-                    "workspace branch changed; kmux does not own branch '{}'",
-                    branch
-                );
-            }
             if !args.force && !repo.git.branch_is_safely_deletable(branch)? {
                 bail!(
                     "branch '{}' is not safely merged; use --force to delete the workspace anyway",

@@ -36,6 +36,7 @@ fn workspace_help_shows_lifecycle_commands() {
         .success()
         .stdout(predicate::str::contains("Usage: kmux workspace <COMMAND>"))
         .stdout(predicate::str::contains("  create"))
+        .stdout(predicate::str::contains("  promote"))
         .stdout(predicate::str::contains("  list"))
         .stdout(predicate::str::contains("  remove"))
         .stdout(predicate::str::contains("  set-parent"))

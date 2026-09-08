@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn prepare_fish_base_uses_position_aware_workspace_predicates() {
         let input = concat!(
-            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create open close list remove set-parent restore\" -a create\n",
+            "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and not __fish_seen_subcommand_from create open close promote list remove set-parent restore\" -a create\n",
             "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from create\" -l parent\n",
             "complete -c kmux -n \"__fish_kmux_using_subcommand workspace; and __fish_seen_subcommand_from remove\" -l force\n",
         );
@@ -405,6 +405,7 @@ mod tests {
                 "create",
                 "open",
                 "close",
+                "promote",
                 "list",
                 "remove",
                 "set-parent",

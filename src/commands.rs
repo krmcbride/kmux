@@ -27,6 +27,7 @@ fn dispatch_workspace(command: cli::WorkspaceCommand) -> Result<()> {
         cli::WorkspaceCommand::Create(args) => workflows::run_create(args),
         cli::WorkspaceCommand::Open(args) => workflows::run_open(args),
         cli::WorkspaceCommand::Close(args) => workflows::run_close(args),
+        cli::WorkspaceCommand::Promote(args) => workflows::run_promote(args),
         cli::WorkspaceCommand::List(args) => workflows::run_list(args),
         cli::WorkspaceCommand::Remove(args) => workflows::run_remove(args),
         cli::WorkspaceCommand::SetParent(args) => workflows::run_set_parent(args),

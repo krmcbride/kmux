@@ -125,6 +125,24 @@ impl WorkspacePolicy {
         self.presentation = presentation;
     }
 
+    /// Keep an owned ephemeral workspace in place, without acquiring branch authority.
+    /// Validation finishes before any retention or label change.
+    pub fn promote(&mut self, name: Option<&str>) -> Result<()> {
+        if self.authority != Authority::Kmux {
+            bail!("only kmux-owned workspaces can be promoted");
+        }
+        if self.retention != Some(Retention::Ephemeral) {
+            bail!("workspace is already persistent");
+        }
+        if let Some(name) = name {
+            validate_label(name)?;
+            self.label = name.to_owned();
+            self.window_slug = name.to_owned();
+        }
+        self.retention = Some(Retention::Persistent);
+        Ok(())
+    }
+
     /// Make ephemeral retention explicit in the tmux window name.
     pub fn presentation_slug(&self) -> String {
         if self.retention == Some(Retention::Ephemeral) {
@@ -212,4 +230,40 @@ pub fn validate_label(label: &str) -> Result<()> {
         bail!("workspace label must contain ASCII letters, digits, '-' or '_' and cannot be empty");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn promotion_validates_before_changing_policy_and_keeps_ownership_boundaries() -> Result<()> {
+        let mut policy = WorkspacePolicy::owned(
+            "ws-example".to_owned(),
+            PathBuf::from("/repo/workspace"),
+            "review-alpha".to_owned(),
+            Retention::Ephemeral,
+            Some("abc123".to_owned()),
+            None,
+        )?;
+        let before = policy.clone();
+        assert!(policy.promote(Some("invalid/name")).is_err());
+        assert_eq!(policy, before);
+        policy.promote(Some("long-running"))?;
+        assert_eq!(policy.id(), before.id());
+        assert_eq!(policy.path(), before.path());
+        assert_eq!(policy.creation_anchor(), before.creation_anchor());
+        assert_eq!(policy.presentation(), before.presentation());
+        assert_eq!(policy.owned_branch(), None);
+        assert_eq!(policy.retention(), Some(Retention::Persistent));
+        assert_eq!(policy.label(), "long-running");
+        assert!(policy.promote(None).is_err());
+        for primary in [true, false] {
+            let mut observed = WorkspacePolicy::observed(PathBuf::from("/repo/external"), primary);
+            let before = observed.clone();
+            assert!(observed.promote(None).is_err());
+            assert_eq!(observed, before);
+        }
+        Ok(())
+    }
 }

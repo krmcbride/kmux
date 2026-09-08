@@ -35,7 +35,11 @@ _kmux_dynamic() {
     if [[ ${cword} -ge 3 && "${words[1]}" == "workspace" ]]; then
         local cmd="${words[2]}"
         case "$cmd" in
-            remove|close)
+            remove|close|promote)
+                if [[ "$prev" == "--name" ]]; then
+                    COMPREPLY=()
+                    return
+                fi
                 if [[ "$cur" != -* ]]; then
                     COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     return

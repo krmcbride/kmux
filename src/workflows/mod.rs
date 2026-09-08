@@ -16,6 +16,7 @@ mod launch;
 mod list;
 mod presentation;
 mod project_session;
+mod promote;
 mod remove;
 mod resolve;
 mod restore;
@@ -36,6 +37,11 @@ pub fn run_open(args: cli::OpenArgs) -> Result<()> {
 /// Close only one workspace's remembered tmux presentation.
 pub fn run_close(args: cli::CloseArgs) -> Result<()> {
     presentation::close(args)
+}
+
+/// Change an owned ephemeral workspace's retention in place.
+pub fn run_promote(args: cli::PromoteArgs) -> Result<()> {
+    promote::run(args)
 }
 
 /// Print the fully-resolved active kmux configuration.

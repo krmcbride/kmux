@@ -107,6 +107,28 @@ pub(super) fn lock_project_lifecycle(paths: &RepoPaths) -> Result<WorkspaceLifec
 }
 
 impl ProjectSessionResolution {
+    /// Verify the existing physical window and any proposed display-name collision.
+    pub(super) fn prepare_presentation_update(
+        &self,
+        config: &crate::config::Config,
+        before: &crate::workspace::WorkspaceRecord,
+        after: &crate::workspace::WorkspaceRecord,
+    ) -> Result<Option<String>> {
+        let Some(selected) = &self.selected else {
+            return Ok(None);
+        };
+        super::window::find_existing(&self.tmux, &selected.session_id, config, before)?;
+        Ok(
+            super::window::find_existing(&self.tmux, &selected.session_id, config, after)?
+                .map(|window| window.window_id),
+        )
+    }
+
+    /// Rename a previously validated physical presentation, preserving its panes.
+    pub(super) fn rename_prepared_window(&self, window_id: &str, name: &str) -> Result<()> {
+        self.tmux.rename_window(window_id, name)
+    }
+
     /// Close a verified presentation without touching Git or unrelated windows.
     pub(super) fn close_presentation(
         &self,
