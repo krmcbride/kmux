@@ -14,6 +14,12 @@ _kmux_git_branches() {
     kmux _complete-git-branches 2>/dev/null
 }
 
+# Known workspace labels and branch refs for source-valued arguments.
+_kmux_sources() {
+    _kmux_workspaces
+    _kmux_git_branches
+}
+
 # Configured launcher names.
 _kmux_launchers() {
     kmux _complete-launchers 2>/dev/null
@@ -47,7 +53,11 @@ _kmux_dynamic() {
                 ;;
             create|open)
                 case "$prev" in
-                    --parent|--from)
+                    --parent)
+                        COMPREPLY=($(compgen -W "$(_kmux_sources)" -- "$cur"))
+                        return
+                        ;;
+                    --from)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
                         return
                         ;;
@@ -85,7 +95,7 @@ _kmux_dynamic() {
                     if (( positional_before == 1 )); then
                         COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     elif (( positional_before == 0 )); then
-                        COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
+                        COMPREPLY=($(compgen -W "$(_kmux_sources)" -- "$cur"))
                     else
                         COMPREPLY=()
                     fi

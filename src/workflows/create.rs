@@ -3,7 +3,6 @@
 use anyhow::{Context, Result, bail};
 
 use crate::cli;
-use crate::git::Git;
 use crate::paths::EphemeralAllocation;
 use crate::slug::workspace_slug_from_branch;
 use crate::state::workspace::WorkspaceStateStore;
@@ -17,7 +16,7 @@ use super::resolve::{
     find_kmux_workspace_by_name, find_kmux_workspace_by_slug, load_workspace_state,
     resolve_workspace, resolved_from_kmux_worktree,
 };
-use super::set_parent::{record_parent, validate_no_cycle};
+use super::set_parent::{ResolvedSource, lineage_at, resolve_source};
 use super::window::{create_shell, select_created, start_launcher};
 
 /// Create a worktree, persist its explicit policy, and then run configured setup and presentation.
@@ -31,12 +30,11 @@ pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
             tmux.session_name
         );
     }
-    let created = if let Some(branch) = args.branch.as_deref() {
+    let workspace = if let Some(branch) = args.branch.as_deref() {
         create_persistent(&repo, &tmux, &args, branch)?
     } else {
         create_ephemeral(&repo, &tmux, &args)?
     };
-    let workspace = &created.workspace;
     apply_file_operations(&repo.config, &repo.paths.main_worktree, workspace.path())?;
     run_post_create(
         &repo.config,
@@ -44,10 +42,7 @@ pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
         workspace.path(),
         workspace.workspace_slug(),
     )?;
-    let window = create_shell(&repo, &tmux, workspace)?;
-    if let Some((branch, parent)) = created.branch_parent {
-        record_parent(&repo, &branch, &parent)?;
-    }
+    let window = create_shell(&repo, &tmux, &workspace)?;
     if let Some(launcher) = &launcher {
         start_launcher(&tmux, &window, launcher, workspace.path()).with_context(|| {
             format!("launcher {:?} handoff failed; its process may already be running if spawn acknowledgment timed out; workspace files, parent metadata, and its shell window remain available; inspect the window before manual recovery", launcher.name())
@@ -69,24 +64,20 @@ pub(super) fn run(args: cli::CreateArgs) -> Result<()> {
     Ok(())
 }
 
-struct CreatedWorkspace {
-    workspace: WorkspaceRecord,
-    branch_parent: Option<(String, String)>,
-}
-
 // The default starts from the caller's checkout, including a detached source.
 // Reserve the directory exclusively, and preserve it once Git creation begins.
 fn create_ephemeral(
     repo: &RepoContext,
     tmux: &TmuxContext,
     args: &cli::CreateArgs,
-) -> Result<CreatedWorkspace> {
-    let reference = args
-        .from
-        .as_deref()
-        .or(args.parent.as_deref())
-        .unwrap_or("HEAD");
-    let anchor = Git::new(&repo.paths.current_worktree).resolve_commit(reference)?;
+) -> Result<WorkspaceRecord> {
+    let source = resolve_source(
+        repo,
+        args.from.as_deref().or(args.parent.as_deref()),
+        args.from.is_some(),
+    )?;
+    let anchor = source.commit.clone();
+    let lineage = lineage_at(repo, &source, &anchor)?;
     if let Some(name) = &args.name {
         validate_label(name)?;
     }
@@ -97,7 +88,7 @@ fn create_ephemeral(
         .name
         .clone()
         .unwrap_or_else(|| allocation.id().to_owned());
-    let planned = WorkspacePolicy::owned(
+    let mut planned = WorkspacePolicy::owned(
         format!("ws-{}", allocation.id()),
         allocation.path().to_path_buf(),
         label.clone(),
@@ -105,6 +96,7 @@ fn create_ephemeral(
         Some(anchor.clone()),
         None,
     )?;
+    planned.set_lineage(lineage.clone());
     // Validate label/path collisions without persisting speculative ownership.
     state.clone().upsert_policy(planned.clone())?;
     ensure_window_available(repo, tmux, &planned.presentation_slug())?;
@@ -118,6 +110,7 @@ fn create_ephemeral(
         Some(anchor),
         None,
     )?;
+    policy.set_lineage(lineage);
     policy.set_allocation_directory(
         path.parent()
             .context("allocation path has no parent")?
@@ -125,10 +118,7 @@ fn create_ephemeral(
     );
     state.upsert_policy(policy)?;
     WorkspaceStateStore::new(&repo.paths.git_common_dir).save(&state)?;
-    Ok(CreatedWorkspace {
-        workspace: resolve_workspace(repo, &path.to_string_lossy())?,
-        branch_parent: None,
-    })
+    resolve_workspace(repo, &path.to_string_lossy())
 }
 
 // Keep branch, remote-tracking, parent, and sibling-layout compatibility explicit.
@@ -137,7 +127,7 @@ fn create_persistent(
     tmux: &TmuxContext,
     args: &cli::CreateArgs,
     branch: &str,
-) -> Result<CreatedWorkspace> {
+) -> Result<WorkspaceRecord> {
     let target = PersistentTarget::resolve(repo, args, branch)?;
     let label = workspace_slug_from_branch(&target.branch)?;
     let path = repo.paths.workspace_path(&label);
@@ -168,29 +158,11 @@ fn create_persistent(
             target.branch
         );
     }
-    if target.branch == target.parent {
-        bail!(
-            "workspace branch '{}' cannot be its own parent",
-            target.branch
-        );
-    }
-    if !repo.git.local_branch_exists(&target.parent)? {
-        bail!("parent branch '{}' does not exist locally", target.parent);
-    }
     let (mut state, _) = load_workspace_state(repo)?;
-    validate_no_cycle(&state, &target.branch, &target.parent)?;
-    repo.git
-        .merge_base(&target.start_point, &target.parent)?
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "branches '{}' and '{}' have no merge base",
-                target.branch,
-                target.parent
-            )
-        })?;
     let anchor = repo.git.resolve_commit(&target.start_point)?;
+    let lineage = lineage_at(repo, &target.source, &anchor)?;
     // The persistent preset must not collide with a closed workspace's label.
-    let planned = WorkspacePolicy::owned(
+    let mut planned = WorkspacePolicy::owned(
         "ws-pending-persistent".to_owned(),
         path.clone(),
         label.clone(),
@@ -198,24 +170,24 @@ fn create_persistent(
         Some(anchor.clone()),
         Some(target.branch.clone()),
     )?;
+    planned.set_lineage(lineage.clone());
     state.clone().upsert_policy(planned)?;
     repo.git.ensure_available_worktree_path(&path)?;
     repo.git
         .ensure_local_branch(&target.branch, Some(&target.start_point))?;
     repo.git.add_worktree(&path, &target.branch)?;
-    state.upsert_policy(WorkspacePolicy::owned(
+    let mut policy = WorkspacePolicy::owned(
         repo.git.claim_worktree(&path)?,
         path.clone(),
         label,
         Retention::Persistent,
         Some(anchor),
-        Some(target.branch.clone()),
-    )?)?;
+        Some(target.branch),
+    )?;
+    policy.set_lineage(lineage);
+    state.upsert_policy(policy)?;
     WorkspaceStateStore::new(&repo.paths.git_common_dir).save(&state)?;
-    Ok(CreatedWorkspace {
-        workspace: resolve_workspace(repo, &path.to_string_lossy())?,
-        branch_parent: Some((target.branch, target.parent)),
-    })
+    resolve_workspace(repo, &path.to_string_lossy())
 }
 
 fn ensure_window_available(repo: &RepoContext, tmux: &TmuxContext, slug: &str) -> Result<()> {
@@ -253,26 +225,23 @@ fn bail_existing_workspace(expected_branch: &str, resolved: WorkspaceRecord) -> 
 struct PersistentTarget {
     branch: String,
     start_point: String,
-    parent: String,
+    source: ResolvedSource,
 }
 
 impl PersistentTarget {
     fn resolve(repo: &RepoContext, args: &cli::CreateArgs, branch: &str) -> Result<Self> {
-        let parent =
-            args.parent.clone().map(Ok).unwrap_or_else(|| {
-                Git::new(&repo.paths.current_worktree).require_current_branch()
-            })?;
+        let source = resolve_source(repo, args.parent.as_deref(), false)?;
         if let Some(remote) = repo.git.known_remote_branch(branch)? {
             return Ok(Self {
                 branch: remote.branch,
                 start_point: remote.ref_name,
-                parent,
+                source,
             });
         }
         Ok(Self {
             branch: branch.to_owned(),
-            start_point: parent.clone(),
-            parent,
+            start_point: source.commit.clone(),
+            source,
         })
     }
 }

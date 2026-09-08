@@ -267,7 +267,7 @@ fn set_parent_help_uses_stable_parent_then_child_order() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Usage: kmux workspace set-parent <PARENT> [CHILD]",
+            "Usage: kmux workspace set-parent [OPTIONS] <PARENT> [CHILD]",
         ));
 }
 
@@ -465,7 +465,10 @@ complete -C $argv[2]
         Ok(String::from_utf8(output.stdout)?)
     };
 
-    assert_eq!(complete("kmux workspace create --parent ")?, "main\n");
+    assert_eq!(
+        complete("kmux workspace create --parent ")?,
+        "feature-alpha\nmain\n"
+    );
     assert_eq!(complete("kmux workspace create --launcher ")?, "agent\n");
     assert_eq!(complete("kmux workspace create --launcher-input ")?, "");
     assert_eq!(

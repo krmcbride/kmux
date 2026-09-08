@@ -727,18 +727,21 @@ fn set_parent_waits_for_create_before_updating_shared_workspace_state() -> Resul
 
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(repo.join(".git/kmux/state.json"))?)?;
-    let parents = state
-        .get("parents")
-        .and_then(serde_json::Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("workspace state should contain parent links"))?;
-    assert!(parents.iter().any(|link| {
-        link.get("branch").and_then(serde_json::Value::as_str) == Some("feature/child")
-            && link.get("parent").and_then(serde_json::Value::as_str) == Some("feature/sibling")
-    }));
-    assert!(parents.iter().any(|link| {
-        link.get("branch").and_then(serde_json::Value::as_str) == Some("feature/sibling")
-            && link.get("parent").and_then(serde_json::Value::as_str) == Some("main")
-    }));
+    let policies = state["workspaces"].as_array().expect("workspace policies");
+    let child = policies
+        .iter()
+        .find(|policy| policy["label"] == "feature-child")
+        .expect("child");
+    let sibling = policies
+        .iter()
+        .find(|policy| policy["label"] == "feature-sibling")
+        .expect("sibling");
+    let primary = policies
+        .iter()
+        .find(|policy| policy["authority"] == "primary")
+        .expect("primary");
+    assert_eq!(child["lineage"]["parent"]["workspace_id"], sibling["id"]);
+    assert_eq!(sibling["lineage"]["parent"]["workspace_id"], primary["id"]);
     Ok(())
 }
 
@@ -1855,7 +1858,7 @@ fn remove_warns_when_other_links_still_reference_removed_branch() -> Result<()> 
         .assert()
         .success()
         .stderr(predicate::str::contains(
-            "parent links still reference removed branch 'feature/parent': feature/child",
+            "parent links still reference removed workspace 'feature-parent': feature-child",
         ));
 
     Ok(())

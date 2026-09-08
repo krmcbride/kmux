@@ -6,6 +6,8 @@ use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::WorkspaceLineage;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Authority {
@@ -38,6 +40,8 @@ pub struct WorkspacePolicy {
     retired: bool,
     #[serde(default)]
     allocation_directory: Option<PathBuf>,
+    #[serde(default)]
+    lineage: Option<WorkspaceLineage>,
 }
 
 impl WorkspacePolicy {
@@ -66,6 +70,7 @@ impl WorkspacePolicy {
             owned_branch: None,
             retired: false,
             allocation_directory: None,
+            lineage: None,
         }
     }
 
@@ -160,6 +165,16 @@ impl WorkspacePolicy {
         self.owned_branch.as_deref()
     }
 
+    /// Return historical source metadata, unaffected by branch or retention changes.
+    pub fn lineage(&self) -> Option<&WorkspaceLineage> {
+        self.lineage.as_ref()
+    }
+
+    /// Assign explicit source metadata; the state graph validates workspace cycles.
+    pub fn set_lineage(&mut self, lineage: WorkspaceLineage) {
+        self.lineage = Some(lineage);
+    }
+
     /// Return whether this record is history for a registration that has ended.
     pub fn retired(&self) -> bool {
         self.retired
@@ -191,6 +206,9 @@ impl WorkspacePolicy {
 
     /// Validate persisted policy before it can authorize workflow effects.
     pub fn validate(&self) -> Result<()> {
+        if let Some(lineage) = &self.lineage {
+            lineage.validate()?;
+        }
         if !self.path.is_absolute()
             || !self.id.starts_with("ws-")
             || self.id.len() <= 3

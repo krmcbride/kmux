@@ -15,6 +15,12 @@ use crate::paths::same_path;
 
 /// Resolve a user-supplied workspace name, slug, or window-prefixed slug.
 pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<WorkspaceRecord> {
+    find_workspace(repo, name)?.ok_or_else(|| anyhow::anyhow!("workspace '{}' not found", name))
+}
+
+/// Find a selector without treating a missing workspace as a malformed Git ref.
+/// Ambiguous workspace selectors still fail rather than silently choosing a ref.
+pub(super) fn find_workspace(repo: &RepoContext, name: &str) -> Result<Option<WorkspaceRecord>> {
     let (state, entries) = load_workspace_state(repo)?;
     let candidates = name_candidates(&repo.config, name);
     let canonical = std::path::Path::new(name).canonicalize().ok();
@@ -36,7 +42,8 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Worksp
                 .iter()
                 .find(|entry| policy.matches_registration(entry))
                 .cloned(),
-        );
+        )
+        .map(Some);
     }
     let matches = state
         .policies()
@@ -62,8 +69,9 @@ pub(super) fn resolve_workspace(repo: &RepoContext, name: &str) -> Result<Worksp
                 .iter()
                 .find(|entry| policy.matches_registration(entry))
                 .cloned(),
-        ),
-        [] => bail!("workspace '{}' not found", name),
+        )
+        .map(Some),
+        [] => Ok(None),
         _ => bail!(
             "workspace selector '{}' is ambiguous; use its full workspace ID or canonical path",
             name
@@ -105,7 +113,7 @@ pub(super) fn list_items(repo: &RepoContext) -> Result<Vec<WorkspaceInventoryIte
             list_item_from_record(WorkspaceRecord::from_policy(policy.clone(), git)?)
         })
         .collect::<Result<Vec<_>>>()?;
-    apply_parent_state(&mut items, &state);
+    apply_parent_state(&mut items);
     Ok(parent_tree_order(items))
 }
 
@@ -207,31 +215,54 @@ fn list_item_from_record(record: WorkspaceRecord) -> Result<WorkspaceInventoryIt
     Ok(WorkspaceInventoryItem::from_record(record, created_at))
 }
 
-// Parent metadata is allowed to reference branches/worktrees that are not
-// currently present; missing parents are rendered as roots with a parent label.
-fn apply_parent_state(items: &mut [WorkspaceInventoryItem], state: &WorkspaceState) {
+// Enrich historical parent IDs with current labels without rebinding on branch changes.
+fn apply_parent_state(items: &mut [WorkspaceInventoryItem]) {
+    let parents = items
+        .iter()
+        .map(|item| {
+            (
+                item.workspace_id().to_owned(),
+                (
+                    item.workspace_slug().to_owned(),
+                    item.git_branch().map(ToOwned::to_owned),
+                    item.is_live(),
+                ),
+            )
+        })
+        .collect::<HashMap<_, _>>();
     for item in items {
-        let Some(branch) = item.git_branch() else {
+        let Some(lineage) = item.lineage().cloned() else {
             continue;
         };
-        let Some(link) = state.parent_for(branch) else {
-            continue;
+        let parent = lineage.parent;
+        let present = parent.workspace_id().and_then(|id| parents.get(id));
+        let label = present
+            .map(|(label, _, _)| label.clone())
+            .unwrap_or_else(|| parent.label().to_owned());
+        let git_ref = present
+            .and_then(|(_, branch, _)| branch.clone())
+            .or_else(|| parent.git_ref().map(ToOwned::to_owned));
+        let missing = parent.workspace_id().is_some() && present.is_none_or(|(_, _, live)| !live);
+        let label = if missing {
+            format!("{label} (missing)")
+        } else {
+            label
         };
-        item.set_parent_state(link.parent.clone(), link.anchor.clone());
+        item.set_parent_display(label, git_ref, missing);
     }
 }
 
 // Order inventory as a forest. Links to absent parents become roots, and the
 // visited fallback handles hand-edited cyclic state defensively.
 fn parent_tree_order(mut items: Vec<WorkspaceInventoryItem>) -> Vec<WorkspaceInventoryItem> {
-    let branch_set = items
+    let workspace_set = items
         .iter()
-        .filter_map(|item| item.git_branch().map(ToOwned::to_owned))
+        .map(|item| item.workspace_id().to_owned())
         .collect::<BTreeSet<_>>();
     let mut children = HashMap::<String, Vec<usize>>::new();
     for (index, item) in items.iter().enumerate() {
-        if let Some(parent) = item.git_parent_branch()
-            && branch_set.contains(parent)
+        if let Some(parent) = item.lineage().and_then(|link| link.parent.workspace_id())
+            && workspace_set.contains(parent)
         {
             children.entry(parent.to_owned()).or_default().push(index);
         }
@@ -248,8 +279,9 @@ fn parent_tree_order(mut items: Vec<WorkspaceInventoryItem>) -> Vec<WorkspaceInv
         .enumerate()
         .filter_map(|(index, item)| {
             let parent_is_present = item
-                .git_parent_branch()
-                .is_some_and(|parent| branch_set.contains(parent));
+                .lineage()
+                .and_then(|link| link.parent.workspace_id())
+                .is_some_and(|parent| workspace_set.contains(parent));
             (!parent_is_present).then_some(index)
         })
         .collect::<Vec<_>>();
@@ -290,10 +322,7 @@ fn visit_parent_tree(
     items[index].set_tree_depth(depth);
     ordered.push(index);
 
-    let Some(branch) = items[index].git_branch().map(ToOwned::to_owned) else {
-        return;
-    };
-    let Some(child_indexes) = children.get(&branch) else {
+    let Some(child_indexes) = children.get(items[index].workspace_id()) else {
         return;
     };
     for child in child_indexes {
@@ -301,8 +330,8 @@ fn visit_parent_tree(
     }
 }
 
-fn item_order_key(item: &WorkspaceInventoryItem) -> (bool, String) {
-    (!item.is_main(), item.workspace_slug().to_owned())
+fn item_order_key(item: &WorkspaceInventoryItem) -> (bool, &str, &str) {
+    (!item.is_main(), item.workspace_slug(), item.workspace_id())
 }
 
 // Accept a raw slug or a tmux window name with the configured prefix stripped.
@@ -318,58 +347,85 @@ fn name_candidates(config: &Config, name: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::workspace::{LineageParent, Retention, WorkspaceLineage, WorkspacePolicy};
     use std::path::PathBuf;
 
-    use super::*;
-
     #[test]
-    fn parent_tree_order_is_depth_first_with_stable_siblings() -> Result<()> {
-        let main = inventory_item("project-alpha", "main", true)?;
-        let mut child = inventory_item("feature-child", "feature/child", false)?;
-        child.set_parent_state("main".to_owned(), "anchor-child".to_owned());
-        let mut sibling = inventory_item("feature-sibling", "feature/sibling", false)?;
-        sibling.set_parent_state("main".to_owned(), "anchor-sibling".to_owned());
-        let mut grandchild = inventory_item("feature-grandchild", "feature/grandchild", false)?;
-        grandchild.set_parent_state("feature/child".to_owned(), "anchor-grandchild".to_owned());
-        let mut missing_parent = inventory_item("feature-orphan", "feature/orphan", false)?;
-        missing_parent.set_parent_state("missing-parent".to_owned(), "anchor-orphan".to_owned());
-
-        let ordered = parent_tree_order(vec![sibling, missing_parent, grandchild, child, main]);
-
+    fn parent_tree_order_is_depth_first_with_stable_detached_and_missing_parents() -> Result<()> {
+        let main = inventory_item("primary", Some("main"), true, None)?;
+        let child = inventory_item("feature-child", None, false, Some(&main))?;
+        let sibling = inventory_item(
+            "feature-sibling",
+            Some("publication/one"),
+            false,
+            Some(&main),
+        )?;
+        let grandchild = inventory_item("feature-grandchild", None, false, Some(&child))?;
+        let absent = inventory_item("missing-parent", None, false, None)?;
+        let missing_parent = inventory_item("feature-orphan", None, false, Some(&absent))?;
+        let mut items = vec![sibling, missing_parent, grandchild, child, main];
+        apply_parent_state(&mut items);
+        let ordered = parent_tree_order(items);
         assert_eq!(
             ordered
                 .iter()
-                .map(|item| (item.git_branch(), item.tree_depth()))
+                .map(|item| (item.workspace_slug(), item.tree_depth()))
                 .collect::<Vec<_>>(),
             [
-                (Some("main"), 0),
-                (Some("feature/child"), 1),
-                (Some("feature/grandchild"), 2),
-                (Some("feature/sibling"), 1),
-                (Some("feature/orphan"), 0),
+                ("primary", 0),
+                ("feature-child", 1),
+                ("feature-grandchild", 2),
+                ("feature-sibling", 1),
+                ("feature-orphan", 0)
             ]
         );
+        assert_eq!(ordered[4].parent_label(), Some("missing-parent (missing)"));
         Ok(())
     }
 
     fn inventory_item(
-        workspace_slug: &str,
-        branch: &str,
-        is_main: bool,
+        label: &str,
+        branch: Option<&str>,
+        primary: bool,
+        parent: Option<&WorkspaceInventoryItem>,
     ) -> Result<WorkspaceInventoryItem> {
-        let record = WorkspaceRecord::from_worktree(
-            WorktreeInfo {
-                path: PathBuf::from("/repo").join(workspace_slug),
-                head: None,
-                branch: Some(branch.to_owned()),
-                detached: false,
-                bare: false,
-                locked: None,
-                prunable: None,
-                kmux_binding: None,
-            },
-            is_main,
-        )?;
-        Ok(WorkspaceInventoryItem::from_record(record, None))
+        let path = PathBuf::from("/repo").join(label);
+        let mut policy = if primary {
+            WorkspacePolicy::observed(path.clone(), true)
+        } else {
+            WorkspacePolicy::owned(
+                format!("ws-{label}"),
+                path.clone(),
+                label.to_owned(),
+                Retention::Ephemeral,
+                Some("abc123".to_owned()),
+                None,
+            )?
+        };
+        if let Some(parent) = parent {
+            policy.set_lineage(WorkspaceLineage::new(
+                LineageParent::Workspace {
+                    workspace_id: parent.workspace_id().to_owned(),
+                    label: parent.workspace_slug().to_owned(),
+                    git_ref: parent.git_branch().map(ToOwned::to_owned),
+                },
+                "abc123".to_owned(),
+            ));
+        }
+        let entry = WorktreeInfo {
+            path,
+            head: Some("abc123".to_owned()),
+            branch: branch.map(ToOwned::to_owned),
+            detached: branch.is_none(),
+            bare: false,
+            locked: None,
+            prunable: None,
+            kmux_binding: Some(policy.id().to_owned()),
+        };
+        Ok(WorkspaceInventoryItem::from_record(
+            WorkspaceRecord::from_policy(policy, Some(entry))?,
+            None,
+        ))
     }
 }

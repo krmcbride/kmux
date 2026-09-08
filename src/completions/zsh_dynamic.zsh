@@ -23,6 +23,11 @@ _kmux_git_branches() {
     (( ${#branches} )) && compadd -a branches
 }
 
+_kmux_sources() {
+    _kmux_workspaces
+    _kmux_git_branches
+}
+
 # Configured launcher names.
 _kmux_launchers() {
     local -a launchers
@@ -53,7 +58,12 @@ _kmux() {
         return
     fi
 
-    if [[ "$cmd" == "create" && ( "${words[CURRENT-1]}" == "--parent" || "${words[CURRENT-1]}" == "--from" ) ]]; then
+    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--parent" ]]; then
+        _kmux_sources
+        return
+    fi
+
+    if [[ "$cmd" == "create" && "${words[CURRENT-1]}" == "--from" ]]; then
         _kmux_git_branches
         return
     fi
@@ -86,7 +96,7 @@ _kmux() {
             if (( positional_before == 1 )); then
                 _kmux_workspaces
             elif (( positional_before == 0 )); then
-                _kmux_git_branches
+                _kmux_sources
             fi
             ;;
         *)

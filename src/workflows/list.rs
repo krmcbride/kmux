@@ -69,9 +69,9 @@ pub(super) fn run(args: cli::ListArgs) -> Result<()> {
         .enumerate()
         .map(|(index, item)| DisplayRow {
             kind: item.kind_label(),
-            workspace: item.workspace_slug().to_owned(),
-            branch: format_branch(&items, index),
-            parent: item.git_parent_branch().unwrap_or("-").to_owned(),
+            workspace: format_workspace(&items, index),
+            branch: item.checkout_label().to_owned(),
+            parent: item.parent_label().unwrap_or("-").to_owned(),
             age: format_age(item, now),
             agent: format_agent(item, &activities, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
@@ -98,11 +98,11 @@ struct DisplayRow {
 
 // Render a depth-first forest using standard tree connectors while keeping
 // parent labels in their own column for scanability.
-fn format_branch(items: &[WorkspaceInventoryItem], index: usize) -> String {
+fn format_workspace(items: &[WorkspaceInventoryItem], index: usize) -> String {
     let item = &items[index];
-    let branch = item.checkout_label();
+    let label = item.workspace_slug();
     if item.tree_depth() == 0 {
-        return branch.to_owned();
+        return label.to_owned();
     }
 
     let mut prefix = String::new();
@@ -118,7 +118,7 @@ fn format_branch(items: &[WorkspaceInventoryItem], index: usize) -> String {
     } else {
         prefix.push_str("└── ");
     }
-    format!("{prefix}{branch}")
+    format!("{prefix}{label}")
 }
 
 fn has_following_at_depth(items: &[WorkspaceInventoryItem], index: usize, depth: usize) -> bool {
@@ -298,7 +298,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn branch_formatting_draws_depth_first_tree_connectors() -> Result<()> {
+    fn workspace_formatting_draws_depth_first_tree_connectors() -> Result<()> {
         let mut main = inventory_item("project-alpha", "main", true)?;
         let mut child = inventory_item("feature-child", "feature/child", false)?;
         let mut grandchild = inventory_item("feature-grandchild", "feature/grandchild", false)?;
@@ -309,10 +309,10 @@ mod tests {
         sibling.set_tree_depth(1);
         let items = [main, child, grandchild, sibling];
 
-        assert_eq!(format_branch(&items, 0), "main");
-        assert_eq!(format_branch(&items, 1), "├── feature/child");
-        assert_eq!(format_branch(&items, 2), "│   └── feature/grandchild");
-        assert_eq!(format_branch(&items, 3), "└── feature/sibling");
+        assert_eq!(format_workspace(&items, 0), "project-alpha");
+        assert_eq!(format_workspace(&items, 1), "├── feature-child");
+        assert_eq!(format_workspace(&items, 2), "│   └── feature-grandchild");
+        assert_eq!(format_workspace(&items, 3), "└── feature-sibling");
         Ok(())
     }
 

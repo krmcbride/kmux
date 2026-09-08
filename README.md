@@ -94,8 +94,9 @@ kmux workspace create feature/sidebar
 ```
 
 This creates a new local branch and a sibling worktree at
-`<repo>__worktrees/feature-sidebar`. By default the current branch is the parent;
-use `--parent <BRANCH>` to override it. A known `REMOTE/BRANCH` creates a local
+`<repo>__worktrees/feature-sidebar`. By default the current workspace is the source,
+including a detached source. Use `--parent <WORKSPACE-OR-REF>` to override it.
+A known `REMOTE/BRANCH` creates a local
 tracking branch. New windows receive focus; callers outside the target tmux
 session must pass `--background` and otherwise fail before creation.
 
@@ -156,7 +157,22 @@ Change the recorded parent of the current workspace, or name an explicit child:
 ```sh
 kmux workspace set-parent main
 kmux workspace set-parent main feature/sidebar
+kmux workspace set-parent review-alpha detached-child
+kmux workspace set-parent --git-ref refs/tags/base detached-child
 ```
+
+New workspaces remember the source workspace and shared commit, or an explicit
+Git ref selected with `--from`. `--parent` accepts the same source selectors as
+`set-parent`; an unmatched selector must resolve to a Git commit. `--git-ref`
+on `set-parent` forces ref interpretation when names are ambiguous.
+
+Workspace ancestry uses stable IDs, so branches and display names can change
+without rebinding a child. Missing parents retain their historical labels and
+anchors. Reparenting rejects cycles and changes only lineage metadata; it neither
+rebases branches nor changes external ownership. The table draws the tree in the
+WORKSPACE column, with checkout state separately in BRANCH. JSON exposes `lineage`,
+`parent_label`, and `parent_missing`; the older `git_parent_branch` and
+`git_anchor_commit` fields remain available as branch/ref-label compatibility data.
 
 If worktrees still exist after restarting tmux or closing windows, restore their
 expected windows:

@@ -1,9 +1,8 @@
 //! Workspace identity and inventory read-model types.
 //!
-//! A kmux workspace is identified most strongly by its canonical Git worktree
-//! root. Branch names and slugs are useful routing and display hints, but they
-//! must be validated against the worktree path before strict workspace commands
-//! rely on them.
+//! Persisted workspace IDs bind lifecycle policy and lineage. Canonical worktree
+//! roots remain the matching key for external agent observations and pane paths.
+//! Branch names and labels are current checkout or presentation facts.
 
 use std::path::{Path, PathBuf};
 
@@ -14,17 +13,19 @@ use crate::git::WorktreeInfo;
 use crate::paths::RepoPaths;
 use crate::slug::workspace_slug_from_branch;
 
+mod lineage;
 mod policy;
+pub use lineage::{LineageParent, WorkspaceLineage};
 pub use policy::{Authority, Retention, WorkspacePolicy, validate_label};
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Canonical Git worktree root used as kmux's strongest workspace identity.
+/// Canonical Git worktree root used to match observations and pane locations.
 pub struct WorkspaceIdentity {
     canonical_worktree_root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Resolved workspace record derived from Git worktree state.
+/// Persisted workspace policy combined with its original registration's live Git facts.
 pub struct WorkspaceRecord {
     identity: WorkspaceIdentity,
     workspace_slug: String,
@@ -56,6 +57,9 @@ pub struct WorkspaceInventoryItem {
     git_branch: Option<String>,
     git_parent_branch: Option<String>,
     git_anchor_commit: Option<String>,
+    lineage: Option<WorkspaceLineage>,
+    parent_label: Option<String>,
+    parent_missing: bool,
     git_worktree_path: String,
     is_main: bool,
     created_at: Option<u64>,
@@ -189,6 +193,9 @@ impl WorkspaceInventoryItem {
             git_branch: record.branch,
             git_parent_branch: None,
             git_anchor_commit: None,
+            lineage: record.policy.lineage().cloned(),
+            parent_label: None,
+            parent_missing: false,
             git_worktree_path: record.identity.root().display().to_string(),
             is_main: record.is_main,
             created_at,
@@ -247,9 +254,19 @@ impl WorkspaceInventoryItem {
         self.git_branch.as_deref()
     }
 
-    /// Return the parent branch serialized in `workspace list --json` output.
-    pub fn git_parent_branch(&self) -> Option<&str> {
-        self.git_parent_branch.as_deref()
+    /// Return historical ancestry independently of current branch labels.
+    pub fn lineage(&self) -> Option<&WorkspaceLineage> {
+        self.lineage.as_ref()
+    }
+
+    /// Return the current or historical parent label for the human inventory.
+    pub fn parent_label(&self) -> Option<&str> {
+        self.parent_label.as_deref()
+    }
+
+    /// Return whether the original registration is currently available.
+    pub fn is_live(&self) -> bool {
+        self.live
     }
 
     /// Return the display string for the Git worktree path.
@@ -272,10 +289,12 @@ impl WorkspaceInventoryItem {
         self.tree_depth
     }
 
-    /// Attach parent graph metadata loaded by the workflow layer.
-    pub fn set_parent_state(&mut self, parent: String, anchor: String) {
-        self.git_parent_branch = Some(parent);
-        self.git_anchor_commit = Some(anchor);
+    /// Enrich historical lineage with current presentation facts, without rebinding ancestry.
+    pub fn set_parent_display(&mut self, label: String, git_ref: Option<String>, missing: bool) {
+        self.git_parent_branch = git_ref;
+        self.git_anchor_commit = self.lineage.as_ref().map(|lineage| lineage.anchor.clone());
+        self.parent_label = Some(label);
+        self.parent_missing = missing;
     }
 
     /// Set the display depth computed by parent-tree ordering.
@@ -490,7 +509,13 @@ mod tests {
             false,
         )?;
         let mut item = WorkspaceInventoryItem::from_record(record, Some(100));
-        item.set_parent_state("main".to_owned(), "anchor-commit".to_owned());
+        item.lineage = Some(WorkspaceLineage::new(
+            LineageParent::GitRef {
+                reference: "main".to_owned(),
+            },
+            "anchor-commit".to_owned(),
+        ));
+        item.set_parent_display("main".to_owned(), Some("main".to_owned()), false);
         item.set_tree_depth(1);
 
         let json = serde_json::to_value(item)?;

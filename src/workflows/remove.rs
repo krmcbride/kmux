@@ -57,11 +57,8 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
     };
     let state_store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
     let (mut state, _) = super::resolve::load_workspace_state(&repo)?;
-    // Removing a parent branch is metadata-only for descendants: warn about
-    // dangling child links instead of silently reparenting or deleting them.
-    let remaining_children = branch_to_delete
-        .map(|branch| state.children_of(branch))
-        .unwrap_or_default();
+    // Descendants keep the historical parent ID; removal never reparents them.
+    let remaining_children = state.children_of(resolved.policy().id());
 
     leave_worktree_before_removal(&repo.paths.main_worktree)?;
     // Refresh live tmux evidence at the last responsible moment. The held
@@ -85,14 +82,11 @@ pub(super) fn run(args: cli::RemoveArgs) -> Result<()> {
         let id = policy.id().to_owned();
         state.remove_policy(&id);
     }
-    if let Some(branch) = branch_to_delete {
-        state.remove_parent(branch);
-    }
     state_store.save(&state)?;
     if !remaining_children.is_empty() {
         eprintln!(
-            "warning: parent links still reference removed branch '{}': {}",
-            branch_to_delete.unwrap_or(""),
+            "warning: parent links still reference removed workspace '{}': {}",
+            resolved.policy().label(),
             remaining_children.join(", ")
         );
     }

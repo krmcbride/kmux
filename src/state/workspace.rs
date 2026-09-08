@@ -1,11 +1,11 @@
 //! Git-common-dir-backed workspace graph persistence.
 //!
-//! This module stores branch parent relationships and merge-base anchors with
+//! This module stores workspace policy, source relationships, and commit anchors with
 //! the repo's shared Git metadata so all worktrees for a clone see the same
 //! graph. It is intentionally separate from `state::agent`, which stores
 //! external agent observations in XDG state.
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::fs::{self, File, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
@@ -16,15 +16,19 @@ use serde::{Deserialize, Serialize};
 
 use crate::git::WorktreeInfo;
 use crate::paths::RepoPaths;
-use crate::workspace::{Authority, Retention, WorkspacePolicy, is_strict_kmux_workspace};
+use crate::workspace::{
+    Authority, LineageParent, Retention, WorkspaceLineage, WorkspacePolicy,
+    is_strict_kmux_workspace,
+};
 
-const CURRENT_VERSION: u32 = 2;
+const CURRENT_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 /// Repo-local kmux workspace graph metadata persisted under Git's common dir.
 pub struct WorkspaceState {
     pub version: u32,
+    // Unmatched legacy child branches remain as ref-based historical metadata.
     pub parents: Vec<WorkspaceParentLink>,
     workspaces: Vec<WorkspacePolicy>,
 }
@@ -87,13 +91,17 @@ impl WorkspaceState {
                     entry.path.clone(),
                     label,
                     Retention::Persistent,
-                    entry.head.clone(),
+                    // A migrated checkout's current HEAD is not its original creation anchor.
+                    None,
                     entry.branch.clone(),
                 )?
             } else {
                 WorkspacePolicy::observed(entry.path.clone(), primary)
             };
             self.upsert_policy(policy)?;
+        }
+        if self.version < 3 {
+            self.migrate_lineage(worktrees)?;
         }
         self.version = CURRENT_VERSION;
         self.normalize();
@@ -115,6 +123,14 @@ impl WorkspaceState {
     /// Replace one explicit policy after validating identity and presentation collisions.
     pub fn upsert_policy(&mut self, policy: WorkspacePolicy) -> Result<()> {
         policy.validate()?;
+        if let Some(parent_id) = policy.lineage().and_then(|link| link.parent.workspace_id())
+            && self.would_create_cycle(policy.id(), parent_id)
+        {
+            bail!(
+                "setting parent of '{}' would create a cycle",
+                policy.label()
+            );
+        }
         for existing in &self.workspaces {
             if existing.id() != policy.id()
                 && !existing.retired()
@@ -136,65 +152,103 @@ impl WorkspaceState {
         Ok(())
     }
 
-    /// Forget an explicitly removed owned workspace without affecting other records.
+    /// Retain an explicitly removed workspace's identity and ancestry as history.
     pub fn remove_policy(&mut self, id: &str) {
-        self.workspaces.retain(|policy| policy.id() != id);
-    }
-    /// Return the parent link recorded for a branch, if kmux knows one.
-    pub fn parent_for(&self, branch: &str) -> Option<&WorkspaceParentLink> {
-        self.parents.iter().find(|link| link.branch == branch)
-    }
-
-    /// Insert or replace a branch parent link and keep persisted ordering stable.
-    pub fn set_parent(&mut self, link: WorkspaceParentLink) {
-        self.parents
-            .retain(|existing| existing.branch != link.branch);
-        self.parents.push(link);
-        self.normalize();
-    }
-
-    /// Remove the parent link owned by `branch`, leaving any child links untouched.
-    pub fn remove_parent(&mut self, branch: &str) -> bool {
-        let before = self.parents.len();
-        self.parents.retain(|link| link.branch != branch);
-        before != self.parents.len()
-    }
-
-    /// Return branches that currently name `parent` as their parent branch.
-    pub fn children_of(&self, parent: &str) -> Vec<String> {
-        self.parents
-            .iter()
-            .filter(|link| link.parent == parent)
-            .map(|link| link.branch.clone())
-            .collect()
-    }
-
-    /// Check whether assigning `parent` to `branch` would create a parent cycle.
-    ///
-    /// The proposed edge replaces any existing edge for `branch`, which lets callers
-    /// validate both new links and reparenting through the same path.
-    pub fn would_create_cycle(&self, branch: &str, parent: &str) -> bool {
-        let mut parents = HashMap::new();
-        for link in &self.parents {
-            if link.branch != branch {
-                parents.insert(link.branch.as_str(), link.parent.as_str());
-            }
+        if let Some(policy) = self.workspaces.iter_mut().find(|policy| policy.id() == id) {
+            policy.retire();
         }
+    }
 
+    /// Find a stable identity, including a historical retired registration.
+    pub fn policy_by_id(&self, id: &str) -> Option<&WorkspacePolicy> {
+        self.workspaces.iter().find(|policy| policy.id() == id)
+    }
+
+    /// Assign source metadata without changing worktree or branch authority.
+    pub fn set_lineage(&mut self, child_id: &str, lineage: WorkspaceLineage) -> Result<()> {
+        let mut policy = self
+            .policy_by_id(child_id)
+            .ok_or_else(|| anyhow::anyhow!("workspace '{child_id}' not found"))?
+            .clone();
+        policy.set_lineage(lineage);
+        self.upsert_policy(policy)
+    }
+
+    /// Return readable child labels that still reference a workspace identity.
+    pub fn children_of(&self, parent_id: &str) -> Vec<String> {
+        let mut children = self
+            .workspaces
+            .iter()
+            .filter(|policy| {
+                policy.lineage().and_then(|link| link.parent.workspace_id()) == Some(parent_id)
+            })
+            .map(|policy| policy.label().to_owned())
+            .collect::<Vec<_>>();
+        children.sort();
+        children
+    }
+
+    /// Check a proposed replacement edge against stable workspace identities.
+    pub fn would_create_cycle(&self, child_id: &str, parent_id: &str) -> bool {
         let mut visited = BTreeSet::new();
-        let mut cursor = parent;
-        visited.insert(cursor);
-        while let Some(next) = parents.get(cursor) {
-            let next = *next;
-            if next == branch {
+        let mut cursor = parent_id;
+        loop {
+            if cursor == child_id || !visited.insert(cursor) {
                 return true;
             }
-            if !visited.insert(next) {
+            let Some(next) = self
+                .policy_by_id(cursor)
+                .and_then(WorkspacePolicy::lineage)
+                .and_then(|lineage| lineage.parent.workspace_id())
+            else {
                 return false;
-            }
+            };
             cursor = next;
         }
-        false
+    }
+
+    // Resolve legacy branch relationships once. Unknown child refs stay explicit
+    // history; a later branch appearance must never silently rebind ancestry.
+    fn migrate_lineage(&mut self, worktrees: &[WorktreeInfo]) -> Result<()> {
+        let links = std::mem::take(&mut self.parents);
+        for link in links {
+            let Some(child_id) = self
+                .unique_branch_policy(worktrees, &link.branch)
+                .map(|p| p.id().to_owned())
+            else {
+                self.parents.push(link);
+                continue;
+            };
+            if self
+                .policy_by_id(&child_id)
+                .and_then(WorkspacePolicy::lineage)
+                .is_some()
+            {
+                continue;
+            }
+            let parent = self
+                .unique_branch_policy(worktrees, &link.parent)
+                .map(|policy| LineageParent::workspace(policy, Some(&link.parent)))
+                .unwrap_or_else(|| LineageParent::GitRef {
+                    reference: link.parent.clone(),
+                });
+            self.set_lineage(&child_id, WorkspaceLineage::new(parent, link.anchor))?;
+        }
+        Ok(())
+    }
+
+    // Forced duplicate branch checkouts are ambiguous and remain ref-based history.
+    fn unique_branch_policy(
+        &self,
+        worktrees: &[WorktreeInfo],
+        branch: &str,
+    ) -> Option<&WorkspacePolicy> {
+        let mut matches = worktrees
+            .iter()
+            .filter(|entry| entry.branch.as_deref() == Some(branch))
+            .filter_map(|entry| self.policy_for_path(&entry.path));
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
     }
 
     // Keep state deterministic on disk and collapse duplicate entries from hand edits.
@@ -214,17 +268,6 @@ impl Default for WorkspaceState {
             version: 1,
             parents: Vec::new(),
             workspaces: Vec::new(),
-        }
-    }
-}
-
-impl WorkspaceParentLink {
-    /// Build a parent link for `branch` with its parent branch and merge-base anchor.
-    pub fn new(branch: String, parent: String, anchor: String) -> Self {
-        Self {
-            branch,
-            parent,
-            anchor,
         }
     }
 }
@@ -282,7 +325,7 @@ impl WorkspaceStateStore {
 
         let mut state: WorkspaceState = serde_json::from_str(&content)
             .with_context(|| format!("failed to parse {}", self.path.display()))?;
-        if state.version != 1 && state.version != CURRENT_VERSION {
+        if !(1..=CURRENT_VERSION).contains(&state.version) {
             bail!(
                 "unsupported kmux workspace state version {}; expected {}",
                 state.version,
@@ -349,7 +392,11 @@ mod tests {
     use tempfile::TempDir;
 
     fn link(branch: &str, parent: &str, anchor: &str) -> WorkspaceParentLink {
-        WorkspaceParentLink::new(branch.to_owned(), parent.to_owned(), anchor.to_owned())
+        WorkspaceParentLink {
+            branch: branch.to_owned(),
+            parent: parent.to_owned(),
+            anchor: anchor.to_owned(),
+        }
     }
 
     #[test]
@@ -366,7 +413,7 @@ mod tests {
         let temp = TempDir::new()?;
         let store = WorkspaceStateStore::new(temp.path());
         let mut state = WorkspaceState::default();
-        state.set_parent(link("feature/auth", "main", "abc123"));
+        state.parents.push(link("feature/auth", "main", "abc123"));
 
         store.save(&state)?;
 
@@ -379,8 +426,8 @@ mod tests {
         let temp = TempDir::new()?;
         let store = WorkspaceStateStore::new(temp.path());
         let mut state = WorkspaceState::default();
-        state.set_parent(link("feature/z", "main", "z"));
-        state.set_parent(link("feature/a", "main", "a"));
+        state.parents.push(link("feature/z", "main", "z"));
+        state.parents.push(link("feature/a", "main", "a"));
 
         store.save(&state)?;
         let loaded = store.load()?;
@@ -411,27 +458,43 @@ mod tests {
     }
 
     #[test]
-    fn set_parent_replaces_existing_branch_link() {
+    fn lineage_replacement_and_retirement_preserve_identity_and_descendants() -> Result<()> {
         let mut state = WorkspaceState::default();
-        state.set_parent(link("feature/auth", "main", "old"));
-        state.set_parent(link("feature/auth", "feature/base", "new"));
-
-        assert_eq!(
-            state.parents,
-            vec![link("feature/auth", "feature/base", "new")]
+        let parent = owned("parent")?;
+        let child = owned("child")?;
+        state.upsert_policy(parent.clone())?;
+        state.upsert_policy(child.clone())?;
+        state.set_lineage(
+            child.id(),
+            WorkspaceLineage::new(
+                LineageParent::GitRef {
+                    reference: "main".to_owned(),
+                },
+                "old".to_owned(),
+            ),
+        )?;
+        let lineage =
+            WorkspaceLineage::new(LineageParent::workspace(&parent, None), "new".to_owned());
+        state.set_lineage(child.id(), lineage.clone())?;
+        state.remove_policy(parent.id());
+        assert!(
+            state
+                .policy_by_id(parent.id())
+                .expect("historical parent")
+                .retired()
         );
-    }
-
-    #[test]
-    fn remove_parent_deletes_only_requested_branch_link() {
-        let mut state = WorkspaceState::default();
-        state.set_parent(link("feature/auth", "main", "auth"));
-        state.set_parent(link("feature/ui", "main", "ui"));
-
-        assert!(state.remove_parent("feature/auth"));
-        assert!(!state.remove_parent("feature/missing"));
-
-        assert_eq!(state.parents, vec![link("feature/ui", "main", "ui")]);
+        assert_eq!(
+            state
+                .policy_by_id(child.id())
+                .and_then(WorkspacePolicy::lineage),
+            Some(&lineage)
+        );
+        assert_eq!(state.children_of(parent.id()), ["child"]);
+        assert_eq!(
+            state.policy_by_id(child.id()).expect("child").retention(),
+            Some(Retention::Ephemeral)
+        );
+        Ok(())
     }
 
     #[test]
@@ -467,13 +530,59 @@ mod tests {
     }
 
     #[test]
-    fn cycle_detection_follows_existing_parent_links() {
+    fn cycle_detection_follows_workspace_ids_across_promotion_and_reparenting() -> Result<()> {
         let mut state = WorkspaceState::default();
-        state.set_parent(link("feature/b", "feature/a", "b"));
-        state.set_parent(link("feature/c", "feature/b", "c"));
+        let parent = owned("parent")?;
+        let child = owned("child")?;
+        let leaf = owned("leaf")?;
+        for policy in [&parent, &child, &leaf] {
+            state.upsert_policy(policy.clone())?;
+        }
+        state.set_lineage(
+            child.id(),
+            WorkspaceLineage::new(LineageParent::workspace(&parent, None), "abc".to_owned()),
+        )?;
+        state.set_lineage(
+            leaf.id(),
+            WorkspaceLineage::new(LineageParent::workspace(&child, None), "abc".to_owned()),
+        )?;
+        let mut promoted = state.policy_by_id(child.id()).expect("child").clone();
+        promoted.promote(Some("renamed"))?;
+        state.upsert_policy(promoted)?;
+        assert!(state.would_create_cycle(parent.id(), leaf.id()));
+        assert!(state.would_create_cycle(child.id(), child.id()));
+        let before = state.clone();
+        assert!(
+            state
+                .set_lineage(
+                    parent.id(),
+                    WorkspaceLineage::new(LineageParent::workspace(&leaf, None), "abc".to_owned())
+                )
+                .is_err()
+        );
+        assert_eq!(state, before);
+        state.set_lineage(
+            leaf.id(),
+            WorkspaceLineage::new(
+                LineageParent::GitRef {
+                    reference: "main".to_owned(),
+                },
+                "abc".to_owned(),
+            ),
+        )?;
+        assert!(!state.would_create_cycle(parent.id(), leaf.id()));
+        Ok(())
+    }
 
-        assert!(state.would_create_cycle("feature/a", "feature/c"));
-        assert!(!state.would_create_cycle("feature/c", "main"));
+    fn owned(label: &str) -> Result<WorkspacePolicy> {
+        WorkspacePolicy::owned(
+            format!("ws-{label}"),
+            PathBuf::from("/repo").join(label),
+            label.to_owned(),
+            Retention::Ephemeral,
+            Some("abc".to_owned()),
+            None,
+        )
     }
 
     #[test]
@@ -488,7 +597,7 @@ mod tests {
         let mut legacy = registration(paths.workspace_path("feature-alpha"), Some("feature/alpha"));
         legacy.kmux_binding = Some("ws-owned-alpha".to_owned());
         let mut state = WorkspaceState::default();
-        state.set_parent(link("feature/alpha", "main", "anchor"));
+        state.parents.push(link("feature/alpha", "main", "anchor"));
         assert!(state.reconcile(&paths, &[legacy.clone()])?);
         let original = state
             .policy_for_path(&legacy.path)
@@ -496,7 +605,13 @@ mod tests {
             .clone();
         assert_eq!(original.authority(), Authority::Kmux);
         assert_eq!(original.retention(), Some(Retention::Persistent));
-        assert!(state.parent_for("feature/alpha").is_some());
+        assert_eq!(
+            original.lineage().expect("lineage").parent,
+            LineageParent::GitRef {
+                reference: "main".to_owned()
+            }
+        );
+        assert!(state.parents.is_empty());
 
         legacy.branch = None;
         legacy.detached = true;

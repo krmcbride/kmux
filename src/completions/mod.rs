@@ -313,7 +313,7 @@ mod tests {
         )));
         assert!(bash.contains(concat!(
             "elif (( positional_before == 0 )); then\n",
-            "                        COMPREPLY=($(compgen -W \"$(_kmux_git_branches)\""
+            "                        COMPREPLY=($(compgen -W \"$(_kmux_sources)\""
         )));
         assert!(bash.contains(concat!("else\n", "                        COMPREPLY=()")));
 
@@ -322,13 +322,11 @@ mod tests {
             "if (( positional_before == 1 )); then\n",
             "                _kmux_workspaces\n",
             "            elif (( positional_before == 0 )); then\n",
-            "                _kmux_git_branches"
+            "                _kmux_sources"
         )));
 
         let fish = include_str!("fish_dynamic.fish");
-        assert!(
-            fish.contains("set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'")
-        );
+        assert!(fish.contains("set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_sources)'"));
         assert!(
             fish.contains("set_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'")
         );

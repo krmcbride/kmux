@@ -107,7 +107,7 @@ pub enum WorkspaceCommand {
         after_long_help = REMOVE_AFTER_LONG_HELP
     )]
     Remove(RemoveArgs),
-    /// Set the recorded parent branch for a workspace.
+    /// Set the recorded source workspace or Git ref for a workspace.
     #[command(
         name = "set-parent",
         long_about = SET_PARENT_LONG_ABOUT,
@@ -136,7 +136,7 @@ pub struct CreateArgs {
     #[arg(long, conflicts_with = "branch", value_hint = ValueHint::Other)]
     pub name: Option<String>,
 
-    /// Start from and record this local parent branch.
+    /// Start from and record this parent workspace or Git ref.
     #[arg(
         long,
         long_help = CREATE_PARENT_LONG_HELP,
@@ -209,13 +209,17 @@ pub struct PromoteArgs {
 
 #[derive(Debug, Args)]
 pub struct SetParentArgs {
-    /// Existing local branch to record as the workspace parent.
+    /// Source workspace selector or Git ref to record as the parent.
     #[arg(value_hint = ValueHint::Other)]
     pub parent: String,
 
-    /// Child workspace slug or branch; omit to use the current kmux workspace.
+    /// Child workspace selector; omit to use the current linked worktree.
     #[arg(value_hint = ValueHint::Other)]
     pub child: Option<String>,
+
+    /// Interpret PARENT as a Git ref even when a workspace selector has the same spelling.
+    #[arg(long)]
+    pub git_ref: bool,
 }
 
 #[derive(Debug, Args)]
@@ -389,7 +393,7 @@ const CREATE_BRANCH_LONG_HELP: &str = concat!(
     "A known REMOTE/BRANCH instead creates and tracks the corresponding local branch."
 );
 const CREATE_PARENT_LONG_HELP: &str = concat!(
-    "Use this local branch as the new branch's start point and recorded parent. ",
+    "Use this workspace selector or Git ref as the start point and recorded source. ",
     "For REMOTE/BRANCH, it changes only the recorded parent."
 );
 const CREATE_BACKGROUND_LONG_HELP: &str = "Create the tmux window without selecting it. Required when the caller is not attached to the target tmux session.";
@@ -410,13 +414,14 @@ const CONFIG_AFTER_LONG_HELP: &str = "Examples:\n  kmux config\n  kmux config --
 const CONFIG_JSON_LONG_HELP: &str = "Print the resolved configuration as JSON instead of YAML.";
 
 const SET_PARENT_LONG_ABOUT: &str = concat!(
-    "Record PARENT as the logical parent of CHILD. PARENT must be an existing local branch with shared history.\n\n",
-    "CHILD may be a workspace slug or branch. Omit it inside a kmux worktree to update the current workspace. This changes only kmux parent metadata."
+    "Record PARENT as the source of CHILD at their shared commit. PARENT accepts a workspace ID, path, label, current branch, or Git ref; --git-ref forces ref interpretation.\n\n",
+    "CHILD accepts any workspace selector, including a detached worktree. Omit it inside a linked worktree to update the current workspace. Workspace edges use stable IDs and reject cycles. This changes only lineage metadata."
 );
 const SET_PARENT_AFTER_LONG_HELP: &str = concat!(
     "Examples:\n",
     "  kmux workspace set-parent main\n",
-    "  kmux workspace set-parent main feature/sidebar"
+    "  kmux workspace set-parent main feature/sidebar\n",
+    "  kmux workspace set-parent --git-ref refs/tags/base review-alpha"
 );
 
 const RESTORE_LONG_ABOUT: &str = "Open every live external worktree and remembered workspace in the project tmux session, including worktrees never opened before. Existing windows keep running. New windows use the current default launcher without one-shot input.";
