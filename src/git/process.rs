@@ -17,7 +17,7 @@ pub struct Git {
 }
 
 #[derive(Debug)]
-/// Raw Git subprocess output with UTF-8-lossy stdout and stderr text.
+/// Raw Git subprocess output with validated UTF-8 stdout and diagnostic stderr.
 pub(super) struct GitOutput {
     pub(super) status: ExitStatus,
     pub(super) stdout: String,
@@ -82,7 +82,10 @@ impl Git {
 
         Ok(GitOutput {
             status: output.status,
-            stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            // Never turn an undecodable filesystem path into a different path.
+            stdout: String::from_utf8(output.stdout).context(
+                "git output contains a non-UTF-8 path or value; refusing lossy identity",
+            )?,
             stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
         })
     }

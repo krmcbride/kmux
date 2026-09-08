@@ -1,6 +1,22 @@
 use anyhow::Result;
 
 #[test]
+fn recovery_refs_are_verified_idempotent_and_never_overwrite_collisions() -> Result<()> {
+    kmux::contract_tests::git::recovery_refs_are_verified_idempotent_and_never_overwrite_collisions(
+    )
+}
+
+#[test]
+fn recovery_ref_creation_fails_without_replacing_an_occupied_namespace() -> Result<()> {
+    kmux::contract_tests::git::recovery_ref_creation_fails_without_replacing_an_occupied_namespace()
+}
+
+#[test]
+fn inventory_preserves_unusual_paths_and_registration_binding() -> Result<()> {
+    kmux::contract_tests::git::inventory_preserves_unusual_paths_and_registration_binding()
+}
+
+#[test]
 fn discovers_repo_info_from_primary_worktree() -> Result<()> {
     kmux::contract_tests::git::discovers_repo_info_from_primary_worktree()
 }

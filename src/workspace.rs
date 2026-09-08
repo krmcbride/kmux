@@ -1,9 +1,8 @@
 //! Workspace identity and inventory read-model types.
 //!
-//! A kmux workspace is identified most strongly by its canonical Git worktree
-//! root. Branch names and slugs are useful routing and display hints, but they
-//! must be validated against the worktree path before strict workspace commands
-//! rely on them.
+//! Persisted workspace IDs bind lifecycle policy and lineage. Canonical worktree
+//! roots remain the matching key for external agent observations and pane paths.
+//! Branch names and labels are current checkout or presentation facts.
 
 use std::path::{Path, PathBuf};
 
@@ -14,28 +13,53 @@ use crate::git::WorktreeInfo;
 use crate::paths::RepoPaths;
 use crate::slug::workspace_slug_from_branch;
 
+mod lineage;
+mod policy;
+pub use lineage::{LineageParent, WorkspaceLineage};
+pub use policy::{Authority, Retention, WorkspacePolicy, validate_label};
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-/// Canonical Git worktree root used as kmux's strongest workspace identity.
+/// Canonical Git worktree root used to match observations and pane locations.
 pub struct WorkspaceIdentity {
     canonical_worktree_root: PathBuf,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-/// Resolved workspace record derived from Git worktree state.
+/// Persisted workspace policy combined with its original registration's live Git facts.
 pub struct WorkspaceRecord {
     identity: WorkspaceIdentity,
     workspace_slug: String,
     branch: Option<String>,
     is_main: bool,
+    policy: WorkspacePolicy,
+    git: Option<WorktreeInfo>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 /// Workspace inventory row shared by human list output and JSON output.
 pub struct WorkspaceInventoryItem {
+    workspace_id: String,
+    label: String,
+    authority: Authority,
+    retention: Option<Retention>,
+    presentation: bool,
+    presentation_slug: String,
+    tmux_window_ids: Vec<String>,
+    registered: bool,
+    live: bool,
+    git_head: Option<String>,
+    creation_anchor: Option<String>,
+    owned_branch: Option<String>,
+    detached: bool,
+    locked: Option<String>,
+    prunable: Option<String>,
     workspace_slug: String,
     git_branch: Option<String>,
     git_parent_branch: Option<String>,
     git_anchor_commit: Option<String>,
+    lineage: Option<WorkspaceLineage>,
+    parent_label: Option<String>,
+    parent_missing: bool,
     git_worktree_path: String,
     is_main: bool,
     created_at: Option<u64>,
@@ -65,35 +89,39 @@ impl WorkspaceIdentity {
 }
 
 impl WorkspaceRecord {
+    /// Combine persisted intent with current Git facts, retaining missing policy records.
+    pub fn from_policy(policy: WorkspacePolicy, git: Option<WorktreeInfo>) -> Result<Self> {
+        policy.validate()?;
+        let git = git.filter(|entry| policy.matches_registration(entry));
+        Ok(Self {
+            identity: WorkspaceIdentity::from_canonical_root(policy.path().to_path_buf())?,
+            workspace_slug: policy.window_slug().to_owned(),
+            branch: git.as_ref().and_then(|entry| entry.branch.clone()),
+            is_main: policy.authority() == Authority::Primary,
+            policy,
+            git,
+        })
+    }
+
+    /// Return policy independently of the live checkout.
+    pub fn policy(&self) -> &WorkspacePolicy {
+        &self.policy
+    }
+    /// Return the current registration, absent for stale persisted records.
+    pub fn git(&self) -> Option<&WorktreeInfo> {
+        self.git.as_ref()
+    }
+    /// Return whether this registered checkout can host a tmux presentation.
+    pub fn is_live(&self) -> bool {
+        self.git()
+            .is_some_and(|entry| !entry.bare && entry.prunable.is_none())
+            && self.path().is_dir()
+    }
     /// Convert a Git worktree record into kmux's resolved workspace shape.
     pub fn from_worktree(worktree: WorktreeInfo, is_main: bool) -> Result<Self> {
         let workspace_slug = workspace_slug_from_path(&worktree.path)?;
 
         Self::new(workspace_slug, worktree.path, worktree.branch, is_main)
-    }
-
-    /// Build a record for a newly-created strict kmux workspace.
-    ///
-    /// The path basename and branch-derived slug must both match the supplied
-    /// workspace slug, so command workflows cannot construct inconsistent
-    /// workspace identity facts after creating a worktree.
-    pub fn from_created_kmux_workspace(
-        workspace_slug: String,
-        path: PathBuf,
-        branch: String,
-    ) -> Result<Self> {
-        validate_path_slug(&path, &workspace_slug)?;
-        let expected_slug = workspace_slug_from_branch(&branch)?;
-        if workspace_slug != expected_slug {
-            bail!(
-                "workspace slug '{}' does not match branch-derived slug '{}' for branch '{}'",
-                workspace_slug,
-                expected_slug,
-                branch
-            );
-        }
-
-        Self::new(workspace_slug, path, Some(branch), false)
     }
 
     /// Return the branch/path-derived workspace slug.
@@ -121,11 +149,23 @@ impl WorkspaceRecord {
             bail!("workspace slug cannot be empty");
         }
 
+        let policy = WorkspacePolicy::observed(path.clone(), is_main);
         Ok(Self {
-            identity: WorkspaceIdentity::from_canonical_root(path)?,
+            identity: WorkspaceIdentity::from_canonical_root(path.clone())?,
             workspace_slug,
-            branch,
+            branch: branch.clone(),
             is_main,
+            policy,
+            git: Some(WorktreeInfo {
+                path,
+                head: None,
+                detached: branch.is_none(),
+                branch,
+                bare: false,
+                locked: None,
+                prunable: None,
+                kmux_binding: None,
+            }),
         })
     }
 }
@@ -134,14 +174,58 @@ impl WorkspaceInventoryItem {
     /// Build a list/read-model row from a resolved workspace record.
     pub fn from_record(record: WorkspaceRecord, created_at: Option<u64>) -> Self {
         Self {
+            live: record.is_live(),
+            workspace_id: record.policy.id().to_owned(),
+            label: record.policy.label().to_owned(),
+            authority: record.policy.authority(),
+            retention: record.policy.retention(),
+            presentation: record.policy.presentation(),
+            presentation_slug: record.policy.presentation_slug(),
+            tmux_window_ids: Vec::new(),
+            registered: record.git.is_some(),
+            git_head: record.git.as_ref().and_then(|entry| entry.head.clone()),
+            creation_anchor: record.policy.creation_anchor().map(ToOwned::to_owned),
+            owned_branch: record.policy.owned_branch().map(ToOwned::to_owned),
+            detached: record.git.as_ref().is_some_and(|entry| entry.detached),
+            locked: record.git.as_ref().and_then(|entry| entry.locked.clone()),
+            prunable: record.git.as_ref().and_then(|entry| entry.prunable.clone()),
             workspace_slug: record.workspace_slug,
             git_branch: record.branch,
             git_parent_branch: None,
             git_anchor_commit: None,
+            lineage: record.policy.lineage().cloned(),
+            parent_label: None,
+            parent_missing: false,
             git_worktree_path: record.identity.root().display().to_string(),
             is_main: record.is_main,
             created_at,
             tree_depth: 0,
+        }
+    }
+
+    /// Return a human type label that never infers retention from checkout state.
+    pub fn kind_label(&self) -> String {
+        let kind = match (self.authority, self.retention) {
+            (Authority::Primary, _) => "primary",
+            (Authority::External, _) => "external",
+            (_, Some(Retention::Ephemeral)) => "ephemeral",
+            _ => "persistent",
+        };
+        if !self.registered {
+            format!("{kind} (stale)")
+        } else if !self.live {
+            format!("{kind} (unavailable)")
+        } else {
+            kind.to_owned()
+        }
+    }
+
+    /// Report unavailable and stale registrations separately from detached HEAD.
+    pub fn checkout_label(&self) -> &str {
+        if !self.registered {
+            "-"
+        } else {
+            self.git_branch().unwrap_or("(detached)")
         }
     }
 
@@ -150,14 +234,39 @@ impl WorkspaceInventoryItem {
         &self.workspace_slug
     }
 
+    /// Return the stable policy identity used to bind a tmux window.
+    pub fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    /// Return the current window label with explicit retention where applicable.
+    pub fn presentation_slug(&self) -> &str {
+        &self.presentation_slug
+    }
+
+    /// Attach best-effort live tmux facts without changing remembered presentation.
+    pub fn set_tmux_windows(&mut self, ids: Vec<String>) {
+        self.tmux_window_ids = ids;
+    }
+
     /// Return the Git branch serialized in `workspace list --json` output.
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
     }
 
-    /// Return the parent branch serialized in `workspace list --json` output.
-    pub fn git_parent_branch(&self) -> Option<&str> {
-        self.git_parent_branch.as_deref()
+    /// Return historical ancestry independently of current branch labels.
+    pub fn lineage(&self) -> Option<&WorkspaceLineage> {
+        self.lineage.as_ref()
+    }
+
+    /// Return the current or historical parent label for the human inventory.
+    pub fn parent_label(&self) -> Option<&str> {
+        self.parent_label.as_deref()
+    }
+
+    /// Return whether the original registration is currently available.
+    pub fn is_live(&self) -> bool {
+        self.live
     }
 
     /// Return the display string for the Git worktree path.
@@ -180,10 +289,12 @@ impl WorkspaceInventoryItem {
         self.tree_depth
     }
 
-    /// Attach parent graph metadata loaded by the workflow layer.
-    pub fn set_parent_state(&mut self, parent: String, anchor: String) {
-        self.git_parent_branch = Some(parent);
-        self.git_anchor_commit = Some(anchor);
+    /// Enrich historical lineage with current presentation facts, without rebinding ancestry.
+    pub fn set_parent_display(&mut self, label: String, git_ref: Option<String>, missing: bool) {
+        self.git_parent_branch = git_ref;
+        self.git_anchor_commit = self.lineage.as_ref().map(|lineage| lineage.anchor.clone());
+        self.parent_label = Some(label);
+        self.parent_missing = missing;
     }
 
     /// Set the display depth computed by parent-tree ordering.
@@ -225,18 +336,6 @@ pub fn validated_kmux_record(
     Ok(record)
 }
 
-/// Convert strict kmux worktrees into reusable workspace records.
-pub fn strict_kmux_workspace_records(
-    paths: &RepoPaths,
-    worktrees: impl IntoIterator<Item = WorktreeInfo>,
-) -> Result<Vec<WorkspaceRecord>> {
-    worktrees
-        .into_iter()
-        .filter(|worktree| is_strict_kmux_workspace(paths, worktree))
-        .map(|worktree| WorkspaceRecord::from_worktree(worktree, false))
-        .collect()
-}
-
 /// Reject branch/path mismatches so strict commands do not operate on ambiguous worktrees.
 pub fn validate_branch_derived_workspace_slug(
     paths: &RepoPaths,
@@ -267,18 +366,6 @@ fn workspace_slug_from_path(path: &Path) -> Result<String> {
         .ok_or_else(|| anyhow!("could not determine workspace slug from {}", path.display()))
 }
 
-fn validate_path_slug(path: &Path, workspace_slug: &str) -> Result<()> {
-    let actual_slug = workspace_slug_from_path(path)?;
-    if actual_slug != workspace_slug {
-        bail!(
-            "workspace path '{}' does not match workspace slug '{}'",
-            actual_slug,
-            workspace_slug
-        );
-    }
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -301,6 +388,7 @@ mod tests {
             bare: false,
             locked: None,
             prunable: None,
+            kmux_binding: None,
         }
     }
 
@@ -341,34 +429,6 @@ mod tests {
             Path::new("/repo/project__worktrees/feature-auth")
         );
         Ok(())
-    }
-
-    #[test]
-    fn created_kmux_record_requires_path_slug_to_match() {
-        let error = WorkspaceRecord::from_created_kmux_workspace(
-            "feature-auth".to_owned(),
-            PathBuf::from("/repo/project__worktrees/custom-auth"),
-            "feature/auth".to_owned(),
-        )
-        .expect_err("mismatched path basename should fail");
-
-        assert!(error.to_string().contains("does not match workspace slug"));
-    }
-
-    #[test]
-    fn created_kmux_record_requires_branch_derived_slug_to_match() {
-        let error = WorkspaceRecord::from_created_kmux_workspace(
-            "feature-auth".to_owned(),
-            PathBuf::from("/repo/project__worktrees/feature-auth"),
-            "feature/other".to_owned(),
-        )
-        .expect_err("mismatched branch slug should fail");
-
-        assert!(
-            error
-                .to_string()
-                .contains("does not match branch-derived slug")
-        );
     }
 
     #[test]
@@ -440,31 +500,6 @@ mod tests {
     }
 
     #[test]
-    fn strict_workspace_records_return_reusable_records() -> Result<()> {
-        let paths = repo_paths();
-        let records = strict_kmux_workspace_records(
-            &paths,
-            [
-                worktree("/repo/project", Some("main")),
-                worktree(
-                    "/repo/project__worktrees/feature-auth",
-                    Some("feature/auth"),
-                ),
-                worktree(
-                    "/repo/project__worktrees/custom-auth",
-                    Some("feature/custom"),
-                ),
-                worktree("/repo/project__worktrees/detached", None),
-            ],
-        )?;
-
-        assert_eq!(records.len(), 1);
-        assert_eq!(records[0].workspace_slug(), "feature-auth");
-        assert_eq!(records[0].branch(), Some("feature/auth"));
-        Ok(())
-    }
-
-    #[test]
     fn inventory_json_preserves_parent_and_anchor_field_names() -> Result<()> {
         let record = WorkspaceRecord::from_worktree(
             worktree(
@@ -474,7 +509,13 @@ mod tests {
             false,
         )?;
         let mut item = WorkspaceInventoryItem::from_record(record, Some(100));
-        item.set_parent_state("main".to_owned(), "anchor-commit".to_owned());
+        item.lineage = Some(WorkspaceLineage::new(
+            LineageParent::GitRef {
+                reference: "main".to_owned(),
+            },
+            "anchor-commit".to_owned(),
+        ));
+        item.set_parent_display("main".to_owned(), Some("main".to_owned()), false);
         item.set_tree_depth(1);
 
         let json = serde_json::to_value(item)?;

@@ -107,6 +107,43 @@ pub(super) fn lock_project_lifecycle(paths: &RepoPaths) -> Result<WorkspaceLifec
 }
 
 impl ProjectSessionResolution {
+    /// Verify the existing physical window and any proposed display-name collision.
+    pub(super) fn prepare_presentation_update(
+        &self,
+        config: &crate::config::Config,
+        before: &crate::workspace::WorkspaceRecord,
+        after: &crate::workspace::WorkspaceRecord,
+    ) -> Result<Option<String>> {
+        let Some(selected) = &self.selected else {
+            return Ok(None);
+        };
+        super::window::find_existing(&self.tmux, &selected.session_id, config, before)?;
+        Ok(
+            super::window::find_existing(&self.tmux, &selected.session_id, config, after)?
+                .map(|window| window.window_id),
+        )
+    }
+
+    /// Rename a previously validated physical presentation, preserving its panes.
+    pub(super) fn rename_prepared_window(&self, window_id: &str, name: &str) -> Result<()> {
+        self.tmux.rename_window(window_id, name)
+    }
+
+    /// Close a verified presentation without touching Git or unrelated windows.
+    pub(super) fn close_presentation(
+        &self,
+        config: &crate::config::Config,
+        workspace: &crate::workspace::WorkspaceRecord,
+    ) -> Result<()> {
+        if let Some(selected) = &self.selected
+            && let Some(window) =
+                super::window::find_existing(&self.tmux, &selected.session_id, config, workspace)?
+        {
+            self.tmux
+                .kill_window_id_in_session(&selected.session_id, &window.window_id)?;
+        }
+        Ok(())
+    }
     /// Require a resolved existing session for a window-creating operation.
     pub(super) fn require(self, operation: &str) -> Result<TmuxContext> {
         let selected = self.selected.ok_or_else(|| {
@@ -131,15 +168,27 @@ impl ProjectSessionResolution {
     /// the ordinary workflow; scratch or linked windows remain external evidence.
     pub(super) fn prepare_workspace_removal(
         &self,
-        workspace: &Path,
-        expected_window_name: &str,
+        workspace: &crate::workspace::WorkspaceRecord,
+        config: &crate::config::Config,
     ) -> Result<Option<String>> {
+        let managed = self
+            .selected
+            .as_ref()
+            .map(|selected| {
+                super::window::find_existing(&self.tmux, &selected.session_id, config, workspace)
+            })
+            .transpose()?
+            .flatten();
+        let expected = managed
+            .as_ref()
+            .map(|window| window.window_name.clone())
+            .unwrap_or_else(|| super::window::presentation_name(config, workspace));
         prepare_workspace_removal_from_source(
             &self.tmux,
             &self.project,
             self.selected.as_ref(),
-            workspace,
-            expected_window_name,
+            workspace.path(),
+            &expected,
         )
     }
 

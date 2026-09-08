@@ -9,7 +9,7 @@ use crate::config::{Config, LauncherConfig};
 /// Print the active configuration using a stable, fully-resolved output shape.
 pub(super) fn run(args: cli::ConfigArgs) -> Result<()> {
     let config = Config::load()?;
-    let output = ActiveConfig::from(&config);
+    let output = ActiveConfig::new(&config)?;
     if args.json {
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else {
@@ -20,6 +20,7 @@ pub(super) fn run(args: cli::ConfigArgs) -> Result<()> {
 
 #[derive(Serialize)]
 struct ActiveConfig<'a> {
+    worktree_root: std::path::PathBuf,
     window_prefix: &'a str,
     window: ActiveWindow<'a>,
     launchers: BTreeMap<&'a str, ActiveLauncher<'a>>,
@@ -29,9 +30,10 @@ struct ActiveConfig<'a> {
     sidebar: ActiveSidebar,
 }
 
-impl<'a> From<&'a Config> for ActiveConfig<'a> {
-    fn from(config: &'a Config) -> Self {
-        Self {
+impl<'a> ActiveConfig<'a> {
+    fn new(config: &'a Config) -> Result<Self> {
+        Ok(Self {
+            worktree_root: config.worktree_root()?,
             window_prefix: config.window_prefix(),
             window: ActiveWindow {
                 default_launcher: config.window.default_launcher(),
@@ -60,7 +62,7 @@ impl<'a> From<&'a Config> for ActiveConfig<'a> {
                 },
                 idle_after_seconds: config.sidebar.idle_after_seconds(),
             },
-        }
+        })
     }
 }
 

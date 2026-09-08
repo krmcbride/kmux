@@ -49,14 +49,6 @@ impl Tmux {
         Ok(())
     }
 
-    /// Select a window by opaque session id and exact window name.
-    pub fn select_window_by_id(&self, session_id: &str, window_name: &str) -> Result<()> {
-        validate_session_id(session_id)?;
-        let target = format!("{session_id}:={window_name}");
-        self.stdout(["select-window", "-t", &target])?;
-        Ok(())
-    }
-
     /// Select a physical window by id within one exact tmux session.
     pub fn select_window_id_in_session(&self, session_target: &str, window_id: &str) -> Result<()> {
         let target = format!("{}:{window_id}", exact_session_target(session_target));
@@ -88,6 +80,13 @@ impl Tmux {
         validate_session_id(session_id)?;
         validate_window_id(window_id)?;
         self.stdout(["kill-window", "-t", &format!("{session_id}:{window_id}")])?;
+        Ok(())
+    }
+
+    /// Rename a physical window without changing its panes or running processes.
+    pub fn rename_window(&self, window_id: &str, name: &str) -> Result<()> {
+        validate_window_id(window_id)?;
+        self.stdout(["rename-window", "-t", window_id, name])?;
         Ok(())
     }
 

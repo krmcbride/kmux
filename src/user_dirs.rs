@@ -14,6 +14,14 @@ const UNIX_CONFIG_HOME: &str = ".config";
 const UNIX_STATE_HOME: &str = ".local/state";
 const UNIX_CACHE_HOME: &str = ".cache";
 
+/// Return the user's home directory for the explicitly home-based worktree layout.
+pub fn home_dir() -> Result<PathBuf> {
+    Ok(BaseDirs::new()
+        .context("could not determine home directory")?
+        .home_dir()
+        .to_owned())
+}
+
 /// Return the user configuration directory.
 ///
 /// An absolute `XDG_CONFIG_HOME` wins. Otherwise Unix uses `$HOME/.config`,

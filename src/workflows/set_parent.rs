@@ -1,106 +1,99 @@
-use anyhow::{Result, bail};
+//! Source selection and explicit workspace lineage changes.
+
+use anyhow::{Context, Result, bail};
 
 use crate::cli;
-use crate::state::workspace::{WorkspaceParentLink, WorkspaceState, WorkspaceStateStore};
+use crate::git::Git;
+use crate::state::workspace::WorkspaceStateStore;
+use crate::workspace::{LineageParent, WorkspaceLineage};
 
 use super::context::{RepoContext, load_repo_context};
 use super::project_session;
-use super::resolve::{resolve_current_kmux_workspace, resolve_workspace};
-use crate::workspace::WorkspaceRecord;
+use super::resolve::{
+    find_workspace, load_workspace_state, resolve_current_kmux_workspace, resolve_workspace,
+};
 
-/// Set or replace a workspace parent link without changing branches, worktrees, or tmux windows.
+/// A source selected before creation or reparenting, with its commit resolved now.
+pub(super) struct ResolvedSource {
+    pub parent: LineageParent,
+    pub commit: String,
+}
+
+/// Set lineage for a detached or attached child without changing its lifecycle authority.
 pub(super) fn run(args: cli::SetParentArgs) -> Result<()> {
     let repo = load_repo_context()?;
-    let _lifecycle_lock = project_session::lock_project_lifecycle(&repo.paths)?;
-    let (resolved, parent) = resolve_target(&repo, args)?;
-    let child = resolved.branch().ok_or_else(|| {
-        anyhow::anyhow!(
-            "workspace '{}' has no known git branch and cannot have a parent",
-            resolved.workspace_slug()
-        )
-    })?;
-
-    let anchor = record_parent(&repo, child, &parent)?;
+    let _lock = project_session::lock_project_lifecycle(&repo.paths)?;
+    let child = match args.child.as_deref() {
+        Some(target) => resolve_workspace(&repo, target)?,
+        None => resolve_current_kmux_workspace(&repo, "workspace set-parent")?,
+    };
+    if !child.is_live() {
+        bail!("child workspace is unavailable");
+    }
+    let source = resolve_source(&repo, Some(&args.parent), args.git_ref)?;
+    let head = child
+        .git()
+        .and_then(|entry| entry.head.as_deref())
+        .context("child workspace has no HEAD commit")?;
+    let lineage = lineage_at(&repo, &source, head)?;
+    let (mut state, _) = load_workspace_state(&repo)?;
+    state.set_lineage(child.policy().id(), lineage.clone())?;
+    WorkspaceStateStore::new(&repo.paths.git_common_dir).save(&state)?;
     println!(
-        "set parent of {child} to {parent} @ {}",
-        short_anchor(&anchor)
+        "set parent of {} to {} @ {}",
+        child.branch().unwrap_or(child.policy().label()),
+        source.parent.git_ref().unwrap_or(source.parent.label()),
+        lineage.anchor.chars().take(12).collect::<String>()
     );
     Ok(())
 }
 
-/// Validate and persist a parent link while the caller holds the project lifecycle lock.
-///
-/// Create already holds the lock through its resolved tmux context; the standalone
-/// set-parent command acquires it before target and state resolution.
-pub(super) fn record_parent(repo: &RepoContext, child: &str, parent: &str) -> Result<String> {
-    if child == parent {
-        bail!("workspace branch '{child}' cannot be its own parent");
+/// Select a known workspace by ID/path/label/branch, or a Git ref when no workspace matches.
+/// Explicit ref mode avoids selector ambiguity and records no workspace-to-workspace edge.
+pub(super) fn resolve_source(
+    repo: &RepoContext,
+    target: Option<&str>,
+    git_ref: bool,
+) -> Result<ResolvedSource> {
+    let current = repo.paths.current_worktree.to_string_lossy();
+    let selector = target.unwrap_or(&current);
+    if !git_ref && let Some(workspace) = find_workspace(repo, selector)? {
+        if !workspace.is_live() {
+            bail!(
+                "source workspace '{}' is unavailable",
+                workspace.policy().label()
+            );
+        }
+        return Ok(ResolvedSource {
+            parent: LineageParent::workspace(workspace.policy(), workspace.branch()),
+            commit: workspace
+                .git()
+                .and_then(|entry| entry.head.clone())
+                .context("source workspace has no HEAD commit")?,
+        });
     }
-    if !repo.git.local_branch_exists(parent)? {
-        bail!("parent branch '{parent}' does not exist locally");
-    }
-    let store = WorkspaceStateStore::new(&repo.paths.git_common_dir);
-    let mut state = store.load()?;
-    validate_no_cycle(&state, child, parent)?;
+    let reference = target.unwrap_or("HEAD");
+    Ok(ResolvedSource {
+        parent: LineageParent::GitRef { reference: reference.to_owned() },
+        commit: Git::new(&repo.paths.current_worktree).resolve_commit(reference)
+            .with_context(|| format!("source '{reference}' is neither an available workspace nor a valid Git commit ref"))?,
+    })
+}
+
+/// Record the shared commit while leaving the immutable creation anchor independent.
+pub(super) fn lineage_at(
+    repo: &RepoContext,
+    source: &ResolvedSource,
+    child_commit: &str,
+) -> Result<WorkspaceLineage> {
     let anchor = repo
         .git
-        .merge_base(child, parent)?
-        .ok_or_else(|| anyhow::anyhow!("branches '{child}' and '{parent}' have no merge base"))?;
-    state.set_parent(WorkspaceParentLink::new(
-        child.to_owned(),
-        parent.to_owned(),
-        anchor.clone(),
-    ));
-    store.save(&state)?;
-
-    Ok(anchor)
-}
-
-/// Fail if assigning `parent` to `child` would introduce a workspace parent cycle.
-pub(super) fn validate_no_cycle(state: &WorkspaceState, child: &str, parent: &str) -> Result<()> {
-    if state.would_create_cycle(child, parent) {
-        bail!("setting parent of '{child}' to '{parent}' would create a cycle");
-    }
-    Ok(())
-}
-
-// `kmux workspace set-parent <parent> <child>` targets an explicit child; omitting
-// the child discovers it from the current kmux workspace.
-fn resolve_target(
-    repo: &RepoContext,
-    args: cli::SetParentArgs,
-) -> Result<(WorkspaceRecord, String)> {
-    let cli::SetParentArgs { parent, child } = args;
-    let resolved = match child {
-        Some(child) => resolve_workspace(repo, &child)?,
-        None => resolve_current_kmux_workspace(repo, "workspace set-parent")?,
-    };
-
-    Ok((resolved, parent))
-}
-
-// Keep command output readable while retaining enough of the recorded anchor to identify it.
-fn short_anchor(anchor: &str) -> String {
-    anchor.chars().take(12).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::state::workspace::WorkspaceParentLink;
-
-    #[test]
-    fn validate_no_cycle_rejects_cycle() {
-        let mut state = WorkspaceState::default();
-        state.set_parent(WorkspaceParentLink::new(
-            "feature/grandchild".to_owned(),
-            "feature/child".to_owned(),
-            "abc".to_owned(),
-        ));
-
-        let error = validate_no_cycle(&state, "feature/child", "feature/grandchild")
-            .expect_err("cycle should fail");
-
-        assert!(error.to_string().contains("would create a cycle"));
-    }
+        .merge_base(child_commit, &source.commit)?
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "workspace and source '{}' have no merge base",
+                source.parent.label()
+            )
+        })?;
+    Ok(WorkspaceLineage::new(source.parent.clone(), anchor))
 }

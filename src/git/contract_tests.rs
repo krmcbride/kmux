@@ -7,6 +7,107 @@ use anyhow::{Result, bail};
 use super::BranchAction;
 use super::contract_support::GitRepoFixture;
 
+pub fn recovery_refs_are_verified_idempotent_and_never_overwrite_collisions() -> Result<()> {
+    let fixture = GitRepoFixture::new()?;
+    let git = fixture.adapter();
+    let old = git.resolve_commit("HEAD")?;
+    fixture.commit_file("feature.txt", "feature\n", "advance HEAD")?;
+    let head = git.resolve_commit("HEAD")?;
+    let branches = git.local_branch_refs()?;
+    let base = format!("refs/kmux/recovery/ws-example/{head}");
+    fixture.git(&["update-ref", &base, &old])?;
+    let recovery = git.create_recovery_ref("ws-example", &head)?;
+    assert_eq!(recovery, format!("{base}-1"));
+    assert_eq!(git.resolve_commit(&base)?, old);
+    assert_eq!(git.resolve_commit(&recovery)?, head);
+    assert_eq!(git.create_recovery_ref("ws-example", &head)?, recovery);
+    assert_eq!(git.local_branch_refs()?, branches);
+
+    let symbolic = format!("refs/kmux/recovery/ws-symbolic/{head}");
+    fixture.git(&["symbolic-ref", &symbolic, "refs/heads/main"])?;
+    assert_eq!(
+        git.create_recovery_ref("ws-symbolic", &head)?,
+        format!("{symbolic}-1")
+    );
+    git.verify_preserved_branch("main", &head)?;
+    assert!(git.verify_preserved_branch("main", &old).is_err());
+    Ok(())
+}
+
+pub fn recovery_ref_creation_fails_without_replacing_an_occupied_namespace() -> Result<()> {
+    let fixture = GitRepoFixture::new()?;
+    let git = fixture.adapter();
+    let head = git.resolve_commit("HEAD")?;
+    fixture.git(&["update-ref", "refs/kmux", &head])?;
+    assert!(git.create_recovery_ref("ws-example", &head).is_err());
+    assert_eq!(git.resolve_commit("refs/kmux")?, head);
+    assert_eq!(git.local_branch_refs()?, ["main"]);
+    Ok(())
+}
+
+pub fn inventory_preserves_unusual_paths_and_registration_binding() -> Result<()> {
+    let fixture = GitRepoFixture::new()?;
+    let path = fixture.root().join("workspace \"alpha\"\n ");
+    let git = fixture.adapter();
+    fixture.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        path.to_string_lossy().as_ref(),
+        "HEAD",
+    ])?;
+    fixture.git(&[
+        "worktree",
+        "lock",
+        "--reason",
+        "review\nnotes ",
+        path.to_string_lossy().as_ref(),
+    ])?;
+    let entries = git.worktrees()?;
+    let entry = entries
+        .iter()
+        .find(|e| e.path == path)
+        .ok_or_else(|| anyhow::anyhow!("missing exact worktree path"))?;
+    assert!(entry.detached);
+    assert!(entry.branch.is_none());
+    assert!(entry.head.is_some());
+    assert_eq!(entry.locked.as_deref(), Some("review\nnotes"));
+    assert_eq!(fixture.adapter_at(&path).worktree_root()?, path);
+    assert!(entry.kmux_binding.is_none());
+    let id = git.claim_worktree(&path)?;
+    assert_eq!(git.claim_worktree(&path)?, id);
+    assert_eq!(
+        git.worktrees()?
+            .iter()
+            .find(|e| e.path == path)
+            .and_then(|e| e.kmux_binding.as_deref()),
+        Some(id.as_str())
+    );
+    fixture.git(&["worktree", "unlock", path.to_string_lossy().as_ref()])?;
+    git.remove_worktree(&path, false)?;
+    fixture.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        path.to_string_lossy().as_ref(),
+        "HEAD",
+    ])?;
+    assert!(
+        git.worktrees()?
+            .iter()
+            .find(|e| e.path == path)
+            .is_some_and(|e| e.kmux_binding.is_none())
+    );
+    fs::remove_dir_all(&path)?;
+    assert!(
+        git.worktrees()?
+            .iter()
+            .find(|e| e.path == path)
+            .is_some_and(|e| e.prunable.is_some())
+    );
+    Ok(())
+}
+
 pub fn discovers_repo_info_from_primary_worktree() -> Result<()> {
     let fixture = GitRepoFixture::new()?;
     let repo = fixture.path();

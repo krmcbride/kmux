@@ -14,6 +14,11 @@ function __kmux_git_branches
     kmux _complete-git-branches 2>/dev/null
 end
 
+function __kmux_sources
+    __kmux_workspaces
+    __kmux_git_branches
+end
+
 # Configured launcher names.
 function __kmux_launchers
     kmux _complete-launchers 2>/dev/null
@@ -52,9 +57,18 @@ function __kmux_set_parent_completed_arg_count
 end
 
 complete -c kmux -n '__kmux_in_workspace_command remove' -f -a '(__kmux_workspaces)'
-complete -c kmux -n '__kmux_in_workspace_command create' -l parent -r -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l parent -r -f -a '(__kmux_sources)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l from -r -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create' -l name -r -f
 complete -c kmux -n '__kmux_in_workspace_command create' -l launcher -r -f -a '(__kmux_launchers)'
 complete -c kmux -n '__kmux_in_workspace_command create' -l launcher-input -r -f
-complete -c kmux -n '__kmux_in_workspace_command create; and not __fish_prev_arg_in --parent --launcher --launcher-input' -f -a '(__kmux_create_branches)'
-complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_git_branches)'
+complete -c kmux -n '__kmux_in_workspace_command create; and not __fish_prev_arg_in --parent --from --name --launcher --launcher-input' -f -a '(__kmux_create_branches)'
+complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 0' -f -a '(__kmux_sources)'
 complete -c kmux -n '__kmux_in_workspace_command set-parent; and test (__kmux_set_parent_completed_arg_count) -eq 1' -f -a '(__kmux_workspaces)'
+
+complete -c kmux -n '__kmux_in_workspace_command close' -f -a '(__kmux_workspaces)'
+complete -c kmux -n '__kmux_in_workspace_command promote; and not __fish_prev_arg_in --name' -f -a '(__kmux_workspaces)'
+complete -c kmux -n '__kmux_in_workspace_command promote' -l name -r -f
+complete -c kmux -n '__kmux_in_workspace_command open' -l launcher -r -f -a '(__kmux_launchers)'
+complete -c kmux -n '__kmux_in_workspace_command open' -l launcher-input -r -f
+complete -c kmux -n '__kmux_in_workspace_command open; and not __fish_prev_arg_in --launcher --launcher-input' -f -a '(__kmux_workspaces)'

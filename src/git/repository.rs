@@ -22,9 +22,9 @@ impl Git {
         // in a repo. In a primary checkout this is `<repo>/.git`; in a linked
         // worktree it still points back to the primary checkout's `.git`.
         let common_dir_raw = self
-            .stdout(["rev-parse", "--git-common-dir"])
+            .path_stdout("--git-common-dir")
             .context("failed to locate git common dir")?;
-        let git_common_dir = resolve_existing_path(self.cwd(), common_dir_raw.trim())?;
+        let git_common_dir = resolve_existing_path(self.cwd(), &common_dir_raw)?;
 
         Ok(RepoInfo {
             current_worktree,
@@ -35,9 +35,9 @@ impl Git {
     /// Return the canonical root for the Git worktree containing this adapter's cwd.
     pub fn worktree_root(&self) -> Result<PathBuf> {
         let current_worktree_raw = self
-            .stdout(["rev-parse", "--show-toplevel"])
+            .path_stdout("--show-toplevel")
             .context("failed to locate git worktree root")?;
-        resolve_existing_path(self.cwd(), current_worktree_raw.trim())
+        resolve_existing_path(self.cwd(), &current_worktree_raw)
     }
 
     /// Return the first worktree from Git's worktree list, which Git reports as the main one.
@@ -47,6 +47,19 @@ impl Git {
             .into_iter()
             .next()
             .map(|worktree| worktree.path))
+    }
+
+    /// Preserve path whitespace while removing only Git's output terminator.
+    pub(super) fn path_stdout(&self, option: &str) -> Result<String> {
+        let output = self.output(["rev-parse", option])?;
+        if !output.status.success() {
+            return super::process::bail_git(output);
+        }
+        Ok(output
+            .stdout
+            .strip_suffix('\n')
+            .unwrap_or(&output.stdout)
+            .to_owned())
     }
 }
 

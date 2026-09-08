@@ -36,6 +36,7 @@ fn workspace_help_shows_lifecycle_commands() {
         .success()
         .stdout(predicate::str::contains("Usage: kmux workspace <COMMAND>"))
         .stdout(predicate::str::contains("  create"))
+        .stdout(predicate::str::contains("  promote"))
         .stdout(predicate::str::contains("  list"))
         .stdout(predicate::str::contains("  remove"))
         .stdout(predicate::str::contains("  set-parent"))
@@ -110,6 +111,7 @@ fn config_prints_the_same_resolved_shape_as_yaml_and_json() -> Result<()> {
         temp.path(),
         r#"
 window_prefix: work-
+worktree_root: /repo/example-worktrees
 window:
   default_launcher: review-agent
 launchers:
@@ -165,6 +167,7 @@ sidebar:
     let json: serde_json::Value = serde_json::from_slice(&json_output)?;
     let expected = serde_json::json!({
         "window_prefix": "work-",
+        "worktree_root": "/repo/example-worktrees",
         "window": {"default_launcher": "review-agent"},
         "launchers": {
             "code-agent": {
@@ -264,7 +267,7 @@ fn set_parent_help_uses_stable_parent_then_child_order() {
         .assert()
         .success()
         .stdout(predicate::str::contains(
-            "Usage: kmux workspace set-parent <PARENT> [CHILD]",
+            "Usage: kmux workspace set-parent [OPTIONS] <PARENT> [CHILD]",
         ));
 }
 
@@ -462,7 +465,10 @@ complete -C $argv[2]
         Ok(String::from_utf8(output.stdout)?)
     };
 
-    assert_eq!(complete("kmux workspace create --parent ")?, "main\n");
+    assert_eq!(
+        complete("kmux workspace create --parent ")?,
+        "feature-alpha\nmain\n"
+    );
     assert_eq!(complete("kmux workspace create --launcher ")?, "agent\n");
     assert_eq!(complete("kmux workspace create --launcher-input ")?, "");
     assert_eq!(
