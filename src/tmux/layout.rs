@@ -7,6 +7,7 @@
 //! rectangles cannot describe every nested layout's resize constraints.
 
 use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 /// Parsed recursive `#{window_layout}` topology used to calculate minimum pane geometry.
@@ -26,7 +27,32 @@ impl TmuxWindowLayout {
         self.root.minimum_width(excluded_pane_id).unwrap_or(1)
     }
 
+    /// Parse either tmux 3.8's JSON layout or the legacy checksum-prefixed layout.
     pub(super) fn parse(value: &str) -> Result<Self> {
+        if value.starts_with('{') {
+            Self::parse_json(value)
+        } else {
+            Self::parse_legacy(value)
+        }
+    }
+
+    /// Parse the versioned JSON description that tmux 3.8 and later emit.
+    fn parse_json(value: &str) -> Result<Self> {
+        let layout: JsonLayout = serde_json::from_str(value)
+            .with_context(|| format!("invalid tmux window layout {value:?}"))?;
+        if layout.version != JSON_LAYOUT_VERSION {
+            bail!(
+                "unsupported tmux window layout version {} in {value:?}",
+                layout.version
+            );
+        }
+        Ok(Self {
+            root: layout.root.into(),
+        })
+    }
+
+    /// Parse the `checksum,WxH,X,Y...` description that tmux emitted before 3.8.
+    fn parse_legacy(value: &str) -> Result<Self> {
         let (_, body) = value
             .split_once(',')
             .with_context(|| format!("invalid tmux window layout {value:?}: missing checksum"))?;
@@ -75,6 +101,48 @@ impl TmuxLayoutCell {
                 .iter()
                 .filter_map(|child| child.minimum_width(excluded_pane_id))
                 .max(),
+        }
+    }
+}
+
+const JSON_LAYOUT_VERSION: u32 = 2;
+
+/// Top-level tmux JSON layout envelope; fields other than the tree are ignored.
+#[derive(Deserialize)]
+struct JsonLayout {
+    #[serde(rename = "V")]
+    version: u32,
+    #[serde(rename = "L")]
+    root: JsonLayoutCell,
+}
+
+/// One JSON layout node, tagged by `t`: `p` pane, `h` side by side, `v` stacked.
+#[derive(Deserialize)]
+#[serde(tag = "t")]
+enum JsonLayoutCell {
+    #[serde(rename = "p")]
+    Pane {
+        #[serde(rename = "I")]
+        pane_id: String,
+    },
+    #[serde(rename = "h")]
+    Horizontal { c: Vec<Self> },
+    #[serde(rename = "v")]
+    Vertical { c: Vec<Self> },
+}
+
+impl From<JsonLayoutCell> for TmuxLayoutCell {
+    fn from(cell: JsonLayoutCell) -> Self {
+        match cell {
+            JsonLayoutCell::Pane { pane_id } => {
+                Self::Pane(pane_id.trim_start_matches('%').to_owned())
+            }
+            JsonLayoutCell::Horizontal { c } => {
+                Self::Horizontal(c.into_iter().map(Into::into).collect())
+            }
+            JsonLayoutCell::Vertical { c } => {
+                Self::Vertical(c.into_iter().map(Into::into).collect())
+            }
         }
     }
 }
@@ -227,6 +295,35 @@ mod tests {
         assert_eq!(layout.minimum_width(None), 5);
         assert_eq!(layout.minimum_width(Some("%9")), 3);
         Ok(())
+    }
+
+    #[test]
+    fn json_window_layout_matches_legacy_minimum_width() -> Result<()> {
+        let json = TmuxWindowLayout::parse(
+            r#"{"V":2,"L":{"t":"h","w":20,"h":20,"x":0,"y":0,"c":[{"t":"p","w":12,"h":20,"x":0,"y":0,"i":0,"I":"%9"},{"t":"v","w":7,"h":20,"x":13,"y":0,"c":[{"t":"h","w":7,"h":10,"x":13,"y":0,"c":[{"t":"p","w":3,"h":10,"x":13,"y":0,"i":1,"I":"%1"},{"t":"p","w":3,"h":10,"x":17,"y":0,"a":true,"i":2,"I":"%2"}]},{"t":"p","w":7,"h":9,"x":13,"y":11,"l":0,"i":3,"I":"%3"}]}]}}"#,
+        )?;
+        let legacy = TmuxWindowLayout::parse(
+            "0000,20x20,0,0{12x20,0,0,9,7x20,13,0[7x10,13,0{3x10,13,0,1,3x10,17,0,2},7x9,13,11,3]}",
+        )?;
+
+        assert_eq!(json, legacy);
+        assert_eq!(json.minimum_width(None), 5);
+        assert_eq!(json.minimum_width(Some("%9")), 3);
+        Ok(())
+    }
+
+    #[test]
+    fn json_window_layout_rejects_unknown_version() {
+        let error = TmuxWindowLayout::parse(
+            r#"{"V":3,"L":{"t":"p","w":80,"h":24,"x":0,"y":0,"i":0,"I":"%0"}}"#,
+        )
+        .expect_err("unknown layout version should fail parsing");
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported tmux window layout version 3")
+        );
     }
 
     #[test]
