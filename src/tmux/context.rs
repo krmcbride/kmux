@@ -64,7 +64,7 @@ impl Tmux {
     }
 
     /// Return session/window/pane context for a specific pane id.
-    pub(super) fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
+    pub fn pane_context(&self, pane_id: &str) -> Result<TmuxContext> {
         self.query_pane_context(Some(pane_id))
     }
 

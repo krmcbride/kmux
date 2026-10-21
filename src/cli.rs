@@ -92,16 +92,22 @@ pub enum WorkspaceCommand {
         after_long_help = CREATE_AFTER_LONG_HELP
     )]
     Create(CreateArgs),
+    /// Open or focus a registered worktree without changing its lifecycle authority.
+    Open(OpenArgs),
+    /// Close a workspace's tmux presentation while keeping its worktree.
+    Close(CloseArgs),
+    /// Keep an owned ephemeral workspace persistently in its current directory.
+    Promote(PromoteArgs),
     /// List workspaces in the current Git project.
     #[command(long_about = LIST_LONG_ABOUT, after_long_help = LIST_AFTER_LONG_HELP)]
     List(ListArgs),
-    /// Remove a workspace and its local branch.
+    /// Remove an owned workspace while protecting detached commits and publication branches.
     #[command(
         long_about = REMOVE_LONG_ABOUT,
         after_long_help = REMOVE_AFTER_LONG_HELP
     )]
     Remove(RemoveArgs),
-    /// Set the recorded parent branch for a workspace.
+    /// Set the recorded source workspace or Git ref for a workspace.
     #[command(
         name = "set-parent",
         long_about = SET_PARENT_LONG_ABOUT,
@@ -120,9 +126,17 @@ pub enum WorkspaceCommand {
 pub struct CreateArgs {
     /// New local branch, or REMOTE/BRANCH to track locally.
     #[arg(long_help = CREATE_BRANCH_LONG_HELP, value_hint = ValueHint::Other)]
-    pub branch: String,
+    pub branch: Option<String>,
 
-    /// Start from and record this local parent branch.
+    /// Start an ephemeral workspace at this Git commit or ref; defaults to current HEAD.
+    #[arg(long, conflicts_with_all = ["branch", "parent"], value_hint = ValueHint::Other)]
+    pub from: Option<String>,
+
+    /// Label an ephemeral workspace without changing its opaque storage directory.
+    #[arg(long, conflicts_with = "branch", value_hint = ValueHint::Other)]
+    pub name: Option<String>,
+
+    /// Start from and record this parent workspace or Git ref.
     #[arg(
         long,
         long_help = CREATE_PARENT_LONG_HELP,
@@ -161,14 +175,51 @@ pub struct LaunchArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct OpenArgs {
+    /// Workspace ID, label, branch, or path; omit to use the current worktree.
+    #[arg(value_hint = ValueHint::Other)]
+    pub target: Option<String>,
+    /// Open without selecting the window; required outside the target session.
+    #[arg(short, long)]
+    pub background: bool,
+    /// Start this configured launcher in a newly created window.
+    #[arg(long, value_hint = ValueHint::Other)]
+    pub launcher: Option<String>,
+    /// Pass one final argument to the launcher; '-' reads it from stdin.
+    #[arg(long, requires = "launcher", allow_hyphen_values = true, value_name = "INPUT", value_hint = ValueHint::Other)]
+    pub launcher_input: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct CloseArgs {
+    /// Workspace ID, label, branch, or path; omit to use the current worktree.
+    #[arg(value_hint = ValueHint::Other)]
+    pub target: Option<String>,
+}
+
+#[derive(Debug, Args)]
+pub struct PromoteArgs {
+    /// Workspace ID, label, branch, or path; omit to use the current worktree.
+    #[arg(value_hint = ValueHint::Other)]
+    pub target: Option<String>,
+    /// Change the display label while preserving the directory, ID, and Git checkout.
+    #[arg(long, value_hint = ValueHint::Other)]
+    pub name: Option<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct SetParentArgs {
-    /// Existing local branch to record as the workspace parent.
+    /// Source workspace selector or Git ref to record as the parent.
     #[arg(value_hint = ValueHint::Other)]
     pub parent: String,
 
-    /// Child workspace slug or branch; omit to use the current kmux workspace.
+    /// Child workspace selector; omit to use the current linked worktree.
     #[arg(value_hint = ValueHint::Other)]
     pub child: Option<String>,
+
+    /// Interpret PARENT as a Git ref even when a workspace selector has the same spelling.
+    #[arg(long)]
+    pub git_ref: bool,
 }
 
 #[derive(Debug, Args)]
@@ -315,7 +366,7 @@ const ROOT_AFTER_LONG_HELP: &str = concat!(
 );
 
 const WORKSPACE_LONG_ABOUT: &str = concat!(
-    "Manage workspaces in the current Git project. Each workspace combines a local branch, linked worktree, and expected tmux window, with optional parent metadata.\n\n",
+    "Manage every registered Git worktree in the current project. Checkout state, lifecycle authority, retention, and tmux presentation are separate.\n\n",
     "Run these commands from the Git project you want to manage."
 );
 const WORKSPACE_AFTER_LONG_HELP: &str = concat!(
@@ -324,22 +375,25 @@ const WORKSPACE_AFTER_LONG_HELP: &str = concat!(
 );
 
 const CREATE_LONG_ABOUT: &str = concat!(
-    "Create BRANCH as a local branch, linked worktree, and tmux window. Run this from the Git project you want the workspace to belong to.\n\n",
+    "Create an owned detached ephemeral worktree at the current checkout's HEAD, or use --from to select a commit or ref. Its path is <worktree_root>/<opaque-id>/<repo-basename>; --name changes only its label.\n\n",
+    "Supplying BRANCH selects the persistent preset: a new local branch and a sibling linked worktree. Attaching, switching, or publishing branches later never changes retention.\n\n",
     "Kmux runs configured workspace setup, then starts the default launcher when one is configured. Use --launcher to select another configured launcher, --launcher-input - to pass it multiline input on stdin, and --background when the caller is not attached to the target tmux session.\n\n",
     "Creation is not rolled back after it begins. Launcher success means the process started; kmux does not wait for its work to finish."
 );
 const CREATE_AFTER_LONG_HELP: &str = concat!(
     "Examples:\n",
+    "  kmux workspace create\n",
+    "  kmux workspace create --from main --name review-alpha\n",
     "  kmux workspace create feature/sidebar\n",
     "  kmux workspace create feature/review \\\n",
     "    --background --launcher review-agent --launcher-input -"
 );
 const CREATE_BRANCH_LONG_HELP: &str = concat!(
-    "Create this new local branch from --parent or the current branch. ",
+    "Select the persistent preset and create this new local branch from --parent or the current branch. ",
     "A known REMOTE/BRANCH instead creates and tracks the corresponding local branch."
 );
 const CREATE_PARENT_LONG_HELP: &str = concat!(
-    "Use this local branch as the new branch's start point and recorded parent. ",
+    "Use this workspace selector or Git ref as the start point and recorded source. ",
     "For REMOTE/BRANCH, it changes only the recorded parent."
 );
 const CREATE_BACKGROUND_LONG_HELP: &str = "Create the tmux window without selecting it. Required when the caller is not attached to the target tmux session.";
@@ -360,25 +414,27 @@ const CONFIG_AFTER_LONG_HELP: &str = "Examples:\n  kmux config\n  kmux config --
 const CONFIG_JSON_LONG_HELP: &str = "Print the resolved configuration as JSON instead of YAML.";
 
 const SET_PARENT_LONG_ABOUT: &str = concat!(
-    "Record PARENT as the logical parent of CHILD. PARENT must be an existing local branch with shared history.\n\n",
-    "CHILD may be a workspace slug or branch. Omit it inside a kmux worktree to update the current workspace. This changes only kmux parent metadata."
+    "Record PARENT as the source of CHILD at their shared commit. PARENT accepts a workspace ID, path, label, current branch, or Git ref; --git-ref forces ref interpretation.\n\n",
+    "CHILD accepts any workspace selector, including a detached worktree. Omit it inside a linked worktree to update the current workspace. Workspace edges use stable IDs and reject cycles. This changes only lineage metadata."
 );
 const SET_PARENT_AFTER_LONG_HELP: &str = concat!(
     "Examples:\n",
     "  kmux workspace set-parent main\n",
-    "  kmux workspace set-parent main feature/sidebar"
+    "  kmux workspace set-parent main feature/sidebar\n",
+    "  kmux workspace set-parent --git-ref refs/tags/base review-alpha"
 );
 
-const RESTORE_LONG_ABOUT: &str = "Recreate missing tmux windows for workspaces in the current Git project. Existing windows are left unchanged. New windows use the currently configured default launcher.";
+const RESTORE_LONG_ABOUT: &str = "Open every live external worktree and remembered workspace in the project tmux session, including worktrees never opened before. Existing windows keep running. New windows use the current default launcher without one-shot input.";
 const RESTORE_AFTER_LONG_HELP: &str = "Example:\n  kmux workspace restore";
 
-const LIST_LONG_ABOUT: &str = "List workspaces and their parent, Git, tmux, and agent context for the current Git project. This command does not change workspace state.";
+const LIST_LONG_ABOUT: &str = "List workspaces and their parent, Git, tmux, and agent context for the current Git project. Git supplies checkout facts; kmux reconciles policy records and migrates legacy state once.";
 const LIST_AFTER_LONG_HELP: &str = "Examples:\n  kmux workspace list\n  kmux workspace list --json";
 const LIST_JSON_LONG_HELP: &str = "Print the current project's workspace inventory as JSON.";
 
 const REMOVE_LONG_ABOUT: &str = concat!(
-    "Remove a workspace's linked worktree, local branch, tmux window, and parent metadata. NAME may be its slug, branch, or window name; omit it inside a kmux worktree to remove the current workspace.\n\n",
-    "Kmux refuses the main worktree, dirty worktrees, unmerged branches, and worktrees used by other panes. Use --force only to bypass the dirty and unmerged checks."
+    "Remove an owned worktree and its managed tmux window. NAME accepts a workspace ID, path, label, current branch, or window name; omit it inside the owned worktree. Historical lineage is retained.\n\n",
+    "Advanced detached HEAD, including after promotion, is saved and verified under refs/kmux/recovery before removal. Unknown creation anchors also require recovery; a known unchanged creation anchor needs no snapshot. The command reports a ref and recreation command.\n\n",
+    "Publication branches are preserved. Only the original explicitly owned persistent branch is eligible for deletion, with existing safely-merged checks. Primary and external worktrees, locked registrations, and worktrees used by other panes are refused."
 );
 const REMOVE_AFTER_LONG_HELP: &str = concat!(
     "Examples:\n",
@@ -386,8 +442,8 @@ const REMOVE_AFTER_LONG_HELP: &str = concat!(
     "  kmux workspace remove --force feature/abandoned"
 );
 const REMOVE_FORCE_LONG_HELP: &str = concat!(
-    "Allow removal despite uncommitted or unmerged work, potentially discarding it. ",
-    "Other safety checks still apply."
+    "Discard uncommitted files and allow deletion of an unmerged explicitly owned persistent branch. ",
+    "Detached committed HEAD still requires verified recovery when advanced or its creation anchor is unknown. Ownership, registration, lock, and live-pane protections still apply."
 );
 
 const STATUS_LONG_ABOUT: &str =

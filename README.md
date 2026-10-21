@@ -1,8 +1,8 @@
 # kmux
 
-kmux is a tmux and Git worktree workflow helper. It creates one focused
-workspace per branch, restores the tmux windows those workspaces expect, and
-shows agent activity across worktrees in a global sidebar.
+kmux is a tmux and Git worktree workflow helper. It opens registered worktrees
+in a project tmux session, manages the worktrees it creates, and shows agent
+activity across worktrees in a global sidebar.
 
 kmux is currently pre-release. Its CLI and persisted state may still change
 before the first stable release.
@@ -33,10 +33,18 @@ path. Detached callers resolve the same session from its live Git pane paths.
 
 ## Workspace model
 
-A kmux workspace is identified by its canonical Git worktree root. For a main
-checkout at `/repo/project-alpha`, kmux places linked worktrees under the sibling
-directory `/repo/project-alpha__worktrees/` and derives filesystem/tmux slugs
-from branch names.
+A workspace is a registered Git worktree with a stable kmux identity. Git supplies
+its path, HEAD, branch or detached state, and registration flags. Kmux separately
+records its label, lifecycle authority, retention, presentation intent, and lineage.
+External worktrees can live anywhere and remain external when opened in tmux.
+
+Compatibility import runs once when kmux policy state is missing or version 1.
+Worktrees matching the old strict sibling layout and branch-derived basename
+become owned persistent records without moving directories or changing branches.
+This legacy exception also applies on first use in a repository without prior
+kmux state. After import, new registrations never gain authority from a path or
+branch name. Ownership is bound to the original Git registration, so a replacement
+at the same path cannot inherit it.
 
 The release model distinguishes one Git project from its worktree workspaces:
 
@@ -62,19 +70,51 @@ using status, recency, and deterministic tie-breakers.
 
 ## Workspace lifecycle
 
-Start in the main checkout and create a branch workspace:
+Create an ephemeral workspace from any checkout, including a detached one:
 
 ```sh
 tmux new-session -s work
 cd /repo/project-alpha
+kmux workspace create
+kmux workspace create --from main --name review-alpha
+```
+
+Without a branch argument, creation starts detached at the invoking checkout's
+HEAD (or `--from <REF>`) and creates no branch. Storage defaults to
+`~/.kmux/worktrees/<opaque-id>/<repo-basename>`. The random directory is reserved
+exclusively across projects; an optional `--name` sets only the display label.
+Set an absolute or `~/`-prefixed `worktree_root` in configuration to change where
+future ephemeral worktrees are created. Existing paths remain unchanged.
+
+The table and tmux window name identify ephemeral retention explicitly. Creating,
+switching, renaming, or publishing branches inside the worktree keeps its identity,
+path, and retention. Multiple publication branches can belong to one environment.
+
+Supplying a branch selects the persistent compatibility preset:
+
+```sh
 kmux workspace create feature/sidebar
 ```
 
-`kmux workspace create` creates a new local branch, a linked worktree, and a tmux
-window. By default the current branch is recorded as the parent and the new window
-receives focus. Use `--parent <BRANCH>` or `--background` to override those choices.
-Detached callers must use `--background`; they otherwise fail before creating
-the branch or worktree.
+This creates a new local branch and a sibling worktree at
+`<repo>__worktrees/feature-sidebar`. By default the current workspace is the source,
+including a detached source. Use `--parent <WORKSPACE-OR-REF>` to override it.
+A known `REMOTE/BRANCH` creates a local
+tracking branch. New windows receive focus; callers outside the target tmux
+session must pass `--background` and otherwise fail before creation.
+
+Keep an ephemeral workspace persistently in its current directory:
+
+```sh
+kmux workspace promote
+kmux workspace promote review-alpha --name long-running
+```
+
+Promotion works while detached or on a branch. It preserves the workspace ID,
+path, HEAD, branches, presentation intent, and running panes. The optional name
+changes its label and window name. It creates no branch and grants no branch
+deletion authority. Primary, external, and already persistent workspaces cannot
+be promoted. There is no automatic cleanup or relocation.
 
 When a default launcher is configured, kmux starts it as the foreground program
 in the new window after file operations, `post_create`, and parent metadata are
@@ -120,7 +160,22 @@ Change the recorded parent of the current workspace, or name an explicit child:
 ```sh
 kmux workspace set-parent main
 kmux workspace set-parent main feature/sidebar
+kmux workspace set-parent review-alpha detached-child
+kmux workspace set-parent --git-ref refs/tags/base detached-child
 ```
+
+New workspaces remember the source workspace and shared commit, or an explicit
+Git ref selected with `--from`. `--parent` accepts the same source selectors as
+`set-parent`; an unmatched selector must resolve to a Git commit. `--git-ref`
+on `set-parent` forces ref interpretation when names are ambiguous.
+
+Workspace ancestry uses stable IDs, so branches and display names can change
+without rebinding a child. Missing parents retain their historical labels and
+anchors. Reparenting rejects cycles and changes only lineage metadata; it neither
+rebases branches nor changes external ownership. The table draws the tree in the
+WORKSPACE column, with checkout state separately in BRANCH. JSON exposes `lineage`,
+`parent_label`, and `parent_missing`; the older `git_parent_branch` and
+`git_anchor_commit` fields remain available as branch/ref-label compatibility data.
 
 If worktrees still exist after restarting tmux or closing windows, restore their
 expected windows:
@@ -129,13 +184,29 @@ expected windows:
 kmux workspace restore
 ```
 
-Restore affects only missing expected windows. It uses the current configured
-default launcher with no dynamic input, never a previous one-shot override. An
-existing shell window is left untouched, including after an earlier launcher
-failure. Without a default launcher, create and restore create ordinary shell
-windows.
+Restore opens every live external worktree registered to the project, even if it
+has never been opened in kmux. It also restores remembered owned presentations.
+New windows use the current default launcher without prior one-shot input;
+existing windows keep running, including after an earlier launcher failure.
+Without a default launcher, windows contain the configured tmux shell.
 
-Remove a workspace by branch, slug, or window name. From inside a kmux worktree,
+Open one checkout by path, workspace ID, label, or current branch:
+
+```sh
+kmux workspace open /repo/external-worktree
+kmux workspace open --background --launcher editor
+kmux workspace close /repo/external-worktree
+```
+
+With no target, open and close use the current registered checkout, including
+detached worktrees. Open remembers presentation and accepts the same launcher
+input as create. Existing windows are focused or reused without restarting their
+launcher. Close forgets that presentation and closes only its managed window,
+leaving files, commits, branches, and the worktree registration intact. A live
+external worktree remains eligible for the next restore after close. Stale or
+prunable registrations are listed as unavailable and never pruned by restore.
+
+Remove an owned workspace by ID, path, label, branch, or window name. From inside it,
 the name may be omitted:
 
 ```sh
@@ -143,9 +214,31 @@ kmux workspace remove feature/sidebar
 kmux workspace remove
 ```
 
-Removal deletes the linked worktree, local branch, expected tmux window, and the
-workspace's own parent link. It refuses dirty worktrees or branches that are not
-safely merged unless `--force` is supplied.
+Removal deletes the linked worktree and its verified managed window, retaining
+historical identity and lineage. Ephemeral workspaces preserve all publication
+branches, as do promoted workspaces. The persistent creation preset deletes only
+its explicitly owned original branch when still checked out there, with the
+existing safely-merged check. Primary and external worktrees remain outside kmux's
+removal authority, regardless of path or `--force`. Locked worktrees must be
+unlocked explicitly.
+
+Advanced detached HEAD is protected by a verified ref under
+`refs/kmux/recovery/<workspace-id>/<commit>`, including after promotion. Unknown
+creation anchors also require a snapshot; a clean checkout still at its known
+creation anchor does not. Names are deterministic with collision suffixes and
+never overwrite a different ref. Recovery refs remain outside local branch
+listings. Removal prints the ref and a `git worktree add --detach` command to
+recreate the committed checkout. Find saved work later with:
+
+```sh
+git for-each-ref --format='%(refname) %(objectname)' refs/kmux/recovery/
+```
+
+A recovery-ref creation or verification failure leaves the workspace intact.
+Dirty worktrees are refused by default. `--force` discards uncommitted files and
+permits deleting an unmerged explicitly owned persistent branch; detached
+committed HEAD is still protected separately. Recovery refs preserve committed
+objects only. They have no automatic expiration or cleanup schedule.
 
 ## Sidebar and agent activity
 
@@ -276,6 +369,7 @@ kmux config --json
 For example, the source configuration can contain:
 
 ```yaml
+worktree_root: ~/.kmux/worktrees
 window_prefix: kmux-
 
 window:

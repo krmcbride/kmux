@@ -20,15 +20,17 @@ kmux config --json |
 If `jq` is unavailable, inspect the JSON directly. Choose the launcher whose name
 or description matches the task; ask the user when there is no clear match.
 
-2. Choose a new branch name and write a concise, self-contained prompt. A new
+2. Write a concise, self-contained prompt. Default to an ephemeral detached
+   workspace; supply a branch only when a persistent branch workspace is requested. A new
    worktree starts from committed Git history, so do not assume uncommitted or
    untracked files will be present.
 
-3. Set `NEW_BRANCH` and `LAUNCHER` to the chosen values, then run exactly one
-   creation command. Add `--parent <PARENT>` when needed.
+3. Set `LAUNCHER` to the chosen value, then run exactly one creation command.
+   Add `--from <REF>` or a display `--name <LABEL>` when needed. The optional
+   persistent branch preset accepts `--parent <BRANCH>` instead of `--from`.
 
 ```sh
-kmux workspace create "$NEW_BRANCH" --background \
+kmux workspace create --background \
   --launcher "$LAUNCHER" --launcher-input - <<'KMUX_PROMPT'
 Task: <objective and expected result>
 Context: <relevant issue, files, commits, and project facts>

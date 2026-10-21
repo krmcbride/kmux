@@ -18,14 +18,38 @@ use crate::workspace::WorkspaceInventoryItem;
 /// Print workspace inventory, optionally as JSON for machine consumers.
 pub(super) fn run(args: cli::ListArgs) -> Result<()> {
     let repo = load_repo_context()?;
-    let items = list_items(&repo)?;
+    let mut items = list_items(&repo)?;
+    let tmux = Tmux::from_env();
+    let windows = tmux
+        .list_panes()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|pane| pane.identity.window_id)
+        .collect::<std::collections::BTreeSet<_>>();
+    let bindings = windows
+        .into_iter()
+        .filter_map(|id| {
+            tmux.show_window_option(&id, "@kmux_workspace_id")
+                .ok()
+                .flatten()
+                .map(|workspace_id| (workspace_id, id))
+        })
+        .collect::<Vec<_>>();
+    for item in &mut items {
+        item.set_tmux_windows(
+            bindings
+                .iter()
+                .filter(|(id, _)| id == item.workspace_id())
+                .map(|(_, window)| window.clone())
+                .collect(),
+        );
+    }
 
     if args.json {
         println!("{}", serde_json::to_string_pretty(&items)?);
         return Ok(());
     }
 
-    let tmux = Tmux::from_env();
     let activities = StateStore::new()
         .ok()
         .and_then(|store| workspace_activities(&store, &tmux).ok())
@@ -44,8 +68,10 @@ pub(super) fn run(args: cli::ListArgs) -> Result<()> {
         .iter()
         .enumerate()
         .map(|(index, item)| DisplayRow {
-            branch: format_branch(&items, index),
-            parent: item.git_parent_branch().unwrap_or("-").to_owned(),
+            kind: item.kind_label(),
+            workspace: format_workspace(&items, index),
+            branch: item.checkout_label().to_owned(),
+            parent: item.parent_label().unwrap_or("-").to_owned(),
             age: format_age(item, now),
             agent: format_agent(item, &activities, &repo.config.status_icons),
             mux: format_mux(item, &repo.config, &tmux, tmux_session.as_deref()),
@@ -59,6 +85,8 @@ pub(super) fn run(args: cli::ListArgs) -> Result<()> {
 }
 
 struct DisplayRow {
+    kind: String,
+    workspace: String,
     branch: String,
     parent: String,
     age: String,
@@ -70,11 +98,11 @@ struct DisplayRow {
 
 // Render a depth-first forest using standard tree connectors while keeping
 // parent labels in their own column for scanability.
-fn format_branch(items: &[WorkspaceInventoryItem], index: usize) -> String {
+fn format_workspace(items: &[WorkspaceInventoryItem], index: usize) -> String {
     let item = &items[index];
-    let branch = item.git_branch().unwrap_or("-");
+    let label = item.workspace_slug();
     if item.tree_depth() == 0 {
-        return branch.to_owned();
+        return label.to_owned();
     }
 
     let mut prefix = String::new();
@@ -90,7 +118,7 @@ fn format_branch(items: &[WorkspaceInventoryItem], index: usize) -> String {
     } else {
         prefix.push_str("└── ");
     }
-    format!("{prefix}{branch}")
+    format!("{prefix}{label}")
 }
 
 fn has_following_at_depth(items: &[WorkspaceInventoryItem], index: usize, depth: usize) -> bool {
@@ -166,7 +194,7 @@ fn format_mux(
         return "-".to_owned();
     }
 
-    let window_name = config.workspace_window_name(item.workspace_slug());
+    let window_name = config.workspace_window_name(item.presentation_slug());
     match tmux.window_exists_by_name(session_name, &window_name) {
         Ok(true) => "yes".to_owned(),
         Ok(false) | Err(_) => "-".to_owned(),
@@ -212,7 +240,15 @@ fn format_path(path: &Path, current_dir: &Path) -> String {
 // Width calculations use chars rather than bytes because status icons may be multibyte.
 fn print_table(rows: &[DisplayRow]) {
     let headers = [
-        "BRANCH", "PARENT", "AGE", "AGENT", "MUX", "UNMERGED", "PATH",
+        "TYPE",
+        "WORKSPACE",
+        "BRANCH",
+        "PARENT",
+        "AGE",
+        "AGENT",
+        "MUX",
+        "UNMERGED",
+        "PATH",
     ];
     let mut widths = headers.map(str::len);
 
@@ -229,8 +265,10 @@ fn print_table(rows: &[DisplayRow]) {
     }
 }
 
-fn row_values(row: &DisplayRow) -> [&str; 7] {
+fn row_values(row: &DisplayRow) -> [&str; 9] {
     [
+        &row.kind,
+        &row.workspace,
         &row.branch,
         &row.parent,
         &row.age,
@@ -241,7 +279,7 @@ fn row_values(row: &DisplayRow) -> [&str; 7] {
     ]
 }
 
-fn format_row(values: &[&str; 7], widths: &[usize; 7]) -> String {
+fn format_row(values: &[&str; 9], widths: &[usize; 9]) -> String {
     values
         .iter()
         .enumerate()
@@ -260,7 +298,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn branch_formatting_draws_depth_first_tree_connectors() -> Result<()> {
+    fn workspace_formatting_draws_depth_first_tree_connectors() -> Result<()> {
         let mut main = inventory_item("project-alpha", "main", true)?;
         let mut child = inventory_item("feature-child", "feature/child", false)?;
         let mut grandchild = inventory_item("feature-grandchild", "feature/grandchild", false)?;
@@ -271,10 +309,10 @@ mod tests {
         sibling.set_tree_depth(1);
         let items = [main, child, grandchild, sibling];
 
-        assert_eq!(format_branch(&items, 0), "main");
-        assert_eq!(format_branch(&items, 1), "├── feature/child");
-        assert_eq!(format_branch(&items, 2), "│   └── feature/grandchild");
-        assert_eq!(format_branch(&items, 3), "└── feature/sibling");
+        assert_eq!(format_workspace(&items, 0), "project-alpha");
+        assert_eq!(format_workspace(&items, 1), "├── feature-child");
+        assert_eq!(format_workspace(&items, 2), "│   └── feature-grandchild");
+        assert_eq!(format_workspace(&items, 3), "└── feature-sibling");
         Ok(())
     }
 
@@ -292,6 +330,7 @@ mod tests {
                 bare: false,
                 locked: None,
                 prunable: None,
+                kmux_binding: None,
             },
             is_main,
         )?;

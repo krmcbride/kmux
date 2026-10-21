@@ -14,6 +14,12 @@ _kmux_git_branches() {
     kmux _complete-git-branches 2>/dev/null
 }
 
+# Known workspace labels and branch refs for source-valued arguments.
+_kmux_sources() {
+    _kmux_workspaces
+    _kmux_git_branches
+}
+
 # Configured launcher names.
 _kmux_launchers() {
     kmux _complete-launchers 2>/dev/null
@@ -35,15 +41,23 @@ _kmux_dynamic() {
     if [[ ${cword} -ge 3 && "${words[1]}" == "workspace" ]]; then
         local cmd="${words[2]}"
         case "$cmd" in
-            remove)
+            remove|close|promote)
+                if [[ "$prev" == "--name" ]]; then
+                    COMPREPLY=()
+                    return
+                fi
                 if [[ "$cur" != -* ]]; then
                     COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     return
                 fi
                 ;;
-            create)
+            create|open)
                 case "$prev" in
                     --parent)
+                        COMPREPLY=($(compgen -W "$(_kmux_sources)" -- "$cur"))
+                        return
+                        ;;
+                    --from)
                         COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
                         return
                         ;;
@@ -55,9 +69,17 @@ _kmux_dynamic() {
                         COMPREPLY=()
                         return
                         ;;
+                    --name)
+                        COMPREPLY=()
+                        return
+                        ;;
                 esac
                 if [[ "$cur" != -* ]]; then
-                    COMPREPLY=($(compgen -W "$(_kmux_create_branches)" -- "$cur"))
+                    if [[ "$cmd" == "open" ]]; then
+                        COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
+                    else
+                        COMPREPLY=($(compgen -W "$(_kmux_create_branches)" -- "$cur"))
+                    fi
                     return
                 fi
                 ;;
@@ -73,7 +95,7 @@ _kmux_dynamic() {
                     if (( positional_before == 1 )); then
                         COMPREPLY=($(compgen -W "$(_kmux_workspaces)" -- "$cur"))
                     elif (( positional_before == 0 )); then
-                        COMPREPLY=($(compgen -W "$(_kmux_git_branches)" -- "$cur"))
+                        COMPREPLY=($(compgen -W "$(_kmux_sources)" -- "$cur"))
                     else
                         COMPREPLY=()
                     fi

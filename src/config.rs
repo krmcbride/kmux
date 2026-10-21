@@ -20,6 +20,7 @@ const DEFAULT_SIDEBAR_MAX_WIDTH: u16 = 52;
 #[serde(default, deny_unknown_fields)]
 /// User-facing kmux configuration loaded from YAML.
 pub struct Config {
+    pub worktree_root: Option<PathBuf>,
     pub window_prefix: Option<String>,
     pub window: WindowConfig,
     pub post_create: Vec<String>,
@@ -47,6 +48,15 @@ impl Config {
     /// Build the tmux window name for a kmux workspace slug.
     pub fn workspace_window_name(&self, workspace_slug: &str) -> String {
         format!("{}{}", self.window_prefix(), workspace_slug)
+    }
+
+    /// Resolve the root for future ephemeral worktrees, leaving persistent paths alone.
+    pub fn worktree_root(&self) -> Result<PathBuf> {
+        match &self.worktree_root {
+            Some(root) if root.is_absolute() => Ok(root.clone()),
+            Some(root) => Ok(user_dirs::home_dir()?.join(root.strip_prefix("~")?)),
+            None => Ok(user_dirs::home_dir()?.join(".kmux/worktrees")),
+        }
     }
 
     /// Return a configured launcher by its exact user-facing name.
@@ -99,6 +109,12 @@ impl Config {
 
     /// Validate cross-field config rules that serde cannot express.
     fn validate(&self) -> Result<()> {
+        if let Some(root) = &self.worktree_root
+            && !root.is_absolute()
+            && !root.starts_with("~")
+        {
+            bail!("worktree_root must be an absolute path or start with '~/'");
+        }
         self.status_icons.validate()?;
         self.sidebar.validate()?;
         self.validate_launchers()?;

@@ -62,7 +62,7 @@ pub fn creates_selects_lists_and_kills_windows_on_isolated_socket() -> Result<()
     assert_eq!(updated_snapshot.title.as_deref(), Some("kmux"));
     assert!(!tmux.pane_visibility(&pane_id)?.pane_has_focus);
 
-    tmux.select_window_by_id(&project_session_id, "feature-auth")?;
+    tmux.select_window_id_in_session(&project_session_id, &context.window_id)?;
     let selected = tmux
         .list_windows(Some("project"))?
         .into_iter()

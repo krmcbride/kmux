@@ -1,19 +1,19 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use super::context::load_repo_context;
 use super::launch::resolve_default;
 use super::project_session;
-use super::resolve::strict_kmux_workspaces;
+use super::resolve::restorable_workspaces;
 use super::window::{RestoreWindow, restore_shell, start_launcher};
 
-/// Recreate or repair tmux windows for existing strict kmux Git worktrees only.
+/// Restore all live external worktrees and remembered workspace presentations.
 pub(super) fn run() -> Result<()> {
     let repo = load_repo_context()?;
     // Restore intentionally ignores any one-shot launcher used by `create`: only
     // the current configured default applies to newly recreated windows.
     let launcher = resolve_default(&repo.config);
     let tmux = project_session::resolve(&repo.paths)?.require("kmux workspace restore")?;
-    let workspaces = strict_kmux_workspaces(&repo)?;
+    let workspaces = restorable_workspaces(&repo)?;
 
     if workspaces.is_empty() {
         println!("restored 0 workspaces");
@@ -21,12 +21,6 @@ pub(super) fn run() -> Result<()> {
     }
 
     for workspace in workspaces {
-        if workspace.branch().is_none() {
-            bail!(
-                "workspace '{}' has no known git branch and cannot be restored by kmux",
-                workspace.workspace_slug()
-            );
-        }
         if let RestoreWindow::Created(window) = restore_shell(&repo, &tmux, &workspace)?
             && let Some(launcher) = &launcher
         {

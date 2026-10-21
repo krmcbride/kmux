@@ -19,13 +19,25 @@ pub struct WorktreeInfo {
     pub bare: bool,
     pub locked: Option<String>,
     pub prunable: Option<String>,
+    pub kmux_binding: Option<String>,
 }
 
 impl Git {
-    /// List all Git worktrees using porcelain output.
+    /// List all Git worktrees using NUL-delimited porcelain, preserving path whitespace.
     pub fn worktrees(&self) -> Result<Vec<WorktreeInfo>> {
-        let output = self.stdout(["worktree", "list", "--porcelain"])?;
-        parse_worktree_list(&output)
+        let output = self.output(["worktree", "list", "--porcelain", "-z"])?;
+        if !output.status.success() {
+            return bail_git(output);
+        }
+        let mut entries = parse_worktree_list(&output.stdout)?;
+        let bindings = self.worktree_bindings()?;
+        for entry in &mut entries {
+            if let Ok(path) = entry.path.canonicalize() {
+                entry.path = path;
+            }
+            entry.kmux_binding = bindings.get(&entry.path).cloned();
+        }
+        Ok(entries)
     }
 
     /// Find a worktree currently checked out on `branch`.
@@ -78,6 +90,19 @@ impl Git {
         Ok(())
     }
 
+    /// Add a linked detached checkout without creating or attaching a branch.
+    pub fn add_detached_worktree(&self, path: &Path, commit: &str) -> Result<()> {
+        self.ensure_available_worktree_path(path)?;
+        self.stdout(vec![
+            OsString::from("worktree"),
+            OsString::from("add"),
+            OsString::from("--detach"),
+            path.as_os_str().to_os_string(),
+            OsString::from(commit),
+        ])?;
+        Ok(())
+    }
+
     /// Return whether this worktree has staged changes.
     pub fn has_staged_changes(&self) -> Result<bool> {
         self.diff_has_changes(["--no-optional-locks", "diff", "--cached", "--quiet"])
@@ -104,7 +129,7 @@ impl Git {
     }
 
     /// Return whether a worktree contains staged, unstaged, or untracked changes.
-    pub(super) fn worktree_is_dirty(&self, path: &Path) -> Result<bool> {
+    pub fn worktree_is_dirty(&self, path: &Path) -> Result<bool> {
         if !path.is_dir() {
             bail!("worktree path {} does not exist", path.display());
         }
@@ -128,12 +153,12 @@ impl Git {
     }
 }
 
-// Parse `git worktree list --porcelain` output into structured worktree records.
+// NUL-delimited attributes allow newlines, quotes, and trailing whitespace in paths.
 fn parse_worktree_list(output: &str) -> Result<Vec<WorktreeInfo>> {
     let mut worktrees = Vec::new();
     let mut current = WorktreeBuilder::default();
 
-    for line in output.lines() {
+    for line in output.split('\0') {
         if line.is_empty() {
             push_worktree(&mut worktrees, &mut current);
             continue;
@@ -185,6 +210,7 @@ fn push_worktree(worktrees: &mut Vec<WorktreeInfo>, current: &mut WorktreeBuilde
         bare: current.bare,
         locked: current.locked.take(),
         prunable: current.prunable.take(),
+        kmux_binding: None,
     });
     current.detached = false;
     current.bare = false;
@@ -207,6 +233,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn nul_records_preserve_literal_path_and_reason_whitespace() -> Result<()> {
+        let path = "/repo/quoted \"workspace\"\nwith trailing space ";
+        let output = format!(
+            "worktree {path}\0HEAD abc123\0detached\0locked review\nnotes \0\0worktree /repo/missing\0HEAD def456\0prunable\0\0"
+        );
+        let entries = parse_worktree_list(&output)?;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].path, Path::new(path));
+        assert_eq!(entries[0].locked.as_deref(), Some("review\nnotes "));
+        assert_eq!(entries[0].head.as_deref(), Some("abc123"));
+        assert!(entries[0].detached);
+        assert_eq!(entries[1].prunable.as_deref(), Some(""));
+        assert!(entries[1].locked.is_none());
+        Ok(())
+    }
+
+    #[test]
     fn parses_porcelain_worktree_records() -> Result<()> {
         let output = "\
 worktree /tmp/project\n\
@@ -219,7 +262,7 @@ detached\n\
 locked awaiting review\n\
 prunable gitdir file points to non-existent location\n";
 
-        let worktrees = parse_worktree_list(output)?;
+        let worktrees = parse_worktree_list(&output.replace('\n', "\0"))?;
 
         assert_eq!(worktrees.len(), 2);
         assert_eq!(worktrees[0].path, PathBuf::from("/tmp/project"));
